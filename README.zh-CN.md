@@ -112,8 +112,8 @@ build.ps1 / build.cmd             # 构建脚本
 
 如果 iFreeSftp 帮你省了时间，欢迎赞助支持开发——附带应用内金色**支持者**勋章：
 
-- 中国大陆：[爱发电](https://afdian.com/a/ifree)（微信 / 支付宝）
-- 国际：[Ko-fi](https://ko-fi.com/ifrees)
+- 中国大陆：[爱发电 · 注册码商品页](https://afdian.com/item/3a69f926c4ac11f1878052540025c377)（微信 / 支付宝；未登录可能显示不全，也可从[爱发电主页](https://afdian.com/a/ifree)进入）
+- 国际：[Ko-fi Commissions · 注册码商品页](https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115)
 
 赞助后在 Ko-fi Commissions 或爱发电留言期望的勋章名，作者回发签名注册码（设置 → 注册 激活）。
 

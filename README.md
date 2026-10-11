@@ -6,7 +6,7 @@ A dual-pane, multi-tab SFTP client for Windows — fast, secure, and completely 
 
 ![Version](https://img.shields.io/badge/version-0.8.0-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
 
-Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSftp/releases> · Sponsor <https://ko-fi.com/ifrees>
+Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSftp/releases> · Get a registration code <https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115>
 
 > **Free forever**: every feature is free for all users, always. The supporter badge is a purely voluntary honor mark — registration never unlocks or restricts anything.
 >
@@ -112,8 +112,8 @@ Settings → Registration: offline-verified registration code, gold "Supporter" 
 
 If iFreeSftp saves you time, a small sponsorship keeps development going — and comes with a gold **Supporter** badge in the app:
 
-- International: [Ko-fi](https://ko-fi.com/ifrees)
-- 中国大陆：[爱发电](https://afdian.com/a/ifree)（微信 / 支付宝）
+- International: [Ko-fi Commissions](https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115) — order a registration code directly
+- 中国大陆：[爱发电 · registration code item](https://afdian.com/item/3a69f926c4ac11f1878052540025c377) (WeChat / Alipay; full details may require sign-in)
 
 After sponsoring, open a request on Ko-fi Commissions or 爱发电 with the name you want on the badge; the author sends back a signed registration code (see Settings → Registration).
 
