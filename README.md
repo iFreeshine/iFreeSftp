@@ -25,6 +25,22 @@ Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSft
 - **Thoughtful connection handling** — connect/operation timeouts, retry with delay, keep-alive; errors surface in the status bar and log panel instead of hanging forever
 - **Self-contained single exe** — no runtime to install, dark/light themes, English & Chinese UI switchable at runtime
 
+## How it compares
+
+How iFreeSftp stacks up against the mainstream SFTP clients on Windows (compiled from the vendors' public documentation, October 2026 — corrections welcome via issue):
+
+| | iFreeSftp | WinSCP | FileZilla | MobaXterm |
+|---|---|---|---|---|
+| License | AGPL-3.0, free | GPL, free | GPL, free | Freemium (Home edition limited, Pro paid) |
+| Dual panes, independent tabs on **both** sides | ✓ | sessions tabbed, panes fixed | panes fixed, no tabs | terminal tabs + sidebar SFTP browser |
+| **Server-side direct remote→remote** | ✓ same host runs one `cp` for the whole tree — zero traffic through your PC | re-transfers file-by-file through your PC | ✗ not supported | ✗ not supported |
+| Remote edit with auto upload-back | ✓ | ✓ | △ prompts on save | △ via the SFTP browser |
+| Sync-browse comparison of two folders | ✓ | ✓ (synchronize) | ✗ | ✗ |
+| Server-side checksums (SHA-256/512, SM3) | ✓ | ✓ | ✗ | ✗ |
+| Portable single exe, no install | ✓ | ✓ | △ | ✓ |
+
+The differentiating row is server-side direct transfer: when both panes point at the same host, iFreeSftp issues a single `cp` command over its server-side command channel, so a 10,000-file tree copies at server disk speed instead of round-tripping through your machine.
+
 ## Download
 
 Grab the latest `iFreeSftp-vX.Y.Z-win-x64.zip` from the [GitHub Releases](https://github.com/iFreeshine/iFreeSftp/releases) page or [ifrees.top](https://ifrees.top):
