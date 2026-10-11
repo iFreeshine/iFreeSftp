@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    远程文件校验码弹窗 (模态): 遮罩 + 居中卡片, 样式与 PermissionDialog 同构
+    (README 3.9 弹框统一原则 + 小弹框字号口径):
+    标题 14 SemiBold / 关闭钮图标 10 / 文件名 50% 淡化 / 说明文字 14。
+    算法下拉 (SHA-256/SHA-512/SM3) 选中即流式计算 (SFTP 拉流边读边算);
+    码值只读等宽文本框 + 复制按钮 (点击后短暂显示"已复制")。
+-->
+<UserControl
+    x:Class="iFreeSftp.Views.ChecksumDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid x:Name="PanelRoot">
+        <!-- 遮罩: 点击空白关闭 -->
+        <Border x:Name="Mask" Background="#80000000" Tapped="Mask_Tapped" />
+
+        <!-- 卡片: 不透明底 + 标题栏拖拽 (与 PermissionDialog 同构) -->
+        <Border
+            x:Name="Card"
+            Width="420"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Background="{ThemeResource DialogTitleBarBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="DragTransform" />
+            </Border.RenderTransform>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- 标题栏: 小弹框口径 (标题 14 / 关闭图标 10) -->
+                <Grid
+                    Grid.Row="0"
+                    Padding="14,5,5,2"
+                    ColumnSpacing="8"
+                    Background="{ThemeResource DialogTitleBarBrush}"
+                    PointerMoved="TitleBar_PointerMoved"
+                    PointerPressed="TitleBar_PointerPressed"
+                    PointerReleased="TitleBar_PointerReleased">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        x:Name="TitleText"
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        FontSize="14"
+                        FontWeight="SemiBold" />
+                    <Button
+                        Grid.Column="1"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Click="CloseBtn_Click">
+                        <Button.Resources>
+                            <ThemeResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
+                            <ThemeResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
+                        </Button.Resources>
+                        <FontIcon FontSize="10" Glyph="&#xE8BB;" />
+                    </Button>
+                </Grid>
+
+                <!-- 内容面板: 圆弧容器 -->
+                <Border
+                    Grid.Row="1"
+                    Margin="5,0,5,5"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    CornerRadius="6">
+                    <StackPanel Padding="16,12" Spacing="14">
+
+                        <!-- 条目行: 类型图标 + 名称 (50% 淡化) -->
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon
+                                x:Name="EntryIcon"
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                FontSize="16"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Glyph="&#xE7C3;" />
+                            <TextBlock
+                                x:Name="EntryName"
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                FontSize="14"
+                                Opacity="0.5"
+                                TextTrimming="CharacterEllipsis" />
+                        </Grid>
+
+                        <!-- 算法行: 标签 + 下拉框 (选中即计算) -->
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock
+                                x:Name="AlgoLabel"
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                FontSize="14" />
+                            <ComboBox
+                                x:Name="AlgoCombo"
+                                Grid.Column="1"
+                                Width="160"
+                                HorizontalAlignment="Left"
+                                SelectionChanged="AlgoCombo_SelectionChanged">
+                                <ComboBoxItem x:Name="AlgoSha256" Content="SHA-256" />
+                                <ComboBoxItem x:Name="AlgoSha512" Content="SHA-512" />
+                                <ComboBoxItem x:Name="AlgoSm3" Content="SM3" />
+                            </ComboBox>
+                        </Grid>
+
+                        <!-- 码值行: 只读等宽文本框 (可选中, 折行) + 复制按钮 -->
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox
+                                x:Name="ValueBox"
+                                Grid.Column="0"
+                                Height="50"
+                                HorizontalAlignment="Stretch"
+                                AcceptsReturn="False"
+                                FontFamily="Consolas"
+                                FontSize="12"
+                                IsReadOnly="True"
+                                IsSpellCheckEnabled="False"
+                                ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                Text=""
+                                TextWrapping="Wrap" />
+                            <Button
+                                x:Name="CopyBtn"
+                                Grid.Column="1"
+                                Height="50"
+                                VerticalAlignment="Stretch"
+                                Click="CopyBtn_Click"
+                                IsEnabled="False" />
+                        </Grid>
+
+                        <!-- 底部操作: 关闭 -->
+                        <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                            <Button x:Name="CloseActionBtn" Click="CloseBtn_Click" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

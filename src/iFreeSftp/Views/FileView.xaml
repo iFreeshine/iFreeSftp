@@ -1,0 +1,743 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="iFreeSftp.Views.FileView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:iFreeSftp.Views"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+        <ResourceDictionary.ThemeDictionaries>
+            <!-- 文件列表选中条目背景: 品牌蓝 #0078D4 @ 50% 透明, 亮暗同值 (2026-09 加强)。
+                 选中+悬停/按下三态同步覆盖, 防止混合状态切回系统色跳变;
+                 两主题均显式定义 (ThemeDictionaries 缺当前主题 key 会回退 Light 值)。 -->
+            <ResourceDictionary x:Key="Light">
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#800078D4" />
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#800078D4" />
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="#800078D4" />
+            </ResourceDictionary>
+            <ResourceDictionary x:Key="Dark">
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#800078D4" />
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#800078D4" />
+                <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="#800078D4" />
+            </ResourceDictionary>
+        </ResourceDictionary.ThemeDictionaries>
+        <!-- 面包屑段按钮: 极简样式, 由代码后置动态生成 -->
+        <Style x:Key="CrumbButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="6,2" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+        <!-- 面包屑文字: Style 内 ThemeResource 按元素所在主题解析 (代码后置取
+             Application.Current.Resources 会拿错主题变体, 浅色下文字发白不可读);
+             FontSize 12 (与列头条目同号); MaxWidth+Trimming 防止单段超长把行撑破 -->
+        <Style x:Key="CrumbTextDefaultStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="MaxWidth" Value="160" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+        <Style x:Key="CrumbTextLastStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="MaxWidth" Value="160" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+        <Style x:Key="CrumbSeparatorStyle" TargetType="FontIcon">
+            <Setter Property="Glyph" Value="&#xE76C;" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorTertiaryBrush}" />
+        </Style>
+        <!-- 面包屑根段 Home 图标 (此电脑/远程根一律替代文字):
+             主题前景必须在 Style 内用 ThemeResource 解析 (代码后置取 Application 资源会拿错主题变体) -->
+        <Style x:Key="CrumbHomeIconStyle" TargetType="FontIcon">
+            <Setter Property="Glyph" Value="&#xE80F;" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+        </Style>
+        <Style x:Key="CrumbHomeIconLastStyle" TargetType="FontIcon">
+            <Setter Property="Glyph" Value="&#xE80F;" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        </Style>
+
+        <!-- 列宽拖拽手柄: 16px 纯透明命中区, 无任何 hover/按下视觉反馈
+             (hover 反馈只保留左右拖拽光标, 避免列分割线处浮现主色边线)。
+             命中区对齐贯穿竖线 (竖线由 PlaceColumnLine 画在列间距正中间 = 本列 Border 右缘 +6):
+             名称列 Border 无 Padding → Thumb Margin 右 -14 (中心 = Border 右缘 +6);
+             大小/类型/修改列 Border 有 Padding="6,0" → Thumb 随内容区内缩 6px, Margin 右须 -20 补偿 -->
+        <Style x:Key="ColResizeThumbStyle" TargetType="Thumb">
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Grid Background="Transparent" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 工具栏紧凑按钮: 高度压到与面包屑行一致, 图标 8px。
+             用普通 Button/ToggleButton 而非 AppBarButton: 后者默认模板的图标
+             ContentPresenter 固定 40px 高且 Top 对齐, 压缩后图标无法垂直居中。 -->
+        <Style x:Key="ToolButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Padding" Value="2" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <!-- 24px 透明小按钮上的系统焦点框视觉过重 (一圈大白框);
+                 焦点仍可经 Tab/方向键到达, 只是不画白框 -->
+            <Setter Property="UseSystemFocusVisuals" Value="False" />
+        </Style>
+        <Style x:Key="ToolToggleButtonStyle" TargetType="ToggleButton">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Padding" Value="2" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="UseSystemFocusVisuals" Value="False" />
+        </Style>
+
+        <!-- 文件条目数据模板 (x:Bind: 系统图标就绪后按 PropertyChanged 切换显示;
+             大小/类型/修改时间列宽由元素固定, 隐藏列即折叠元素, 行与列头天然对齐) -->
+        <DataTemplate x:Key="FileItemTemplate" x:DataType="local:FileItemViewModel">
+            <!--
+                比对高亮底色层 (z 序最底, 两个叠层 Border 按 VM 状态显隐):
+                画刷用 ThemeResource 解析——亮/暗主题字典自动取对应变体, 主题切换自动重取。
+                (不可经代码 Application.Resources 取主题画刷: 那按应用级主题解析, 不跟随
+                本应用根元素 RequestedTheme 的切换, 亮主题下会取到暗色变体。)
+            -->
+            <Grid Padding="4,1" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="22" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <!-- 尾部弹性列: 与列头同构 (名称列定宽可拖拽) -->
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <!-- 比对高亮底色层 (z 序最底, 按 VM 状态显隐; 画刷 ThemeResource 主题感知) -->
+                <Border
+                    Grid.ColumnSpan="6"
+                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                    Visibility="{x:Bind CautionVisible, Mode=OneWay}" />
+                <Border
+                    Grid.ColumnSpan="6"
+                    Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                    Visibility="{x:Bind CriticalVisible, Mode=OneWay}" />
+                <!-- 22×22 图标格: Windows 系统真实图标优先, 未就绪/取不到时显示通用字形 -->
+                <Grid Grid.Column="0" Width="22" Height="22" VerticalAlignment="Center">
+                    <Image
+                        Grid.Column="0"
+                        Width="18"
+                        Height="18"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Source="{x:Bind Icon, Mode=OneWay}"
+                        Visibility="{x:Bind SystemIconVisible, Mode=OneWay}" />
+                    <FontIcon
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Glyph="{x:Bind IconGlyph}"
+                        Visibility="{x:Bind GlyphVisible, Mode=OneWay}" />
+                </Grid>
+                <!-- 名称列: Border 定宽 (x:Bind 共享列宽, 列头拖拽联动) -->
+                <Border
+                    Grid.Column="1"
+                    Width="{x:Bind NameColWidth, Mode=OneWay}"
+                    VerticalAlignment="Stretch">
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        FontSize="12"
+                        Text="{x:Bind Name}"
+                        TextTrimming="CharacterEllipsis" />
+                </Border>
+                <!-- 大小/类型/修改时间列: Border 定宽 (x:Bind 共享列宽) + 6px 左内边距
+                     (竖线画在列间距正中间, 文字与线各让 6px, 与列头文字严格同构对齐) -->
+                <Border
+                    Grid.Column="2"
+                    Width="{x:Bind SizeColWidth, Mode=OneWay}"
+                    Padding="6,0"
+                    VerticalAlignment="Stretch"
+                    Visibility="{x:Bind SizeColVisible, Mode=OneWay}">
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        FontSize="12"
+                        HorizontalTextAlignment="Right"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="{x:Bind DisplaySize}" />
+                </Border>
+                <Border
+                    Grid.Column="3"
+                    Width="{x:Bind TypeColWidth, Mode=OneWay}"
+                    Padding="6,0"
+                    VerticalAlignment="Stretch"
+                    Visibility="{x:Bind TypeColVisible, Mode=OneWay}">
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        FontSize="12"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="{x:Bind TypeText, Mode=OneWay}"
+                        TextTrimming="CharacterEllipsis" />
+                </Border>
+                <Border
+                    Grid.Column="4"
+                    Width="{x:Bind ModifiedColWidth, Mode=OneWay}"
+                    Padding="6,0"
+                    VerticalAlignment="Stretch"
+                    Visibility="{x:Bind ModifiedColVisible, Mode=OneWay}">
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        FontSize="12"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="{x:Bind DisplayModified}" />
+                </Border>
+                <!-- 权限列 (仅远程条目可见, 本地条目折叠): drwxr-xr-x 形式权限属性串 -->
+                <Border
+                    Grid.Column="5"
+                    Width="{x:Bind PermissionsColWidth, Mode=OneWay}"
+                    Padding="6,0"
+                    VerticalAlignment="Stretch"
+                    Visibility="{x:Bind PermissionsColVisible, Mode=OneWay}">
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        FontSize="12"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="{x:Bind DisplayPermissions}" />
+                </Border>
+            </Grid>
+        </DataTemplate>
+
+        <!-- 树形目录节点模板 -->
+        <!-- 树节点模板: 用经典 Binding 而非 x:Bind。x:Bind 生成代码的严格 cast 在
+             TreeView 容器回收 (以裸 IInspectable 传回条目) 时抛 InvalidCastException
+             直接 failfast; Binding 运行时解析无此问题。
+             注意 WinUI 3 的 TreeView 模板根 DataContext 是 TreeViewNode (而非
+             node.Content), 绑定须走 Content.Name; 直接 {Binding Name} 静默失败
+             显示空白 (TreeViewNode 无 Name 属性)。 -->
+        <DataTemplate x:Key="TreeDirTemplate">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <FontIcon FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Glyph="&#xE188;" />
+                <TextBlock FontSize="12" Text="{Binding Content.Name}" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+        </DataTemplate>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid RowSpacing="0">
+        <Grid.RowDefinitions>
+            <!-- 1 面包屑路径行 -->
+            <RowDefinition Height="Auto" />
+            <!-- 2 小图标工具栏行 -->
+            <RowDefinition Height="Auto" />
+            <!-- 3 栏目名称行 + 4 文件列表显示区 (同容器: 列分隔竖线跨两行贯穿) -->
+            <RowDefinition Height="*" />
+            <!-- 5 状态统计栏 -->
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ═══ 第 1 行: 面包屑路径 (点击空白处切换为输入框编辑) ═══ -->
+        <Border
+            x:Name="BreadcrumbRow"
+            Grid.Row="0"
+            BorderBrush="{ThemeResource RowSeparatorLineBrush}"
+            BorderThickness="0,0,0,1">
+            <!-- 行高锁定: 面包屑文字 12px 后行高保持不变 -->
+            <Grid Background="Transparent" Height="26" Padding="6,3" Tapped="Breadcrumb_Tapped">
+                <StackPanel x:Name="BreadcrumbPanel" Orientation="Horizontal" VerticalAlignment="Center" Spacing="2" />
+                <TextBox
+                    x:Name="PathEditBox"
+                    Margin="-6,-3"
+                    MinHeight="0"
+                    FontSize="12"
+                    VerticalAlignment="Stretch"
+                    Visibility="Collapsed"
+                    KeyDown="PathEditBox_KeyDown"
+                    LostFocus="PathEditBox_LostFocus">
+                    <!-- 默认主题内边距 (TextControlThemePadding 10,5,10,6) 与 MinHeight 32
+                         均按 32px 行高校准, 压进 26px 面包屑行后文字不垂直居中;
+                         本地覆盖为对称 4px 上下内边距 (4+文字行≈17+4 ≈ 26 居中) 并清零 MinHeight,
+                         负 Margin 抵消行内 Grid 的 6,3 Padding 使编辑框撑满整行 -->
+                    <TextBox.Resources>
+                        <Thickness x:Key="TextControlThemePadding">6,4,6,4</Thickness>
+                        <!-- 聚焦边框/底部 2px 下划线: 默认 100% accent 浓蓝压过面包屑行,
+                             调淡为 30% 透明度 accent (跟随系统强调色, 深浅主题通用) -->
+                        <SolidColorBrush
+                            x:Key="TextControlBorderBrushFocused"
+                            Color="{ThemeResource SystemAccentColor}"
+                            Opacity="0.3" />
+                    </TextBox.Resources>
+                </TextBox>
+            </Grid>
+        </Border>
+
+        <!-- ═══ 第 2 行: 小图标按钮工具栏 (打开目录/上级/刷新/切换树) ═══ -->
+        <Border
+            x:Name="ToolbarRow"
+            Grid.Row="1"
+            BorderBrush="{ThemeResource RowSeparatorLineBrush}"
+            BorderThickness="0,0,0,1">
+            <Grid Padding="4,1">
+                <StackPanel Orientation="Horizontal" Spacing="2">
+                    <Button x:Name="OpenDirBtn" Style="{StaticResource ToolButtonStyle}" Click="OpenDirBtn_Click">
+                        <FontIcon FontSize="9" Glyph="&#xE838;" />
+                    </Button>
+                    <Button x:Name="UpBtn" Style="{StaticResource ToolButtonStyle}" Click="UpBtn_Click">
+                        <FontIcon FontSize="9" Glyph="&#xE74A;" />
+                    </Button>
+                    <Button x:Name="RefreshBtn" Style="{StaticResource ToolButtonStyle}" Click="RefreshBtn_Click">
+                        <FontIcon FontSize="9" Glyph="&#xE72C;" />
+                    </Button>
+                    <ToggleButton x:Name="TreeToggleBtn" Style="{StaticResource ToolToggleButtonStyle}" Click="TreeToggleBtn_Click">
+                        <FontIcon FontSize="9" Glyph="&#xE700;" />
+                    </ToggleButton>
+                    <Button x:Name="NewFolderBtn" Style="{StaticResource ToolButtonStyle}" Click="NewFolderBtn_Click">
+                        <FontIcon FontSize="9" Glyph="&#xE8F4;" />
+                    </Button>
+                    <Button x:Name="NewFileBtn" Style="{StaticResource ToolButtonStyle}" Click="NewFileBtn_Click">
+                        <FontIcon FontSize="9" Glyph="&#xE8A5;" />
+                    </Button>
+                    <ToggleButton x:Name="ShowHiddenBtn" Style="{StaticResource ToolToggleButtonStyle}" Click="ShowHiddenBtn_Click">
+                        <FontIcon FontSize="9" Glyph="&#xE7B3;" />
+                    </ToggleButton>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ═══ 第 3+4 行: 栏目名称 + 文件列表 + 树列 (同一容器, 列分隔竖线跨两行贯穿)。
+             树列 (列 0) 贯穿表头+列表两行: 树显示时表头/列表一起右移, 列头与数据列、
+             竖线自动保持对齐; 树宽拖拽联动同样零代码。 ═══ -->
+        <Grid Grid.Row="2" x:Name="ContentRoot">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <!-- ═══ 第 3 行: 栏目名称 (点击排序, 右键控制列显隐; 与条目模板同列宽) ═══ -->
+            <Border
+                x:Name="HeaderRow"
+                Grid.Row="0"
+                Grid.Column="2"
+                BorderBrush="{ThemeResource RowSeparatorLineBrush}"
+                BorderThickness="0,0,0,1">
+            <Grid Padding="4,6" ColumnSpacing="12" x:Name="HeaderGrid" Background="Transparent">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="22" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <!-- 尾部弹性列: 吸收剩余宽度 (名称列定宽可拖拽) -->
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <!-- 右键菜单: 控制大小/类型/修改时间/权限列显隐 (文件名固定显示) -->
+                <Grid.ContextFlyout>
+                    <MenuFlyout x:Name="ColMenuFlyout" Placement="Bottom">
+                        <ToggleMenuFlyoutItem x:Name="MenuShowSize" IsChecked="True" Click="MenuShowSize_Toggled" />
+                        <ToggleMenuFlyoutItem x:Name="MenuShowType" IsChecked="True" Click="MenuShowType_Toggled" />
+                        <ToggleMenuFlyoutItem x:Name="MenuShowModified" IsChecked="True" Click="MenuShowModified_Toggled" />
+                        <!-- 权限列仅远程 (Linux) 有意义: 本地模式禁用, 初始本地态禁用 -->
+                        <ToggleMenuFlyoutItem x:Name="MenuShowPermissions" IsChecked="True" IsEnabled="False" Click="MenuShowPermissions_Toggled" />
+                    </MenuFlyout>
+                </Grid.ContextFlyout>
+                <!-- 文件名 (始终显示, 定宽可拖拽; 右缘手柄调节本列宽) -->
+                <Border
+                    x:Name="HeaderNameCell"
+                    Grid.Column="1"
+                    Width="{x:Bind NameColWidth, Mode=OneWay}"
+                    Background="Transparent"
+                    Tapped="SortName_Tapped">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock x:Name="ColName" FontSize="11" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SortNameArrow" VerticalAlignment="Center" FontFamily="Segoe Fluent Icons" FontSize="10" Foreground="{ThemeResource AccentFillColorDefaultBrush}" />
+                        </StackPanel>
+                        <Thumb
+                            Width="16"
+                            Margin="0,0,-14,0"
+                            HorizontalAlignment="Right"
+                            Style="{StaticResource ColResizeThumbStyle}"
+                            Tag="Name"
+                            PointerEntered="ColumnThumb_PointerEntered"
+                            PointerExited="ColumnThumb_PointerExited"
+                            DragDelta="ColumnThumb_DragDelta"
+                            DragCompleted="ColumnThumb_DragCompleted" />
+                    </Grid>
+                </Border>
+                <!-- 大小 (列宽可拖动调节; 竖线由列表覆盖层画在列间距中间) -->
+                <Border
+                    x:Name="HeaderSizeCell"
+                    Grid.Column="2"
+                    Width="{x:Bind SizeColWidth, Mode=OneWay}"
+                    Background="Transparent"
+                    Padding="6,0"
+                    Tapped="SortSize_Tapped">
+                    <Grid>
+                        <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="4">
+                            <TextBlock x:Name="ColSize" FontSize="11" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SortSizeArrow" VerticalAlignment="Center" FontFamily="Segoe Fluent Icons" FontSize="10" Foreground="{ThemeResource AccentFillColorDefaultBrush}" />
+                        </StackPanel>
+                        <Thumb
+                            Width="16"
+                            Margin="0,0,-20,0"
+                            HorizontalAlignment="Right"
+                            Style="{StaticResource ColResizeThumbStyle}"
+                            Tag="Size"
+                            PointerEntered="ColumnThumb_PointerEntered"
+                            PointerExited="ColumnThumb_PointerExited"
+                            DragDelta="ColumnThumb_DragDelta"
+                            DragCompleted="ColumnThumb_DragCompleted" />
+                    </Grid>
+                </Border>
+                <!-- 类型 -->
+                <Border
+                    x:Name="HeaderTypeCell"
+                    Grid.Column="3"
+                    Width="{x:Bind TypeColWidth, Mode=OneWay}"
+                    Background="Transparent"
+                    Padding="6,0"
+                    Tapped="SortType_Tapped">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock x:Name="ColType" FontSize="11" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SortTypeArrow" VerticalAlignment="Center" FontFamily="Segoe Fluent Icons" FontSize="10" Foreground="{ThemeResource AccentFillColorDefaultBrush}" />
+                        </StackPanel>
+                        <Thumb
+                            Width="16"
+                            Margin="0,0,-20,0"
+                            HorizontalAlignment="Right"
+                            Style="{StaticResource ColResizeThumbStyle}"
+                            Tag="Type"
+                            PointerEntered="ColumnThumb_PointerEntered"
+                            PointerExited="ColumnThumb_PointerExited"
+                            DragDelta="ColumnThumb_DragDelta"
+                            DragCompleted="ColumnThumb_DragCompleted" />
+                    </Grid>
+                </Border>
+                <!-- 修改时间 -->
+                <Border
+                    x:Name="HeaderModifiedCell"
+                    Grid.Column="4"
+                    Width="{x:Bind ModifiedColWidth, Mode=OneWay}"
+                    Background="Transparent"
+                    Padding="6,0"
+                    Tapped="SortModified_Tapped">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock x:Name="ColModified" FontSize="11" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SortModifiedArrow" VerticalAlignment="Center" FontFamily="Segoe Fluent Icons" FontSize="10" Foreground="{ThemeResource AccentFillColorDefaultBrush}" />
+                        </StackPanel>
+                        <Thumb
+                            Width="16"
+                            Margin="0,0,-20,0"
+                            HorizontalAlignment="Right"
+                            Style="{StaticResource ColResizeThumbStyle}"
+                            Tag="Modified"
+                            PointerEntered="ColumnThumb_PointerEntered"
+                            PointerExited="ColumnThumb_PointerExited"
+                            DragDelta="ColumnThumb_DragDelta"
+                            DragCompleted="ColumnThumb_DragCompleted" />
+                    </Grid>
+                </Border>
+                <!-- 权限 (仅远程模式显示, 不参与排序; 本地默认隐藏见 UpdateHeaderColumnVisibility) -->
+                <Border
+                    x:Name="HeaderPermissionsCell"
+                    Grid.Column="5"
+                    Width="{x:Bind PermissionsColWidth, Mode=OneWay}"
+                    Background="Transparent"
+                    Padding="6,0"
+                    Visibility="Collapsed">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock x:Name="ColPermissions" FontSize="11" FontWeight="SemiBold" />
+                        </StackPanel>
+                        <Thumb
+                            Width="16"
+                            Margin="0,0,-20,0"
+                            HorizontalAlignment="Right"
+                            Style="{StaticResource ColResizeThumbStyle}"
+                            Tag="Permissions"
+                            PointerEntered="ColumnThumb_PointerEntered"
+                            PointerExited="ColumnThumb_PointerExited"
+                            DragDelta="ColumnThumb_DragDelta"
+                            DragCompleted="ColumnThumb_DragCompleted" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- ═══ 树形目录侧栏 (列 0, 贯穿两行) + 文件列表 (列 2) (EmptyStatePanel 覆盖整个内容区) ═══ -->
+        <TreeView
+            x:Name="DirTree"
+            Grid.Row="0"
+            Grid.RowSpan="2"
+            Grid.Column="0"
+            Width="200"
+            SelectionMode="Single"
+            Visibility="Collapsed"
+            Expanding="DirTree_Expanding"
+            ItemInvoked="DirTree_ItemInvoked"
+            ItemTemplate="{StaticResource TreeDirTemplate}" />
+            <!-- 树与列表之间的 1px 竖分隔线 -->
+            <Border
+                x:Name="TreeSeparator"
+                Grid.Row="0"
+                Grid.RowSpan="2"
+                Grid.Column="1"
+                Width="1"
+                Background="{ThemeResource SeparatorLineBrush}"
+                Visibility="Collapsed" />
+            <!-- 树宽拖手: 跨在分隔线上的 13px 透明命中区 (hover 光标由 SplitterThumb 自带), 拖动调整树宽 -->
+            <local:SplitterThumb
+                x:Name="TreeSplitter"
+                Grid.Row="0"
+                Grid.RowSpan="2"
+                Grid.Column="1"
+                Width="13"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Stretch"
+                IsTabStop="False"
+                Orientation="Vertical"
+                Background="Transparent"
+                Visibility="Collapsed">
+                <local:SplitterThumb.Template>
+                    <ControlTemplate TargetType="local:SplitterThumb">
+                        <Border Background="{TemplateBinding Background}" />
+                    </ControlTemplate>
+                </local:SplitterThumb.Template>
+            </local:SplitterThumb>
+            <!--
+                文件列表宿主: 透明背景使空白区参与命中测试 (框选指针事件挂此层,
+                列表条目上的按下由 ListView 常规选择处理)。
+            -->
+            <Grid
+                x:Name="FileListHost"
+                Grid.Row="1"
+                Grid.Column="2"
+                AllowDrop="True"
+                Background="Transparent"
+                DragLeave="FileListHost_DragLeave"
+                DragOver="FileListHost_DragOver"
+                Drop="FileListHost_Drop">
+                <ListView
+                    x:Name="FileList"
+                    CanDragItems="True"
+                    DoubleTapped="FileList_DoubleTapped"
+                    DragItemsCompleted="FileList_DragItemsCompleted"
+                    DragItemsStarting="FileList_DragItemsStarting"
+                    ItemTemplate="{StaticResource FileItemTemplate}"
+                    RightTapped="FileList_RightTapped"
+                    SelectionChanged="FileList_SelectionChanged"
+                    SelectionMode="Extended">
+                    <!-- 条目容器零内边距 + 内容铺满: 使条目列布局与列头行同构同宽 (竖线对齐前提) -->
+                    <ListView.ItemContainerStyle>
+                        <Style BasedOn="{StaticResource DefaultListViewItemStyle}" TargetType="ListViewItem">
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="MinHeight" Value="0" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                </ListView>
+                <!-- 框选叠层: 只显示选择矩形, 命中测试关闭完全穿透 -->
+                <Canvas IsHitTestVisible="False">
+                    <Border
+                        x:Name="RubberBand"
+                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="2"
+                        Opacity="0.35"
+                        Visibility="Collapsed" />
+                </Canvas>
+                <!-- 拖拽传输放置提示: 跨窗格拖动悬停本侧时高亮列表区 (命中关闭穿透) -->
+                <Border
+                    x:Name="DropHintFill"
+                    Background="{ThemeResource AccentFillColorDefaultBrush}"
+                    IsHitTestVisible="False"
+                    Opacity="0.08"
+                    Visibility="Collapsed" />
+                <Border
+                    x:Name="DropHintBorder"
+                    BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                    BorderThickness="2"
+                    CornerRadius="2"
+                    IsHitTestVisible="False"
+                    Visibility="Collapsed" />
+            </Grid>
+
+            <!--
+                初始空状态引导 (右窗口): 不透明底覆盖整个内容区, 引导先选择内容。
+                空态时上方 4 行整体隐藏, 只留引导页。点击"选择主机"按钮打开模态选择器;
+                取消则保留引导, 真正连接/选本地后由代码收起。
+            -->
+            <Border
+                x:Name="EmptyStatePanel"
+                Grid.RowSpan="2"
+                Grid.ColumnSpan="3"
+                Background="{ThemeResource FolderAreaBrush}"
+                Visibility="Collapsed">
+                <!-- 引导内容: 垂直位置由代码后置按容器高度 40% 精确定位 (EmptyContent Margin) -->
+                <Border.Resources>
+                    <ResourceDictionary>
+                        <ResourceDictionary.ThemeDictionaries>
+                            <!-- 亮主题: 图标块背景加深一档 (系统 Secondary 太浅贴底);
+                                 暗主题必须显式回写暗色卡 (缺 key 时 ThemeDictionaries
+                                 会回退到 Light 值, 导致暗主题被带亮) -->
+                            <ResourceDictionary x:Key="Light">
+                                <SolidColorBrush x:Key="CardBackgroundFillColorSecondaryBrush" Color="#E0E0E0" />
+                            </ResourceDictionary>
+                            <ResourceDictionary x:Key="Dark">
+                                <SolidColorBrush x:Key="CardBackgroundFillColorSecondaryBrush" Color="#2C3038" />
+                            </ResourceDictionary>
+                        </ResourceDictionary.ThemeDictionaries>
+                    </ResourceDictionary>
+                </Border.Resources>
+                <StackPanel
+                    x:Name="EmptyContent"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Spacing="6">
+                    <!-- 图标块: 56x56 -->
+                    <Border
+                        Width="56"
+                        Height="56"
+                        HorizontalAlignment="Center"
+                        Margin="0,0,0,10"
+                        Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                        CornerRadius="11">
+                        <FontIcon
+                            FontSize="23"
+                            Foreground="{ThemeResource AccentFillColorDefaultBrush}"
+                            Glyph="&#xEDA2;" />
+                    </Border>
+                    <TextBlock
+                        x:Name="EmptyStateTitle"
+                        HorizontalAlignment="Center"
+                        FontSize="18"
+                        FontWeight="SemiBold" />
+                    <TextBlock
+                        x:Name="EmptyStateMessage"
+                        HorizontalAlignment="Center"
+                        FontSize="12"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <Button
+                        x:Name="EmptyStateBtn"
+                        Margin="0,16,0,0"
+                        Padding="24,8"
+                        HorizontalAlignment="Center"
+                        Background="#0078D4"
+                        Foreground="White"
+                        BorderThickness="0"
+                        Click="EmptyStateBtn_Click">
+                        <Button.Resources>
+                            <!-- 与 Header 主机按钮同款蓝色系: 悬停变暗 #106EBE, 按下更深 #005A9E -->
+                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
+                            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                        </Button.Resources>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon FontSize="14" Glyph="&#xE710;" />
+                            <TextBlock x:Name="EmptyStateBtnText" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- 列分隔竖线覆盖层: 跨列头行+列表区贯穿到底, 不随条目 (位置随列宽/显隐动态更新);
+                 全宽挂载 (ColumnSpan=3), 线 x 以 ContentRoot 坐标计算 -->
+            <Grid Grid.RowSpan="2" Grid.ColumnSpan="3" IsHitTestVisible="False">
+                <Rectangle
+                    x:Name="SizeLine"
+                    Width="1"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Stretch"
+                    Fill="{ThemeResource SeparatorLineBrush}"
+                    Visibility="Collapsed" />
+                <Rectangle
+                    x:Name="TypeLine"
+                    Width="1"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Stretch"
+                    Fill="{ThemeResource SeparatorLineBrush}"
+                    Visibility="Collapsed" />
+                <Rectangle
+                    x:Name="ModifiedLine"
+                    Width="1"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Stretch"
+                    Fill="{ThemeResource SeparatorLineBrush}"
+                    Visibility="Collapsed" />
+                <Rectangle
+                    x:Name="PermissionLine"
+                    Width="1"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Stretch"
+                    Fill="{ThemeResource SeparatorLineBrush}"
+                    Visibility="Collapsed" />
+            </Grid>
+        </Grid>
+
+        <!-- ═══ 第 5 行: 状态统计栏 ═══ -->
+        <Border
+            x:Name="StatusBar"
+            Grid.Row="3"
+            Padding="8,4"
+            Background="{ThemeResource SubtleFillColorTransparentBrush}"
+            BorderBrush="{ThemeResource RowSeparatorLineBrush}"
+            BorderThickness="0,1,0,0">
+            <TextBlock
+                x:Name="StatusText"
+                FontSize="12"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                TextTrimming="CharacterEllipsis" />
+        </Border>
+
+        <!-- 权限编辑弹窗 (远程条目右键触发): 遮罩+卡片覆盖整个窗格 5 行, 默认隐藏 -->
+        <local:PermissionDialog
+            x:Name="PermissionOverlay"
+            Grid.Row="0"
+            Grid.RowSpan="4"
+            ApplyRequested="PermissionOverlay_ApplyRequested"
+            Visibility="Collapsed" />
+
+        <!-- 校验码弹窗 (远程文件右键触发): 同构样式, 默认隐藏 -->
+        <local:ChecksumDialog
+            x:Name="ChecksumOverlay"
+            Grid.Row="0"
+            Grid.RowSpan="4"
+            Visibility="Collapsed" />
+
+        <!-- 删除确认弹窗 (删除菜单触发): 同构样式, 默认隐藏 -->
+        <local:DeleteConfirmDialog
+            x:Name="DeleteConfirmOverlay"
+            Grid.Row="0"
+            Grid.RowSpan="4"
+            Visibility="Collapsed" />
+
+        <!-- 重命名输入弹窗 (重命名菜单触发): 同构样式, 默认隐藏 -->
+        <local:RenameInputDialog
+            x:Name="RenameInputOverlay"
+            Grid.Row="0"
+            Grid.RowSpan="4"
+            Visibility="Collapsed" />
+    </Grid>
+</UserControl>

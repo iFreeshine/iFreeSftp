@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    IdeTabStrip: IDE 编辑器式多标签条复合控件, 供文件夹窗格等场景复用。
+    封装内容: 平贴式标签项模板 (选中蓝下划线、关闭列定宽 28px、subtle 色
+    系背景层次), 标签条底部贯穿 1px 基线 (与默认模板底线同行同色合成),
+    条右端固定新建 (+) 按钮。
+    使用方式: AddTab(标题, 图标字形, 内容) 新建标签页; 订阅 NewTabRequested
+    (点击 +) 与 TabCloseRequested (内部已移除标签, 使用方在此清理内容资源);
+    SetTabTitle / SetTabIcon 更新标签头。
+-->
+<UserControl
+    x:Class="iFreeSftp.Views.IdeTabStrip"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <!-- 标签条配色: 未选中/悬停用 WinUI 标准 subtle 色系
+                 (Tertiary=未选中过渡档, Secondary=悬停档), 选中色自定义。
+                 亮主题重定义 TabViewBorderBrush (TabView 模板底线与自绘基线
+                 同用此色) 使标签条底线变淡贴合容器底色; 暗主题不重定义,
+                 保持系统默认。 -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="TabActiveBrush" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="TabViewBorderBrush" Color="#E3E3E3" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="TabActiveBrush" Color="#253140" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+
+            <!-- TabView 样式：IDE 式标签 (按内容宽度), 浅色与暗色自适应 -->
+            <Style x:Key="PaneTabStyle" TargetType="TabView">
+                <Setter Property="TabWidthMode" Value="SizeToContent" />
+                <Setter Property="CanReorderTabs" Value="True" />
+                <Setter Property="CanDragTabs" Value="True" />
+                <!-- 默认 TabViewHeaderPadding=0,8,0,0 会让标签条整体下移 8px,
+                     导致外置 + 按钮与标签错位, 归零后标签条贴容器顶 -->
+                <Setter Property="Padding" Value="0" />
+                <!-- 内置 + 隐藏, 用固定在标签条最右端的外置按钮代替 -->
+                <Setter Property="IsAddTabButtonVisible" Value="False" />
+            </Style>
+
+            <!--
+                IDE 编辑器式标签项模板: 标签平贴在标签条上 (无圆角、无外框、无
+                分隔线); 选中时背景提亮、文字转主色, 底部贯穿整宽的蓝色下划线由
+                标签头内的指示条绘制; 关闭按钮仅在选中或悬停时显示 (与 VS Code
+                一致)。注意模板中的 ContentPresenter 必须绑定 Header (标签头),
+                绑定 Content 会把整个页面塞进标签条。
+            -->
+            <Style TargetType="TabViewItem">
+                <Setter Property="MinHeight" Value="36" />
+                <!-- 右侧 1px 间隙: 透出容器底色, 相邻标签间自动形成竖向分隔线;
+                     上下 1px: 标签与标签条上下边缘各留 1px 呼吸空间 -->
+                <Setter Property="Margin" Value="0,1,1,1" />
+                <Setter Property="CornerRadius" Value="0" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="TabViewItem">
+                            <!-- Normal 态背景: 标准 subtle Tertiary (底色与 hover 之间的
+                                 过渡档, 暗=白4% 浅一点 / 亮=黑2.3% 深一点); 悬停切
+                                 Secondary, 选中切 TabActiveBrush -->
+                            <Grid x:Name="LayoutRoot" Background="{ThemeResource SubtleFillColorTertiaryBrush}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <!-- 关闭列固定 28px (18 按钮 + 左6右4边距): 未悬停时
+                                         按钮隐藏但空间保留, 标签宽度不随 hover/选中变化 -->
+                                    <ColumnDefinition Width="28" />
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter
+                                    x:Name="HeaderPresenter"
+                                    Content="{TemplateBinding Header}"
+                                    ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                    Foreground="{ThemeResource TabViewItemHeaderForeground}" />
+                                <!-- 关闭按钮 Margin: 左=与文字的间距, 右=与标签右缘的间距 -->
+                                <Button
+                                    x:Name="CloseButton"
+                                    Grid.Column="1"
+                                    Width="18"
+                                    Height="18"
+                                    Margin="6,0,4,0"
+                                    Padding="0"
+                                    VerticalAlignment="Center"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    CornerRadius="3"
+                                    FontFamily="Segoe Fluent Icons"
+                                    Content="&#xE711;"
+                                    Visibility="Collapsed" />
+                                <!-- 选中下划线: 模板层全宽矩形, 跨标题列+关闭按钮列,
+                                     颜色由代码在选中态变化时切换; 底部负边距向下
+                                     出血 1px 至条底边缘行, 盖住基线的选中段 (蓝色
+                                     下划线替代灰色基线, IDE 式) -->
+                                <Rectangle
+                                    x:Name="SelectionIndicator"
+                                    Grid.ColumnSpan="2"
+                                    Height="2"
+                                    Margin="0,0,0,-1"
+                                    VerticalAlignment="Bottom"
+                                    Fill="Transparent" />
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal" />
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="LayoutRoot" Storyboard.TargetProperty="Background">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="HeaderPresenter" Storyboard.TargetProperty="Foreground">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TabViewItemHeaderForegroundPointerOver}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="CloseButton" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="LayoutRoot" Storyboard.TargetProperty="Background">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="HeaderPresenter" Storyboard.TargetProperty="Foreground">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TabViewItemHeaderForegroundPressed}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="CloseButton" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Selected">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="LayoutRoot" Storyboard.TargetProperty="Background">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TabActiveBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="HeaderPresenter" Storyboard.TargetProperty="Foreground">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TabViewItemHeaderForegroundSelected}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="CloseButton" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <!--
+        标签条: IDE 平贴式标签 + 右上角固定的新建 (+) 按钮 (始终贴标签条
+        最右, 不随标签数量移动)。TabView 背景透明, 避免直角底层溢出包裹
+        Border 的圆角。
+    -->
+    <Grid>
+        <!-- 标签条基线: 默认模板的底线只画在标签区域以外 (左边缘 2px 与最后
+             一个标签右侧), 标签下方没有线, 故自绘补齐。与模板线同行同色
+             (Margin.Top = 上边距1 + 标签高36 = 条底边缘行 37..38), 合成贯穿
+             全宽的 1px 基线; 置于 TabView 之下 (z 序), 选中标签的蓝色下划线
+             向下出血 1px 盖住基线选中段。调整 MinHeight 或上下边距时需同步。 -->
+        <Rectangle
+            x:Name="TabStripBaseline"
+            Height="1"
+            VerticalAlignment="Top"
+            Margin="0,37,0,0"
+            Fill="{ThemeResource TabViewBorderBrush}" />
+        <TabView
+            x:Name="TabsPart"
+            Background="Transparent"
+            Style="{StaticResource PaneTabStyle}"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Stretch"
+            AddTabButtonClick="Tabs_AddTabButtonClick"
+            TabCloseRequested="Tabs_TabCloseRequested"
+            TabTearOutRequested="Tabs_TabTearOutRequested" />
+        <!-- 新建标签 (+) 按钮: 固定在标签条 (行高 38px = 36 标签 + 上下 1px) 最右端,
+             条内垂直居中 (Top + 上边距 5px = 1 + (36-28)/2), hover 背景覆盖整个按钮。
+             AppBarButton 模板 hover 区域不满且不易居中, 故改用普通 Button。 -->
+        <Button
+            x:Name="NewTabBtn"
+            Width="28"
+            Height="28"
+            Margin="0,5,4,0"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            AutomationProperties.Name="NewTabButton"
+            Background="Transparent"
+            BorderThickness="0"
+            CornerRadius="3"
+            Padding="0"
+            Click="NewTabBtn_Click">
+            <Button.Resources>
+                <ResourceDictionary>
+                    <ResourceDictionary.ThemeDictionaries>
+                        <!-- 亮主题 hover 浅灰; 暗主题显式回写 subtle 等效暗色
+                             (ThemeDictionaries 缺当前主题 key 会回退 Light 值) -->
+                        <ResourceDictionary x:Key="Light">
+                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#E3E3E3" />
+                        </ResourceDictionary>
+                        <ResourceDictionary x:Key="Dark">
+                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#2B3138" />
+                        </ResourceDictionary>
+                    </ResourceDictionary.ThemeDictionaries>
+                </ResourceDictionary>
+            </Button.Resources>
+            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE710;" FontSize="14" />
+        </Button>
+    </Grid>
+</UserControl>

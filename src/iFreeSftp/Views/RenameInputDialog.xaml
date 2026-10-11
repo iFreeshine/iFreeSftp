@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    重命名输入弹窗 (模态): 遮罩 + 居中卡片, 与 DeleteConfirmDialog/PermissionDialog/
+    ChecksumDialog 同构 (README 3.9 弹框统一原则): 标题 14 SemiBold / 关闭钮图标 10 /
+    卡片 320 宽 / ThemeShadow。输入新名实时校验 (非法字符/重名/与原名相同), 校验通过
+    且有改动时确认钮可用, 回车即确认; ESC/遮罩/关闭钮/取消均为放弃。
+    本地与远程共用: isRemote = 远程条目时不做 Windows 非法字符限制。
+-->
+<UserControl
+    x:Class="iFreeSftp.Views.RenameInputDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid x:Name="PanelRoot">
+        <!-- 遮罩: 点击空白取消 (与 HostPanel/HostPickerPanel 同款半透明黑) -->
+        <Border x:Name="Mask" Background="#80000000" Tapped="Mask_Tapped" />
+
+        <!-- 卡片: 不透明底 (DialogTitleBarBrush, 外壳与标题栏同色一体) + 标题栏拖拽 -->
+        <Border
+            x:Name="Card"
+            Width="320"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Background="{ThemeResource DialogTitleBarBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="DragTransform" />
+            </Border.RenderTransform>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- 标题栏: 小弹框口径 (标题 14 / 关闭图标 10) -->
+                <Grid
+                    Grid.Row="0"
+                    Padding="14,5,5,2"
+                    ColumnSpacing="8"
+                    Background="{ThemeResource DialogTitleBarBrush}"
+                    PointerMoved="TitleBar_PointerMoved"
+                    PointerPressed="TitleBar_PointerPressed"
+                    PointerReleased="TitleBar_PointerReleased">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        x:Name="TitleText"
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        FontSize="14"
+                        FontWeight="SemiBold" />
+                    <Button
+                        Grid.Column="1"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Click="CloseBtn_Click">
+                        <Button.Resources>
+                            <ThemeResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
+                            <ThemeResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
+                        </Button.Resources>
+                        <FontIcon FontSize="10" Glyph="&#xE8BB;" />
+                    </Button>
+                </Grid>
+
+                <!-- 内容面板: 圆弧容器 -->
+                <Border
+                    Grid.Row="1"
+                    Margin="5,0,5,5"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    CornerRadius="6">
+                    <StackPanel Padding="16,12" Spacing="14">
+
+                        <!-- 新名输入: 打开时选中主名 (资源管理器习惯), 直接键入即覆盖 -->
+                        <TextBox
+                            x:Name="NameBox"
+                            FontSize="14"
+                            KeyDown="NameBox_KeyDown"
+                            TextChanged="NameBox_TextChanged" />
+
+                        <!-- 操作按钮: 重命名 (确认) / 取消 -->
+                        <StackPanel
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal"
+                            Spacing="8">
+                            <Button x:Name="ConfirmBtn" Click="ConfirmBtn_Click" />
+                            <Button x:Name="CancelBtn" Click="CancelBtn_Click" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

@@ -1,0 +1,212 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>iFreeSftp</RootNamespace>
+    <!-- 嵌入 Win32 图标资源: 资源管理器中 exe 显示图标, 任务栏默认窗口图标也来自它 -->
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x86;x64;ARM64</Platforms>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant())</RuntimeIdentifier>
+    <PublishProfile Condition="Exists('Properties\PublishProfiles\win-$(Platform).pubxml')">win-$(Platform).pubxml</PublishProfile>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <!-- MSIX 工具链按配置开关:
+         Debug 关闭 -> 冷构建时打包目标会误将 bin 与 obj 中同一程序集计入载荷 (APPX1101);
+         Release 保留 -> publish 生成 resources.pri 依赖该工具链, 关闭会导致 PRI 为空文件,
+         发布版 XAML 资源加载失败 (ms-appx:///Header.xaml) -->
+    <EnableMsixTooling Condition="'$(Configuration)' == 'Release'">true</EnableMsixTooling>
+    <EnableMsixTooling Condition="'$(Configuration)' != 'Release'">false</EnableMsixTooling>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- 构建产物也自包含: SDK 安装在用户目录而非系统级, 框架依赖模式会弹"安装 .NET Desktop Runtime"提示 -->
+    <SelfContained Condition="'$(SelfContained)' == ''">true</SelfContained>
+    <!-- 语义版本 (设置→关于 卡片显示, 官网/发布物共用): 从 0.8.0 起 -->
+    <Version>0.8.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\SplashScreen.scale-200.png" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\LockScreenLogo.scale-200.png" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Square150x150Logo.scale-200.png" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Square44x44Logo.scale-200.png" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Square44x44Logo.targetsize-24_altform-unplated.png" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Square44x44Logo.targetsize-48_altform-lightunplated.png" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\StoreLogo.png" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\AppIcon.ico" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\TitleBarLogo.png" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\Wide310x150Logo.scale-200.png" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <!--
+    WPF 编辑器（预览）：WinUI 3 窗口无法直接内嵌 WPF 内容, 编辑器做成独立 WPF 窗口。
+    类库自带 UseWPF; 主项目用 FrameworkReference 把 WindowsDesktop 运行时纳入
+    self-contained 载荷, 运行机无需安装 Windows Desktop Runtime。
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+    <ProjectReference Include="..\iFreeSftp.WpfEditor\iFreeSftp.WpfEditor.csproj" />
+  </ItemGroup>
+
+  <!--
+    核心模块开关 (开源闭源分层, 见技术文档):
+    CoreImplementation != official (默认/社区构建) → 引用 Stub 降级实现, 仓库可完整编译;
+    CoreImplementation == official (官方构建)      → 引用私有 iFreeSftp.Core.dll
+      (约定放仓库根 core\ 目录, 构建前由私有仓库 CI 推送/人工拷入; 发布时经
+       ExcludeFromSingleFile 保持独立 DLL 在单文件包外, 随发布物分发)
+    闭源模块: 传输核心(跨主机中转/展开调度) / 注册验签激活 / 未来 Pro 功能。
+  -->
+  <PropertyGroup>
+    <CoreDllDir Condition="'$(CoreDllDir)' == ''">$(MSBuildProjectDirectory)\..\..\core\</CoreDllDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\iFreeSftp.Core.Abstractions\iFreeSftp.Core.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(CoreImplementation)' != 'official'">
+    <ProjectReference Include="..\iFreeSftp.Core.Stub\iFreeSftp.Core.Stub.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(CoreImplementation)' == 'official'">
+    <Reference Include="iFreeSftp.Core">
+      <HintPath>$(CoreDllDir)iFreeSftp.Core.dll</HintPath>
+      <!-- 独立分发: 单文件包外散件 (官方发布物 = iFreeSftp.exe + iFreeSftp.Core.dll + wpf\);
+           不加此元数据 Core.dll 会被捆进 exe (IncludeAllContentForSelfExtract 模式实测) -->
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    Microsoft.Windows.SDK.BuildTools.WinApp adds first-class support for
+    `dotnet run` on packaged WinUI apps: it hooks the .NET CLI Run target to
+    register a debug identity via the winapp CLI and launch the app with
+    package identity (AUMID).
+    Set <EnableWinAppRunSupport>false</EnableWinAppRunSupport> in a
+    <PropertyGroup> above to opt out.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.6.1" />
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <PackageReference Include="Vanara.PInvoke.Shell32" Version="5.0.7" />
+    <!-- ProtectedData (RegistrationService DPAPI): .NET 10 目标包已内置, 无需显式引用 (NU1510) -->
+  </ItemGroup>
+
+  <!-- Publish Properties -->
+  <PropertyGroup>
+    <!-- 发布产物统一输出到仓库根 release\<RID>\ (多 RID 天然分子目录);
+         卫星语言/AI 裁剪两个 target 均基于 $(PublishDir), 自动跟随无需调整 -->
+    <PublishDir>$(MSBuildProjectDirectory)\..\..\release\$(RuntimeIdentifier)\</PublishDir>
+    <!-- 托管程序集打进单 exe 并压缩 (体积 -40% 量级, 首启有一次性解压开销)。
+         WinAppSDK targets 会默认 IncludeAllContentForSelfExtract=true: native 依赖与
+         XAML 资源/PRI 也随 Content 项打包, 运行首启解压到 %TEMP%\.net\ 后按路径加载。
+         仅 Release 生效: Debug 开着会撞 SingleFile.targets 的 EnableMsixTooling 强制检查
+         (Debug 下 EnableMsixTooling=false 是为规避 APPX1101) -->
+    <PublishSingleFile Condition="'$(Configuration)' == 'Release'">True</PublishSingleFile>
+    <EnableCompressionInSingleFile Condition="'$(Configuration)' == 'Release'">True</EnableCompressionInSingleFile>
+    <!-- 单文件模式 WinAppSDK 强制要求: 显式声明非打包应用 (本应用本来就是裸 exe) -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- 单文件模式要求入口前设 MICROSOFT_WINDOWSAPPRUNTIME_BASE_DIRECTORY 环境变量:
+         生成的模块初始化器会自动设为 AppContext.BaseDirectory, 保证 DLL SxS 重定向
+         在首行代码前就绪 (IncludeAllContentForSelfExtract 由 WinAppSDK targets 默认置 true) -->
+    <WindowsAppSdkUndockedRegFreeWinRTInitialize>True</WindowsAppSdkUndockedRegFreeWinRTInitialize>
+    <!-- WinUI XamlTypeInfo 与裁剪不兼容, 裁剪会导致运行时崩溃, 必须关闭 -->
+    <PublishTrimmed>False</PublishTrimmed>
+    <!-- R2R 预编译在自包含发布时导致 ICustomQueryInterface 类型加载失败, 禁用 -->
+    <PublishReadyToRun>False</PublishReadyToRun>
+    <!-- 自包含应用无需 DeploymentManager 自动初始化, 且其模块初始化器会崩溃 -->
+    <WindowsAppSdkDeploymentManagerInitialize>False</WindowsAppSdkDeploymentManagerInitialize>
+    <!-- 将 Windows App SDK 运行时打包进输出目录, 发布版免安装、免注册即可运行 -->
+    <WindowsAppSDKSelfContained>True</WindowsAppSDKSelfContained>
+    <!-- 限制 .NET 卫星资源语言, 避免输出目录出现其他文化的 .resources.dll -->
+    <SatelliteResourceLanguages>en-US;zh-CN</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!--
+    发布后仅保留中英文语言目录 (en-US / zh-CN)。
+    删除对象限定为"文化名格式"的目录 (如 af-ZA / ja-JP), 只含 WinUI XAML 框架的 .mui
+    本地化字符串, 缺失时 Windows MUI 自动回退到 en-us, 删除安全; 应用自身的 resw 已
+    编译进 resources.pri, 不受影响。Assets / Microsoft.UI.Xaml 等非语言目录必须保留。
+  -->
+  <Target Name="TrimSatelliteLanguages" AfterTargets="Publish">
+    <ItemGroup>
+      <_PublishDirs Include="$([System.IO.Directory]::GetDirectories('$(PublishDir)'))" />
+      <_LangDirsRemove Include="@(_PublishDirs)" Condition="'%(_PublishDirs.Filename)' != 'en-US' and&#xD;&#xA;                                  '%(_PublishDirs.Filename)' != 'zh-CN' and&#xD;&#xA;                                  $([System.Text.RegularExpressions.Regex]::IsMatch(%(_PublishDirs.Filename), `^[A-Za-z]{2,3}(-[A-Za-z0-9]+)*$`))" />
+    </ItemGroup>
+    <RemoveDir Directories="@(_LangDirsRemove)" />
+    <Message Importance="high" Text="Trimmed satellite language dirs, kept en-US / zh-CN only" />
+  </Target>
+
+  <!--
+    导出语言词典: 发布时把 Strings\<lang>\Resources.resw 转写为 $(PublishDir)locales\<lang>.json
+    (UTF-8 无 BOM、键排序)。外置词典运行时优先于内置 pri 资源——用户可自行编辑译文,
+    或复制任一 json 改名翻译后放进应用旁 locales\ 目录, 重启即在设置页语言下拉出现。
+  -->
+  <Target Name="ExportLocales" AfterTargets="Publish">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\tools\export-locales.ps1&quot; -ProjectDir &quot;$(MSBuildProjectDirectory)&quot; -OutputDir &quot;$(PublishDir)locales&quot;" />
+  </Target>
+
+  <!--
+    发布后删除 WindowsAppSDK 自带的 AI 推理组件 (约 42 MB): 本应用不使用任何
+    Windows AI / 机器学习 API, 该栈仅按需动态加载, 缺失不影响非 AI 功能
+    (onnxruntime/DirectML 是 Windows AI 推理引擎, Windows.AI.* 是投影与元数据)。
+    每次升 WindowsAppSDK 版本后须冒烟验证启动与基本功能。
+  -->
+  <Target Name="TrimUnusedAiRuntime" AfterTargets="Publish">
+    <ItemGroup>
+      <_AiFilesRemove Include="$(PublishDir)onnxruntime.dll;$(PublishDir)DirectML.dll;$(PublishDir)Microsoft.ML.OnnxRuntime.dll" />
+      <_AiFilesRemove Include="$(PublishDir)Microsoft.Windows.AI.*;$(PublishDir)Microsoft.Windows.Internal.AI.*" />
+    </ItemGroup>
+    <Delete Files="@(_AiFilesRemove)" />
+    <Message Importance="high" Text="Trimmed unused AI runtime (onnxruntime/DirectML/Windows.AI projections)" />
+  </Target>
+
+  <!--
+    WPF/WinForms/编辑器组件发布形态 (WpfPublishMode):
+    dir (默认): 集群拆出主 exe, 归入发布目录 wpf\ 子文件夹 (Services/WpfBundle 挂
+      托管+native 解析)——发布目录 = iFreeSftp.exe + wpf\, 分发即打包该文件夹;
+      首启零解压 (WinAppSDK 内容的 %TEMP% 解压是单文件模式既有行为, 与此无关)
+    bundle ("一个文件"): 全部内嵌主 exe (压缩生效, 主 exe 多 ~25MB, WinAppSDK 内容
+      首启仍解压到 %TEMP%)
+  -->
+  <PropertyGroup>
+    <WpfPublishMode Condition="'$(WpfPublishMode)' == ''">dir</WpfPublishMode>
+    <!-- Release pdb 内嵌 (embedded): 发布目录不再出现 .pdb 散件 -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">embedded</DebugType>
+    <!-- WPF 集群成员 (对文件名主体匹配, 不含扩展名) = WindowsDesktop 运行时包全集:
+         WPF 托管 (含主题 Aero*/Fluent/... 与 -System* 兼容门面) + WinForms + VB +
+         WPF native (wpfgfx/PresentationNative/D3DCompiler_47/PenImc/vcruntime140_cor3/
+         DirectWriteForwarder) + 编辑器两个程序集。WPF 升级引入新依赖 dll 时,
+         按打开编辑器报 FileNotFoundException 的名字补进正则 -->
+    <WpfClusterFileRegex>(?i)^(PresentationCore|PresentationFramework([.-]\w+)*|PresentationNative_cor3|PresentationUI|WindowsBase|System\.Xaml|System\.Windows\.Forms(\.Primitives|\.Design(\.Editors)?)?|System\.Windows\.Controls\.Ribbon|System\.Windows\.Input\.Manipulations|System\.Windows\.Presentation|System\.Windows\.Primitives|System\.Drawing\.Common|WindowsFormsIntegration|Microsoft\.VisualBasic(\.\w+)*|UIAutomation\w*|Accessibility|DirectWriteForwarder|wpfgfx_cor3|D3DCompiler_\w+_cor3|PenImc_cor3|vcruntime140_cor3|iFreeSftp\.WpfEditor|ICSharpCode\.AvalonEdit)$</WpfClusterFileRegex>
+  </PropertyGroup>
+  <!-- 注意: SDK 目标名是复数 Files; 挂错名会被 MSBuild 静默忽略 (无任何告警) -->
+  <Target Name="KeepWpfOutOfBundle" AfterTargets="ComputeResolvedFilesToPublishList" Condition="'$(WpfPublishMode)' == 'dir'">
+    <ItemGroup>
+      <!-- 先收集集群项: Include 引用项列表 @( ) 时 Condition 里的 %(Filename) 才参与
+           批处理; 直接用通配符 Include 上的 Condition 不批处理, %(Filename) 求值为空 -->
+      <_WpfClusterFiles Include="@(ResolvedFileToPublish)" Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(Filename)', '$(WpfClusterFileRegex)'))" />
+      <ResolvedFileToPublish Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(ResolvedFileToPublish.Filename)', '$(WpfClusterFileRegex)'))" ExcludeFromSingleFile="true" />
+    </ItemGroup>
+    <Message Importance="high" Text="WPF/Forms/Editor assemblies (@(_WpfClusterFiles->Count()) files) kept out of the single-file bundle" />
+  </Target>
+
+  <!--
+    dir 模式收尾: 发布后把拆出的 WPF 集群归入发布目录 wpf\ 子文件夹。
+    运行时 Services/WpfBundle.Initialize() 挂载该目录的托管/native 解析路径。
+  -->
+  <Target Name="CollectWpfIntoSubfolder" AfterTargets="Publish" Condition="'$(WpfPublishMode)' == 'dir'">
+    <ItemGroup>
+      <!-- 经集群项元数据批处理拼出发布目录内实际路径 (集群均平铺在发布根目录) -->
+      <_WpfBundleFiles Include="$(PublishDir)%(_WpfClusterFiles.Filename)%(_WpfClusterFiles.Extension)" />
+    </ItemGroup>
+    <MakeDir Directories="$(PublishDir)wpf" Condition="'@(_WpfClusterFiles)' != ''" />
+    <Move SourceFiles="@(_WpfBundleFiles)" DestinationFolder="$(PublishDir)wpf" Condition="'@(_WpfClusterFiles)' != ''" />
+    <Warning Condition="'@(_WpfClusterFiles)' == ''" Text="WPF cluster empty - wpf\ not populated (WpfClusterFileRegex out of sync?)" />
+    <Message Condition="'@(_WpfClusterFiles)' != ''" Importance="high" Text="WPF cluster (@(_WpfClusterFiles->Count()) files) collected into wpf\ subfolder" />
+  </Target>
+</Project>

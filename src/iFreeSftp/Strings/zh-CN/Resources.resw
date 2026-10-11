@@ -1,0 +1,926 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <!--
+    WinUI 3 字符串资源 (.resw) - 简体中文。
+    运行时由 LocalizationService 通过 ResourceLoader 加载。
+  -->
+  <data name="AppTitle" xml:space="preserve">
+    <value>iFreeSftp</value>
+  </data>
+  <data name="ThemeToggleLabel" xml:space="preserve">
+    <value>切换主题</value>
+  </data>
+  <data name="SettingsLabel" xml:space="preserve">
+    <value>设置</value>
+  </data>
+  <data name="ThemeLight" xml:space="preserve">
+    <value>浅色</value>
+  </data>
+  <data name="ThemeDark" xml:space="preserve">
+    <value>深色</value>
+  </data>
+  <data name="LanguageLabel" xml:space="preserve">
+    <value>语言</value>
+  </data>
+  <data name="LangEnglish" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="LangChinese" xml:space="preserve">
+    <value>中文</value>
+  </data>
+  <data name="PaneLeft" xml:space="preserve">
+    <value>本地站点</value>
+  </data>
+  <data name="PaneRight" xml:space="preserve">
+    <value>远程站点</value>
+  </data>
+  <data name="NewTab" xml:space="preserve">
+    <value>新建标签</value>
+  </data>
+  <data name="CloseTab" xml:space="preserve">
+    <value>关闭标签</value>
+  </data>
+  <data name="TabLocal" xml:space="preserve">
+    <value>本地</value>
+  </data>
+  <data name="TabRemote" xml:space="preserve">
+    <value>远程</value>
+  </data>
+  <data name="Connect" xml:space="preserve">
+    <value>连接</value>
+  </data>
+  <data name="Disconnect" xml:space="preserve">
+    <value>断开</value>
+  </data>
+  <data name="LocalMode" xml:space="preserve">
+    <value>本地</value>
+  </data>
+  <data name="RemoteMode" xml:space="preserve">
+    <value>远程</value>
+  </data>
+  <data name="Host" xml:space="preserve">
+    <value>主机</value>
+  </data>
+  <data name="Port" xml:space="preserve">
+    <value>端口</value>
+  </data>
+  <data name="Username" xml:space="preserve">
+    <value>用户名</value>
+  </data>
+  <data name="Password" xml:space="preserve">
+    <value>密码</value>
+  </data>
+  <data name="Path" xml:space="preserve">
+    <value>路径</value>
+  </data>
+  <data name="ColName" xml:space="preserve">
+    <value>名称</value>
+  </data>
+  <data name="ColSize" xml:space="preserve">
+    <value>大小</value>
+  </data>
+  <data name="ColModified" xml:space="preserve">
+    <value>修改时间</value>
+  </data>
+  <data name="ColType" xml:space="preserve">
+    <value>类型</value>
+  </data>
+  <data name="ColPermissions" xml:space="preserve">
+    <value>权限</value>
+  </data>
+  <data name="KeepAlive" xml:space="preserve">
+    <value>keep-alive</value>
+  </data>
+  <data name="Transfer" xml:space="preserve">
+    <value>传输</value>
+  </data>
+  <data name="Upload" xml:space="preserve">
+    <value>上传</value>
+  </data>
+  <data name="Download" xml:space="preserve">
+    <value>下载</value>
+  </data>
+  <data name="Refresh" xml:space="preserve">
+    <value>刷新</value>
+  </data>
+  <data name="UpOneLevel" xml:space="preserve">
+    <value>上一级</value>
+  </data>
+  <data name="StatusDisconnected" xml:space="preserve">
+    <value>已断开</value>
+  </data>
+  <data name="FolderType" xml:space="preserve">
+    <value>文件夹</value>
+  </data>
+  <data name="FileType" xml:space="preserve">
+    <value>文件</value>
+  </data>
+  <data name="FolderTypeName" xml:space="preserve">
+    <value>文件文件夹</value>
+  </data>
+  <data name="ExtFileFormat" xml:space="preserve">
+    <value>{0} 文件</value>
+  </data>
+  <data name="SymlinkTypeName" xml:space="preserve">
+    <value>快捷方式</value>
+  </data>
+  <data name="ExecutableTypeName" xml:space="preserve">
+    <value>应用程序</value>
+  </data>
+  <data name="TextFileTypeName" xml:space="preserve">
+    <value>文本文档</value>
+  </data>
+  <data name="PdfFileTypeName" xml:space="preserve">
+    <value>PDF 文件</value>
+  </data>
+  <data name="ImageFileTypeName" xml:space="preserve">
+    <value>图片文件</value>
+  </data>
+  <data name="VideoFileTypeName" xml:space="preserve">
+    <value>视频文件</value>
+  </data>
+  <data name="AudioFileTypeName" xml:space="preserve">
+    <value>音频文件</value>
+  </data>
+  <data name="ArchiveFileTypeName" xml:space="preserve">
+    <value>压缩文件</value>
+  </data>
+  <data name="ScriptFileTypeName" xml:space="preserve">
+    <value>脚本文件</value>
+  </data>
+  <data name="SourceCodeFileTypeName" xml:space="preserve">
+    <value>源代码文件</value>
+  </data>
+  <data name="DocumentFileTypeName" xml:space="preserve">
+    <value>文档文件</value>
+  </data>
+  <data name="LibraryFileTypeName" xml:space="preserve">
+    <value>共享库</value>
+  </data>
+  <data name="StatusDirCount" xml:space="preserve">
+    <value>{0} 个目录</value>
+  </data>
+  <data name="StatusFileCount" xml:space="preserve">
+    <value>{0} 个文件</value>
+  </data>
+  <data name="StatusTotalBytes" xml:space="preserve">
+    <value>总计 {0} 字节</value>
+  </data>
+  <data name="MenuCopyToOpposite" xml:space="preserve">
+    <value>传输到另一侧</value>
+  </data>
+  <data name="DragDropCaption" xml:space="preserve">
+    <value>传输到 {0}</value>
+  </data>
+  <data name="TransferConflictTitle" xml:space="preserve">
+    <value>传输确认</value>
+  </data>
+  <data name="TransferConflictQuestion" xml:space="preserve">
+    <value>目标位置已存在同名条目：“{0}”。是否覆盖？</value>
+  </data>
+  <data name="TransferSource" xml:space="preserve">
+    <value>源</value>
+  </data>
+  <data name="TransferTarget" xml:space="preserve">
+    <value>目标</value>
+  </data>
+  <data name="TransferOverwrite" xml:space="preserve">
+    <value>覆盖</value>
+  </data>
+  <data name="TransferSkip" xml:space="preserve">
+    <value>跳过</value>
+  </data>
+  <data name="TransferApplyAll" xml:space="preserve">
+    <value>应用到本批所有冲突项</value>
+  </data>
+  <data name="StatusTransferring" xml:space="preserve">
+    <value>正在传输 {0}…</value>
+  </data>
+  <data name="StatusTransferDone" xml:space="preserve">
+    <value>已传输 {0} 项，跳过 {1} 项</value>
+  </data>
+  <data name="StatusTransferCancelled" xml:space="preserve">
+    <value>传输已取消</value>
+  </data>
+  <data name="StatusTransferDoneFailed" xml:space="preserve">
+    <value>已传输 {0} 项，跳过 {1} 项，失败 {2} 项</value>
+  </data>
+  <data name="StatusTransferBusy" xml:space="preserve">
+    <value>已有传输正在进行，请稍候</value>
+  </data>
+  <data name="MenuEdit" xml:space="preserve">
+    <value>编辑</value>
+  </data>
+  <data name="MenuOpen" xml:space="preserve">
+    <value>打开</value>
+  </data>
+  <data name="MenuNewFolder" xml:space="preserve">
+    <value>新建文件夹</value>
+  </data>
+  <data name="MenuNewFile" xml:space="preserve">
+    <value>新建文件</value>
+  </data>
+  <data name="MenuRename" xml:space="preserve">
+    <value>重命名</value>
+  </data>
+  <data name="MenuDelete" xml:space="preserve">
+    <value>删除</value>
+  </data>
+  <data name="DeleteConfirmMessage" xml:space="preserve">
+    <value>将永久删除：{0}
+此操作无法恢复。</value>
+  </data>
+  <data name="DeleteConfirmMessageMulti" xml:space="preserve">
+    <value>将永久删除 {0} 项。
+此操作无法恢复。</value>
+  </data>
+  <data name="DeleteConfirmBody" xml:space="preserve">
+    <value>所选内容将被永久删除，此操作无法恢复。</value>
+  </data>
+  <data name="DeleteConfirmBodyRecycle" xml:space="preserve">
+    <value>所选内容将移入回收站，可在回收站还原。</value>
+  </data>
+  <data name="ErrRecycleDelete" xml:space="preserve">
+    <value>移入回收站失败（文件可能被占用或已不存在）。</value>
+  </data>
+  <data name="DeleteConfirmMore" xml:space="preserve">
+    <value>等 {0} 项</value>
+  </data>
+  <data name="StatusDeletedCount" xml:space="preserve">
+    <value>已删除 {0} 项</value>
+  </data>
+  <data name="RemoteEditNotText" xml:space="preserve">
+    <value>非文本文件，已取消打开</value>
+  </data>
+  <data name="RemoteEditTooLarge" xml:space="preserve">
+    <value>文件超过 10 MB，暂不支持远程编辑</value>
+  </data>
+  <data name="RemoteEditConflict" xml:space="preserve">
+    <value>远端文件已被修改，仍要覆盖吗？</value>
+  </data>
+  <data name="RemoteEditChanged" xml:space="preserve">
+    <value>"{0}" 的文件缓存已经改变，是否保存编辑结果？</value>
+  </data>
+  <data name="RemoteEditSave" xml:space="preserve">
+    <value>保存编辑结果</value>
+  </data>
+  <data name="RemoteEditOverwrite" xml:space="preserve">
+    <value>覆盖</value>
+  </data>
+  <data name="RemoteEditUploaded" xml:space="preserve">
+    <value>已回传到远端</value>
+  </data>
+  <data name="CategoryFileEdit" xml:space="preserve">
+    <value>文件编辑</value>
+  </data>
+  <data name="CategoryTransfer" xml:space="preserve">
+    <value>传输</value>
+  </data>
+  <data name="CategoryRegistration" xml:space="preserve">
+    <value>注册</value>
+  </data>
+  <data name="CategoryAbout" xml:space="preserve">
+    <value>关于</value>
+  </data>
+  <data name="SettingsAboutTitle" xml:space="preserve">
+    <value>关于 iFreeSftp</value>
+  </data>
+  <data name="AppVersionDescFormat" xml:space="preserve">
+    <value>版本 {0} · 构建于 {1}</value>
+  </data>
+  <data name="AppWebsiteBtn" xml:space="preserve">
+    <value>访问官网</value>
+  </data>
+  <data name="AppChannelsLabel" xml:space="preserve">
+    <value>发布渠道</value>
+  </data>
+  <data name="AppChannelsDesc" xml:space="preserve">
+    <value>最新版本与发布动态见官网 / GitHub 仓库</value>
+  </data>
+  <data name="AppLicenseLabel" xml:space="preserve">
+    <value>许可证</value>
+  </data>
+  <data name="AppLicenseDesc" xml:space="preserve">
+    <value>本应用以 GNU AGPL-3.0 许可证开源发布。官方构建版额外集成了独立分发的增值组件；社区构建完全基于开源代码。</value>
+  </data>
+  <data name="AppCopyrightLabel" xml:space="preserve">
+    <value>版权</value>
+  </data>
+  <data name="AppCopyrightDesc" xml:space="preserve">
+    <value>Copyright © 2026 ifrees.top</value>
+  </data>
+  <data name="RegFreeTitle" xml:space="preserve">
+    <value>免费承诺</value>
+  </data>
+  <data name="RegFreeDesc" xml:space="preserve">
+    <value>全部功能对所有用户永久免费开放。注册勋章纯属自愿赞助，不解锁、不限制任何功能。</value>
+  </data>
+  <data name="AppSupportTitle" xml:space="preserve">
+    <value>支持开发</value>
+  </data>
+  <data name="AppSupportDesc" xml:space="preserve">
+    <value>iFreeSftp 永久免费。如果它对你有帮助，欢迎注册成为支持者——这是对开发的支持，不与任何功能绑定。</value>
+  </data>
+  <data name="SettingsRegistrationTitle" xml:space="preserve">
+    <value>注册</value>
+  </data>
+  <data name="RegStatusLabel" xml:space="preserve">
+    <value>注册状态</value>
+  </data>
+  <data name="RegStatusFree" xml:space="preserve">
+    <value>免费使用 · 注册后显示支持者勋章</value>
+  </data>
+  <data name="RegStatusOk" xml:space="preserve">
+    <value>已注册：{0}（{1}）</value>
+  </data>
+  <data name="RegStatusRevoked" xml:space="preserve">
+    <value>注册已被吊销，请重新激活</value>
+  </data>
+  <data name="RegPermanent" xml:space="preserve">
+    <value>永久有效</value>
+  </data>
+  <data name="RegExpiresTo" xml:space="preserve">
+    <value>有效期至 {0}</value>
+  </data>
+  <data name="RegBadgeFallback" xml:space="preserve">
+    <value>支持者</value>
+  </data>
+  <data name="RegCodeLabel" xml:space="preserve">
+    <value>注册码</value>
+  </data>
+  <data name="RegCodeHint" xml:space="preserve">
+    <value>粘贴收到的注册码，点击激活</value>
+  </data>
+  <data name="RegActivateBtn" xml:space="preserve">
+    <value>激活</value>
+  </data>
+  <data name="RegBuyCnBtn" xml:space="preserve">
+    <value>购买注册码 (爱发电)</value>
+  </data>
+  <data name="RegBuyIntlBtn" xml:space="preserve">
+    <value>Get License (Ko-fi)</value>
+  </data>
+  <data name="RegActivateOk" xml:space="preserve">
+    <value>激活成功，感谢支持！</value>
+  </data>
+  <data name="RegErrFormat" xml:space="preserve">
+    <value>注册码格式无效</value>
+  </data>
+  <data name="RegErrOfficialOnly" xml:space="preserve">
+    <value>激活需官方构建：社区构建不含注册模块，请使用 ifrees.top 发布版</value>
+  </data>
+  <data name="RegErrSignature" xml:space="preserve">
+    <value>注册码校验失败</value>
+  </data>
+  <data name="RegErrExpired" xml:space="preserve">
+    <value>注册码已过期</value>
+  </data>
+  <data name="RegNoticeLabel" xml:space="preserve">
+    <value>公告</value>
+  </data>
+  <data name="ConcurrentTransfers" xml:space="preserve">
+    <value>并发传输数</value>
+  </data>
+  <data name="ConcurrentTransfersHint" xml:space="preserve">
+    <value>同时进行的传输任务数。1 = 串行并复用当前连接；大于 1 时每个任务使用独立连接，多文件传输更快，部分服务器可能限制连接数。</value>
+  </data>
+  <data name="EditorModeLabel" xml:space="preserve">
+    <value>编辑方式</value>
+  </data>
+  <data name="EditorBuiltinOption" xml:space="preserve">
+    <value>内置编辑器</value>
+  </data>
+  <data name="EditorExternalOption" xml:space="preserve">
+    <value>外部编辑器</value>
+  </data>
+  <data name="EditorPathLabel" xml:space="preserve">
+    <value>编辑器路径</value>
+  </data>
+  <data name="EditorBrowseBtn" xml:space="preserve">
+    <value>浏览…</value>
+  </data>
+  <data name="EditorPathHint" xml:space="preserve">
+    <value>选择外部编辑器的可执行文件（如 notepad++、VS Code）。路径留空时回退使用内置编辑器。</value>
+  </data>
+  <data name="SettingsAppearanceTitle" xml:space="preserve">
+    <value>外观</value>
+  </data>
+  <data name="SettingsConnectionTitle" xml:space="preserve">
+    <value>连接</value>
+  </data>
+  <data name="SettingsFileEditTitle" xml:space="preserve">
+    <value>文件编辑</value>
+  </data>
+  <data name="SettingsTransferTitle" xml:space="preserve">
+    <value>传输</value>
+  </data>
+  <data name="ThemeDesc" xml:space="preserve">
+    <value>界面配色跟随系统，或手动指定深浅</value>
+  </data>
+  <data name="LanguageDesc" xml:space="preserve">
+    <value>界面显示语言</value>
+  </data>
+  <data name="TimeoutDesc" xml:space="preserve">
+    <value>建立 SSH 连接的等待上限（秒），超时后按重试设置自动重连</value>
+  </data>
+  <data name="MaxRetriesDesc" xml:space="preserve">
+    <value>连接失败后的自动重试次数</value>
+  </data>
+  <data name="RetryDelayDesc" xml:space="preserve">
+    <value>两次重试之间的等待时间（秒）</value>
+  </data>
+  <data name="OpenModeDesc" xml:space="preserve">
+    <value>点击主机卡片连接时，右侧窗口的打开方式</value>
+  </data>
+  <data name="OperationTimeoutDesc" xml:space="preserve">
+    <value>单次 SFTP 请求等待响应的上限（秒），超时按错误处理不再挂起</value>
+  </data>
+  <data name="KeepAliveLabel" xml:space="preserve">
+    <value>保活连接</value>
+  </data>
+  <data name="KeepAliveDesc" xml:space="preserve">
+    <value>周期发送心跳包，防止长连接被路由器或防火墙断开</value>
+  </data>
+  <data name="KeepAliveIntervalLabel" xml:space="preserve">
+    <value>保活间隔</value>
+  </data>
+  <data name="KeepAliveIntervalDesc" xml:space="preserve">
+    <value>心跳包发送周期（秒），需开启保活连接</value>
+  </data>
+  <data name="EditorModeDesc" xml:space="preserve">
+    <value>选择打开文件使用的编辑器</value>
+  </data>
+  <data name="StatusCopyTargetInvalid" xml:space="preserve">
+    <value>对侧未就绪：请先在对侧进入本地目录</value>
+  </data>
+  <data name="StatusCopiedCount" xml:space="preserve">
+    <value>已复制 {0} 项到另一侧</value>
+  </data>
+  <data name="QueueLabel" xml:space="preserve">
+    <value>上传队列</value>
+  </data>
+  <data name="QColSource" xml:space="preserve">
+    <value>源</value>
+  </data>
+  <data name="QColDest" xml:space="preserve">
+    <value>目标</value>
+  </data>
+  <data name="QColSize" xml:space="preserve">
+    <value>大小</value>
+  </data>
+  <data name="QColSpeed" xml:space="preserve">
+    <value>速度</value>
+  </data>
+  <data name="QTabActive" xml:space="preserve">
+    <value>队列中</value>
+  </data>
+  <data name="QTabFailed" xml:space="preserve">
+    <value>传输失败</value>
+  </data>
+  <data name="QTabDone" xml:space="preserve">
+    <value>传输完成</value>
+  </data>
+  <data name="QStateWaiting" xml:space="preserve">
+    <value>等待中</value>
+  </data>
+  <data name="QColTime" xml:space="preserve">
+    <value>时间</value>
+  </data>
+  <data name="QColReason" xml:space="preserve">
+    <value>原因</value>
+  </data>
+  <data name="QStateTransferring" xml:space="preserve">
+    <value>传输中</value>
+  </data>
+  <data name="QStateDone" xml:space="preserve">
+    <value>传输完成</value>
+  </data>
+  <data name="QStateFailed" xml:space="preserve">
+    <value>传输失败</value>
+  </data>
+  <data name="TerminalLabel" xml:space="preserve">
+    <value>终端</value>
+  </data>
+  <data name="ItemsCount" xml:space="preserve">
+    <value>{0} 项</value>
+  </data>
+  <data name="HostPanelTitle" xml:space="preserve">
+    <value>主机设置</value>
+  </data>
+  <data name="AddHost" xml:space="preserve">
+    <value>新增主机</value>
+  </data>
+  <data name="EditHost" xml:space="preserve">
+    <value>编辑主机</value>
+  </data>
+  <data name="MenuConnect" xml:space="preserve">
+    <value>连接</value>
+  </data>
+  <data name="MenuEdit" xml:space="preserve">
+    <value>编辑</value>
+  </data>
+  <data name="MenuDuplicate" xml:space="preserve">
+    <value>复制</value>
+  </data>
+  <data name="MenuDelete" xml:space="preserve">
+    <value>删除</value>
+  </data>
+  <data name="DuplicateSuffix" xml:space="preserve">
+    <value>副本</value>
+  </data>
+  <data name="TabGeneral" xml:space="preserve">
+    <value>常规</value>
+  </data>
+  <data name="TabSync" xml:space="preserve">
+    <value>同步</value>
+  </data>
+  <data name="TabTransfer" xml:space="preserve">
+    <value>传输</value>
+  </data>
+  <data name="HostNameLabel" xml:space="preserve">
+    <value>项目名称</value>
+  </data>
+  <data name="IpLabel" xml:space="preserve">
+    <value>IP 地址</value>
+  </data>
+  <data name="LoginMethod" xml:space="preserve">
+    <value>登录方式</value>
+  </data>
+  <data name="AuthModePassword" xml:space="preserve">
+    <value>密码</value>
+  </data>
+  <data name="AuthModeKeyFile" xml:space="preserve">
+    <value>密钥文件</value>
+  </data>
+  <data name="KeyPathLabel" xml:space="preserve">
+    <value>密钥文件路径</value>
+  </data>
+  <data name="Browse" xml:space="preserve">
+    <value>浏览</value>
+  </data>
+  <data name="LocalSyncPath" xml:space="preserve">
+    <value>本地同步路径</value>
+  </data>
+  <data name="RemoteSyncPath" xml:space="preserve">
+    <value>远程同步路径</value>
+  </data>
+  <data name="EnableSync" xml:space="preserve">
+    <value>开启同步</value>
+  </data>
+  <data name="EnableCompare" xml:space="preserve">
+    <value>开启比较</value>
+  </data>
+  <data name="EnableKeepAlive" xml:space="preserve">
+    <value>keep-alive</value>
+  </data>
+  <data name="KeepAliveInterval" xml:space="preserve">
+    <value>间隔秒数</value>
+  </data>
+  <data name="TestNeedKeyFile" xml:space="preserve">
+    <value>密钥登录方式需要先选择密钥文件</value>
+  </data>
+  <data name="Save" xml:space="preserve">
+    <value>保存</value>
+  </data>
+  <data name="Close" xml:space="preserve">
+    <value>关闭</value>
+  </data>
+  <data name="EmptyHostList" xml:space="preserve">
+    <value>暂无主机，点 + 新增</value>
+  </data>
+  <data name="NewHostName" xml:space="preserve">
+    <value>新主机</value>
+  </data>
+  <data name="TestConnection" xml:space="preserve">
+    <value>测试连接</value>
+  </data>
+  <data name="Testing" xml:space="preserve">
+    <value>连接中…</value>
+  </data>
+  <data name="TestOkTitle" xml:space="preserve">
+    <value>连接成功</value>
+  </data>
+  <data name="SaveOkTitle" xml:space="preserve">
+    <value>保存成功</value>
+  </data>
+  <data name="SyncBrowseMismatch" xml:space="preserve">
+    <value>同步浏览: 两侧目录不一致, 已关闭联动</value>
+  </data>
+  <data name="HeaderSyncBrowse" xml:space="preserve">
+    <value>同步浏览</value>
+  </data>
+  <data name="HeaderCompare" xml:space="preserve">
+    <value>文件比对</value>
+  </data>
+  <data name="SyncMismatchTitle" xml:space="preserve">
+    <value>同步浏览</value>
+  </data>
+  <data name="SyncMismatchMsg" xml:space="preserve">
+    <value>两侧目录不一致，无法建立同步浏览</value>
+  </data>
+  <data name="SyncMismatchNotConfigured" xml:space="preserve">
+    <value>主机未设置同步浏览目录，或一侧未建立同步基准</value>
+  </data>
+  <data name="SyncMismatchClose" xml:space="preserve">
+    <value>知道了</value>
+  </data>
+  <data name="TestFailTitle" xml:space="preserve">
+    <value>连接失败</value>
+  </data>
+  <data name="TestNeedFields" xml:space="preserve">
+    <value>请先填写 IP 地址和登录名</value>
+  </data>
+  <data name="HostKeyTitle" xml:space="preserve">
+    <value>确认主机指纹</value>
+  </data>
+  <data name="HostKeyMessage" xml:space="preserve">
+    <value>首次连接 {0}，无法验证主机身份。
+
+主机密钥指纹 (SHA256)：
+{1}
+
+信任该主机并继续连接？</value>
+  </data>
+  <data name="HostKeyTrust" xml:space="preserve">
+    <value>信任并继续</value>
+  </data>
+  <data name="Cancel" xml:space="preserve">
+    <value>取消</value>
+  </data>
+  <data name="TerminalTitle" xml:space="preserve">
+    <value>主机命令窗</value>
+  </data>
+  <data name="LogConnecting" xml:space="preserve">
+    <value>正在连接 {0}:{1} …</value>
+  </data>
+  <data name="LogWaitFingerprint" xml:space="preserve">
+    <value>等待主机指纹确认 …</value>
+  </data>
+  <data name="LogFingerprintSaved" xml:space="preserve">
+    <value>已记住主机指纹，下次连接自动校验</value>
+  </data>
+  <data name="LogFingerprintRejected" xml:space="preserve">
+    <value>你拒绝了本次主机指纹，连接中止</value>
+  </data>
+  <data name="LogFingerprintMismatch" xml:space="preserve">
+    <value>主机密钥校验未通过：存档 {0}，本次 {1}（服务器密钥变更时请重新信任）</value>
+  </data>
+  <data name="LogFingerprintChangedTrusted" xml:space="preserve">
+    <value>已更新主机指纹存档，下次连接自动校验</value>
+  </data>
+  <data name="HostKeyChangedTitle" xml:space="preserve">
+    <value>主机密钥已变更</value>
+  </data>
+  <data name="HostKeyChangedMessage" xml:space="preserve">
+    <value>服务器 {0} 出示的主机密钥与此前信任的不一致。
+
+此前信任：{1}
+本次出示：{2}
+
+常见原因：服务器重装/更换机器，或主机卡片曾修改过 IP。
+若你知晓此变更，可选择更新信任；否则请拒绝，以防中间人攻击。</value>
+  </data>
+  <data name="HostKeyChangedTrust" xml:space="preserve">
+    <value>更新并信任</value>
+  </data>
+  <data name="LogConnected" xml:space="preserve">
+    <value>已连接 {0}</value>
+  </data>
+  <data name="LogConnectFailed" xml:space="preserve">
+    <value>连接失败：{0}</value>
+  </data>
+  <data name="LogRetry" xml:space="preserve">
+    <value>连接失败：{0}，{1} 秒后进行第 {2}/{3} 次重试 …</value>
+  </data>
+  <data name="TimeoutSeconds" xml:space="preserve">
+    <value>连接超时（秒）</value>
+  </data>
+  <data name="ValueFormatSeconds" xml:space="preserve">
+    <value>{0} 秒</value>
+  </data>
+  <data name="ValueFormatTimes" xml:space="preserve">
+    <value>{0} 次</value>
+  </data>
+  <data name="ValueFormatTasks" xml:space="preserve">
+    <value>{0} 个</value>
+  </data>
+  <data name="OperationTimeoutSeconds" xml:space="preserve">
+    <value>操作超时（秒）</value>
+  </data>
+  <data name="ErrRemoteTimeout" xml:space="preserve">
+    <value>服务器在超时时间内无响应（可能连接数已达上限或服务器繁忙）。可稍后重试或断开重连。</value>
+  </data>
+  <data name="ErrServerCopy" xml:space="preserve">
+    <value>服务端复制失败（服务器不支持 cp 或路径无效）</value>
+  </data>
+  <data name="LogDirExpandFailed" xml:space="preserve">
+    <value>目录展开失败，已跳过：{0}（{1}）</value>
+  </data>
+  <data name="LogTransferStart" xml:space="preserve">
+    <value>开始传输 {0} 项 → {1}</value>
+  </data>
+  <data name="LogTransferDone" xml:space="preserve">
+    <value>传输完成：成功 {0} 项，跳过 {1} 项，失败 {2} 项</value>
+  </data>
+  <data name="MaxRetries" xml:space="preserve">
+    <value>最大重试次数</value>
+  </data>
+  <data name="RetryDelaySeconds" xml:space="preserve">
+    <value>登录重试延迟（秒）</value>
+  </data>
+  <data name="SettingsTitle" xml:space="preserve">
+    <value>设置</value>
+  </data>
+  <data name="ThemeLabel" xml:space="preserve">
+    <value>主题</value>
+  </data>
+  <data name="ThemeDark" xml:space="preserve">
+    <value>深色</value>
+  </data>
+  <data name="ThemeLight" xml:space="preserve">
+    <value>浅色</value>
+  </data>
+  <data name="LanguageLabel" xml:space="preserve">
+    <value>语言</value>
+  </data>
+  <data name="CategoryAppearance" xml:space="preserve">
+    <value>外观</value>
+  </data>
+  <data name="CategoryConnection" xml:space="preserve">
+    <value>连接</value>
+  </data>
+  <data name="ConnectOpenMode" xml:space="preserve">
+    <value>连接打开方式</value>
+  </data>
+  <data name="OpenModeAsk" xml:space="preserve">
+    <value>每次询问</value>
+  </data>
+  <data name="OpenModeCurrent" xml:space="preserve">
+    <value>总是当前标签页</value>
+  </data>
+  <data name="OpenModeNew" xml:space="preserve">
+    <value>总是新标签页</value>
+  </data>
+  <data name="OpenTabTitle" xml:space="preserve">
+    <value>打开主机文件</value>
+  </data>
+  <data name="OpenTabMessage" xml:space="preserve">
+    <value>在哪个标签页打开 {0} 的文件列表？</value>
+  </data>
+  <data name="OpenTabAlways" xml:space="preserve">
+    <value>总是执行此操作，不再询问</value>
+  </data>
+  <data name="OpenTabCurrent" xml:space="preserve">
+    <value>当前标签页</value>
+  </data>
+  <data name="OpenTabNew" xml:space="preserve">
+    <value>新标签页</value>
+  </data>
+  <data name="EmptyStateTitle" xml:space="preserve">
+    <value>先选择一个主机</value>
+  </data>
+  <data name="EmptyStateMessage" xml:space="preserve">
+    <value>选择要浏览的本地或远端文件系统</value>
+  </data>
+  <data name="EmptyStateButton" xml:space="preserve">
+    <value>选择主机</value>
+  </data>
+  <data name="ChooserTitle" xml:space="preserve">
+    <value>打开目标</value>
+  </data>
+  <data name="ChooserLocalSection" xml:space="preserve">
+    <value>本地</value>
+  </data>
+  <data name="ChooserHostsSection" xml:space="preserve">
+    <value>主机</value>
+  </data>
+  <data name="ChooserLocalTitle" xml:space="preserve">
+    <value>本地文件系统</value>
+  </data>
+  <data name="ChooserBrowseLocal" xml:space="preserve">
+    <value>浏览本地文件</value>
+  </data>
+  <data name="OpenDirectory" xml:space="preserve">
+    <value>打开目录</value>
+  </data>
+  <data name="ToggleTree" xml:space="preserve">
+    <value>切换树形目录</value>
+  </data>
+  <data name="ThisPC" xml:space="preserve">
+    <value>此电脑</value>
+  </data>
+  <data name="StatusSelected" xml:space="preserve">
+    <value>已选 {0} 项</value>
+  </data>
+  <data name="DirNotFound" xml:space="preserve">
+    <value>目录不存在: {0}</value>
+  </data>
+  <data name="NewFolder" xml:space="preserve">
+    <value>新建文件夹</value>
+  </data>
+  <data name="NewFile" xml:space="preserve">
+    <value>新建文件</value>
+  </data>
+  <data name="ToggleHidden" xml:space="preserve">
+    <value>显示/隐藏隐藏文件</value>
+  </data>
+  <data name="NewFolderName" xml:space="preserve">
+    <value>新建文件夹</value>
+  </data>
+  <data name="NewFileName" xml:space="preserve">
+    <value>新建文本文档.txt</value>
+  </data>
+  <data name="MenuPermissions" xml:space="preserve">
+    <value>权限</value>
+  </data>
+  <data name="PermOwner" xml:space="preserve">
+    <value>所有者</value>
+  </data>
+  <data name="PermGroup" xml:space="preserve">
+    <value>群组</value>
+  </data>
+  <data name="PermOthers" xml:space="preserve">
+    <value>其他</value>
+  </data>
+  <data name="PermRead" xml:space="preserve">
+    <value>读</value>
+  </data>
+  <data name="PermWrite" xml:space="preserve">
+    <value>写</value>
+  </data>
+  <data name="PermExecute" xml:space="preserve">
+    <value>执行</value>
+  </data>
+  <data name="PermApply" xml:space="preserve">
+    <value>应用</value>
+  </data>
+  <data name="StatusPermUpdated" xml:space="preserve">
+    <value>权限已更新为 {0}</value>
+  </data>
+  <data name="MenuChecksum" xml:space="preserve">
+    <value>校验码</value>
+  </data>
+  <data name="ChkAlgorithm" xml:space="preserve">
+    <value>算法</value>
+  </data>
+  <data name="ChkComputing" xml:space="preserve">
+    <value>计算中…</value>
+  </data>
+  <data name="ChkCopy" xml:space="preserve">
+    <value>复制</value>
+  </data>
+  <data name="ChkCopied" xml:space="preserve">
+    <value>已复制</value>
+  </data>
+  <data name="TerminalClearAll" xml:space="preserve">
+    <value>清除全部</value>
+  </data>
+  <data name="TerminalCopyAll" xml:space="preserve">
+    <value>复制到粘贴板</value>
+  </data>
+  <data name="QMenuPause" xml:space="preserve">
+    <value>暂停</value>
+  </data>
+  <data name="QMenuResume" xml:space="preserve">
+    <value>继续传输</value>
+  </data>
+  <data name="QMenuStop" xml:space="preserve">
+    <value>停止</value>
+  </data>
+  <data name="QMenuDeleteAll" xml:space="preserve">
+    <value>删除所有</value>
+  </data>
+  <data name="QMenuRetryAll" xml:space="preserve">
+    <value>重置并重新请求所有</value>
+  </data>
+  <data name="QStatePaused" xml:space="preserve">
+    <value>已暂停</value>
+  </data>
+  <data name="QStoppedReason" xml:space="preserve">
+    <value>已停止</value>
+  </data>
+  <data name="LogQueuePaused" xml:space="preserve">
+    <value>传输已暂停</value>
+  </data>
+  <data name="LogQueueResumed" xml:space="preserve">
+    <value>传输继续</value>
+  </data>
+  <data name="LogQueueStopped" xml:space="preserve">
+    <value>传输已停止</value>
+  </data>
+  <data name="LogQueueRerun" xml:space="preserve">
+    <value>重置并重新请求所有：{0} 项</value>
+  </data>
+  <data name="DeleteModeLabel" xml:space="preserve">
+    <value>远程删除方式</value>
+  </data>
+  <data name="DeleteModeHintExec" xml:space="preserve">
+    <value>删除远程目录时优先使用服务端命令（rm -rf，海量文件秒级）；命令通道不可用或未能删净时自动回退 SFTP 递归。</value>
+  </data>
+  <data name="DeleteModeHintRecursive" xml:space="preserve">
+    <value>不使用服务端命令，通过 SFTP 协议逐条递归删除，兼容所有服务器；大目录耗时较长。</value>
+  </data>
+  <data name="LogDeleteFallback" xml:space="preserve">
+    <value>服务端命令删除失败，已回退 SFTP 递归删除</value>
+  </data>
+</root>

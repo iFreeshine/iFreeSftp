@@ -1,0 +1,719 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="iFreeSftp.Views.HostPanel"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:controls="using:iFreeSftp.Controls"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                    <ResourceDictionary x:Key="Dark">
+                        <!-- 选中(active) tab: 近黑底, 拉大与深蓝卡片底的反差 -->
+                        <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="#0D1420" />
+                        <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPointerOver" Color="#2C3B52" />
+                        <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPressed" Color="#22314A" />
+                        <SolidColorBrush x:Key="TabViewItemHeaderForegroundSelected" Color="#FFFFFF" />
+                        <!-- 主机卡片: 不透明深蓝底, 未选中无边框 (thickness 由代码后置切换);
+                             选中(active)时背景稍亮 + 强调色边框 -->
+                        <SolidColorBrush x:Key="HostCardBackgroundBrush" Color="#1B2430" />
+                        <SolidColorBrush x:Key="HostCardBorderBrush" Color="#3B4A5F" />
+                        <SolidColorBrush x:Key="HostCardActiveBackgroundBrush" Color="#22314A" />
+                        <SolidColorBrush x:Key="HostCardActiveBorderBrush" Color="#4CC2FF" />
+                    </ResourceDictionary>
+                    <ResourceDictionary x:Key="Light">
+                        <!-- 选中(active) tab: 加深的浅灰底 + 近黑字, 拉大与白底的反差 -->
+                        <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="#DEDEDE" />
+                        <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPointerOver" Color="#F0F0F0" />
+                        <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPressed" Color="#E4E4E4" />
+                        <SolidColorBrush x:Key="TabViewItemHeaderForegroundSelected" Color="#222222" />
+                        <!-- 主机卡片: 不透明白底, 未选中无边框 (thickness 由代码后置切换);
+                             选中(active)时浅灰底 + 强调色边框 -->
+                        <SolidColorBrush x:Key="HostCardBackgroundBrush" Color="#FFFFFF" />
+                        <SolidColorBrush x:Key="HostCardBorderBrush" Color="#E0E0E0" />
+                        <SolidColorBrush x:Key="HostCardActiveBackgroundBrush" Color="#F0F0F0" />
+                        <SolidColorBrush x:Key="HostCardActiveBorderBrush" Color="#005FB8" />
+                    </ResourceDictionary>
+                </ResourceDictionary.ThemeDictionaries>
+
+                <!-- 右键菜单: 样式全部照搬主框架文件夹右键菜单 (README 3.9 第 7 条)——
+                     presenter 背景由代码后置按主题指定, 其余系统默认。
+                     放 Resources (x:Key) 供代码后置取用设置 presenter 样式:
+                     FlyoutBase 的 x:Name 不生成代码后置字段 (XamlCompiler WMC9999) -->
+                <MenuFlyout x:Key="CardMenuFlyout">
+                    <MenuFlyoutItem Tag="MenuConnect" Click="MenuConnect_Click" Loading="MenuText_Loading" />
+                    <MenuFlyoutItem Tag="MenuEdit" Click="MenuEdit_Click" Loading="MenuText_Loading" />
+                    <MenuFlyoutItem Tag="MenuDuplicate" Click="MenuDuplicate_Click" Loading="MenuText_Loading" />
+                    <MenuFlyoutItem
+                        Tag="MenuDelete"
+                        Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                        Click="MenuDelete_Click"
+                        Loading="MenuText_Loading" />
+                </MenuFlyout>
+
+                <!-- 主机列表容器: 裸模板去掉 ListViewItem 默认内边距/悬停/选中视觉,
+                     让卡片自身边框成为最外层 (选中态配色由代码后置应用) -->
+                <Style x:Key="BareHostContainerStyle" TargetType="ListViewItem">
+                    <Setter Property="Padding" Value="0" />
+                    <Setter Property="Margin" Value="0" />
+                    <Setter Property="MinWidth" Value="0" />
+                    <Setter Property="MinHeight" Value="0" />
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ListViewItem">
+                                <ContentPresenter
+                                    Content="{TemplateBinding Content}"
+                                    ContentTemplate="{TemplateBinding ContentTemplate}"
+                                    ContentTransitions="{TemplateBinding ContentTransitions}"
+                                    HorizontalAlignment="Stretch"
+                                    VerticalAlignment="Stretch" />
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+
+            <!-- 主机卡片 (横排): 系统图标 + 名称/IP 上下两行 + hover 编辑钮最右; 不透明底,
+                 单击进入编辑 (选中并载入表单); 未选中无边框 / 选中强调色边框
+                 (thickness 与配色由代码后置按选择态切换, 见 ApplyCardSelectionVisuals);
+                 右键菜单见 ContextFlyout, 拖拽排序由 ListView 提供 -->
+            <DataTemplate x:Key="HostCardTemplate">
+                <Border
+                    x:Name="CardRoot"
+                    Margin="4,3"
+                    Padding="10,0"
+                    Background="{ThemeResource HostCardBackgroundBrush}"
+                    BorderBrush="{ThemeResource HostCardBorderBrush}"
+                    BorderThickness="0"
+                    CornerRadius="6"
+                    ContextFlyout="{StaticResource CardMenuFlyout}"
+                    controls:HandCursorRoot.IsHand="True"
+                    PointerEntered="CardRoot_PointerEntered"
+                    PointerExited="CardRoot_PointerExited"
+                    Tapped="CardRoot_Tapped">
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon
+                            Grid.Column="0"
+                            VerticalAlignment="Center"
+                            FontSize="18"
+                            Glyph="&#xE770;" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock
+                                FontWeight="SemiBold"
+                                Text="{Binding Name}"
+                                TextTrimming="CharacterEllipsis" />
+                            <TextBlock
+                                FontSize="12"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="{Binding Subtitle}"
+                                TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <StackPanel
+                            x:Name="CardActions"
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                            <Button
+                                Padding="5"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Click="EditBtn_Click"
+                                Loading="EditBtn_Loading">
+                                <FontIcon FontSize="13" Glyph="&#xE70F;" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </DataTemplate>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <!-- 覆盖层根: 由 Header 承载并铺满全窗 (RowSpan=2, 含标题条) -->
+    <Grid x:Name="PanelRoot">
+
+        <!-- 遮罩: 点击走未保存确认的关闭流程 -->
+        <Border x:Name="MaskBorder" Background="#80000000" Tapped="MaskBorder_Tapped" />
+
+        <!-- 面板卡片: 居中固定尺寸; 标题栏通栏贴边, 外壳与标题栏同色 (DialogTitleBarBrush);
+             内容区 Margin 5px = 内容与卡片左右底间隔 -->
+        <Border
+            x:Name="CardBorder"
+            Width="920"
+            Height="640"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Background="{ThemeResource DialogTitleBarBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="DragTransform" />
+            </Border.RenderTransform>
+            <Grid RowSpacing="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- 标题栏: 标题缩小两号 + 右上关闭按钮, 高度压低; 通栏贴边 + DialogTitleBarBrush
+                     背景 (亮=主标题栏加深, 暗=卡片底色; 顶部两角由卡片 CornerRadius 裁剪);
+                     拖拽照搬选择面板 (HostPickerPanel) 的增量法实现 -->
+                <Grid
+                    x:Name="TitleBar"
+                    Grid.Row="0"
+                    Padding="14,5,5,2"
+                    ColumnSpacing="8"
+                    Background="{ThemeResource DialogTitleBarBrush}"
+                    PointerMoved="TitleBar_PointerMoved"
+                    PointerPressed="TitleBar_PointerPressed"
+                    PointerReleased="TitleBar_PointerReleased">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        x:Name="TitleText"
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        FontSize="16"
+                        FontWeight="SemiBold" />
+                    <Button
+                        x:Name="TitleCloseBtn"
+                        Grid.Column="1"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Click="CloseBtn_Click">
+                        <!-- hover/按下用系统悬停色 (Transparent 底默认 hover 变化太弱不可辨) -->
+                        <Button.Resources>
+                            <ThemeResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
+                            <ThemeResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
+                        </Button.Resources>
+                        <FontIcon FontSize="11" Glyph="&#xE8BB;" />
+                    </Button>
+                </Grid>
+
+                <!-- 主体: 左侧主机列表卡片 + 5px 间隔 + 右侧设置卡片, 宽度按左6右4比例;
+                     Margin 5px 补偿卡片移除的 Padding -->
+                <Grid Grid.Row="1" Margin="5" ColumnSpacing="5">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="6*" />
+                        <ColumnDefinition Width="4*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左卡片: 顶部居中新增按钮 + 卡片列表 + 空态提示 (亮暗均无边框线) -->
+                    <Border
+                        Grid.Column="0"
+                        Padding="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        CornerRadius="6">
+                        <Grid RowSpacing="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Button
+                                x:Name="AddBtn"
+                                Grid.Row="0"
+                                Padding="14,8"
+                                HorizontalAlignment="Center"
+                                AutomationProperties.Name="AddHostButton"
+                                Background="#0078D4"
+                                Foreground="White"
+                                BorderThickness="0"
+                                Click="AddBtn_Click">
+                                <Button.Resources>
+                                    <!-- 与 Header 主机按钮同款方向: 悬停变暗 #106EBE, 按下更深 #005A9E -->
+                                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
+                                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                </Button.Resources>
+                                <FontIcon FontSize="16" Glyph="&#xE710;" />
+                            </Button>
+                            <ListView
+                                x:Name="HostList"
+                                Grid.Row="1"
+                                AllowDrop="True"
+                                CanDragItems="True"
+                                CanReorderItems="True"
+                                ContainerContentChanging="HostList_ContainerContentChanging"
+                                ItemContainerStyle="{StaticResource BareHostContainerStyle}"
+                                ItemTemplate="{StaticResource HostCardTemplate}"
+                                SelectionChanged="HostList_SelectionChanged"
+                                SelectionMode="Single">
+                                <ListView.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <!-- 卡片容器宽约 525px, 258*2 一行放两列; 默认 Vertical 是先竖排, 必须显式 Horizontal -->
+                                        <ItemsWrapGrid ItemHeight="64" ItemWidth="258" Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ListView.ItemsPanel>
+                            </ListView>
+                            <TextBlock
+                                x:Name="EmptyHint"
+                                Grid.Row="1"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Foreground="{ThemeResource TextFillColorDisabledBrush}"
+                                Opacity="0.6"
+                                TextWrapping="Wrap"
+                                Visibility="Collapsed" />
+                        </Grid>
+                    </Border>
+
+                    <!-- 右卡片: 3 个固定设置 tab + 卡片内底部按钮行; 无选中主机时 tab 整体禁用 (IsEnabled 需 Control, 放在 TabView 上); 亮暗均无边框线 -->
+                    <Border
+                        Grid.Column="1"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        CornerRadius="6">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TabView
+                                x:Name="SettingsTabs"
+                                Grid.Row="0"
+                                IsAddTabButtonVisible="False"
+                                IsEnabled="False"
+                                Background="Transparent">
+                            <TabViewItem x:Name="GeneralTab" IsClosable="False" HorizontalContentAlignment="Center">
+                                <ScrollViewer Padding="10" FontSize="12">
+                                    <!-- 两列表单: 标签右对齐 + 输入控件 -->
+                                    <Grid ColumnSpacing="12" RowSpacing="14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <!-- Row0: 项目名称 -->
+                                        <TextBlock
+                                            x:Name="NameLabel"
+                                            Grid.Row="0"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <TextBox
+                                            x:Name="NameBox"
+                                            Grid.Row="0"
+                                            Grid.Column="1"
+                                            FontSize="12"
+                                            VerticalContentAlignment="Center"
+                                            TextChanged="FieldTextChanged" />
+
+                                        <!-- Row1: IP -->
+                                        <TextBlock
+                                            x:Name="IpLabel"
+                                            Grid.Row="1"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <TextBox
+                                            x:Name="HostBox"
+                                            Grid.Row="1"
+                                            Grid.Column="1"
+                                            FontSize="12"
+                                            VerticalContentAlignment="Center"
+                                            TextChanged="FieldTextChanged" />
+
+                                        <!-- Row2: 端口 (文本输入 + 仅数字校验) -->
+                                        <TextBlock
+                                            x:Name="PortLabel"
+                                            Grid.Row="2"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <TextBox
+                                            x:Name="PortBox"
+                                            Grid.Row="2"
+                                            Grid.Column="1"
+                                            Width="150"
+                                            FontSize="12"
+                                            VerticalContentAlignment="Center"
+                                            HorizontalAlignment="Left"
+                                            Text="22"
+                                            BeforeTextChanging="PortBox_BeforeTextChanging"
+                                            TextChanged="FieldTextChanged" />
+
+                                        <!-- Row3: 登录方式 (下拉框) -->
+                                        <TextBlock
+                                            x:Name="LoginMethodLabel"
+                                            Grid.Row="3"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <ComboBox
+                                            x:Name="AuthModeBox"
+                                            Grid.Row="3"
+                                            Grid.Column="1"
+                                            Width="150"
+                                            Padding="12,4,12,4"
+                                            FontSize="12"
+                                            HorizontalAlignment="Left"
+                                            SelectedIndex="0"
+                                            SelectionChanged="AuthModeBox_SelectionChanged">
+                                            <ComboBoxItem x:Name="AuthPasswordItem" />
+                                            <ComboBoxItem x:Name="AuthKeyItem" />
+                                        </ComboBox>
+
+                                        <!-- Row4: 登录名 -->
+                                        <TextBlock
+                                            x:Name="UsernameLabel"
+                                            Grid.Row="4"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <TextBox
+                                            x:Name="UsernameBox"
+                                            Grid.Row="4"
+                                            Grid.Column="1"
+                                            FontSize="12"
+                                            VerticalContentAlignment="Center"
+                                            TextChanged="FieldTextChanged" />
+
+                                        <!-- Row5: 登录密码 (密码方式时显示) -->
+                                        <TextBlock
+                                            x:Name="PasswordRowLabel"
+                                            Grid.Row="5"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <PasswordBox
+                                            x:Name="LoginPwdBox"
+                                            Grid.Row="5"
+                                            Grid.Column="1"
+                                            FontSize="12"
+                                            VerticalContentAlignment="Center"
+                                            PasswordChanged="FieldPasswordChanged" />
+
+                                        <!-- Row6: 密钥文件路径 (表单最后一行, 常显) -->
+                                        <TextBlock
+                                            x:Name="KeyPathLabel"
+                                            Grid.Row="6"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <Grid
+                                            Grid.Row="6"
+                                            Grid.Column="1"
+                                            ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox
+                                                x:Name="KeyPathBox"
+                                                Grid.Column="0"
+                                                FontSize="12"
+                                                VerticalContentAlignment="Center"
+                                                IsReadOnly="True"
+                                                TextChanged="FieldTextChanged" />
+                                            <Button
+                                                x:Name="BrowseBtn"
+                                                Grid.Column="1"
+                                                FontSize="12"
+                                                AutomationProperties.Name="BrowseKeyFileButton"
+                                                Click="BrowseBtn_Click" />
+                                        </Grid>
+                                    </Grid>
+                                </ScrollViewer>
+                            </TabViewItem>
+
+                            <TabViewItem x:Name="SyncTab" IsClosable="False" HorizontalContentAlignment="Center">
+                                <ScrollViewer Padding="10" FontSize="12">
+                                    <Grid ColumnSpacing="12" RowSpacing="14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <!-- Row0: 开启同步 (总开关, 控制两个路径输入框可用性) -->
+                                        <TextBlock
+                                            x:Name="SyncLabel"
+                                            Grid.Row="0"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <ToggleSwitch
+                                            x:Name="SyncToggle"
+                                            Grid.Row="0"
+                                            Grid.Column="1"
+                                            OffContent=""
+                                            OnContent=""
+                                            Toggled="SyncToggle_Toggled" />
+
+                                        <!-- Row1: 开启比较 -->
+                                        <TextBlock
+                                            x:Name="CompareLabel"
+                                            Grid.Row="1"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <ToggleSwitch
+                                            x:Name="CompareToggle"
+                                            Grid.Row="1"
+                                            Grid.Column="1"
+                                            OffContent=""
+                                            OnContent=""
+                                            Toggled="FieldToggled" />
+
+                                        <!-- Row2: 本地路径 (开启同步时可用) -->
+                                        <TextBlock
+                                            x:Name="LocalSyncLabel"
+                                            Grid.Row="2"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <TextBox
+                                            x:Name="LocalSyncBox"
+                                            Grid.Row="2"
+                                            Grid.Column="1"
+                                            FontSize="12"
+                                            VerticalContentAlignment="Center"
+                                            IsEnabled="False"
+                                            TextChanged="FieldTextChanged" />
+
+                                        <!-- Row3: 远程路径 (开启同步时可用) -->
+                                        <TextBlock
+                                            x:Name="RemoteSyncLabel"
+                                            Grid.Row="3"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <TextBox
+                                            x:Name="RemoteSyncBox"
+                                            Grid.Row="3"
+                                            Grid.Column="1"
+                                            FontSize="12"
+                                            VerticalContentAlignment="Center"
+                                            IsEnabled="False"
+                                            TextChanged="FieldTextChanged" />
+                                    </Grid>
+                                </ScrollViewer>
+                            </TabViewItem>
+
+                            <TabViewItem x:Name="TransferTab" IsClosable="False" HorizontalContentAlignment="Center">
+                                <ScrollViewer Padding="10" FontSize="12">
+                                    <Grid ColumnSpacing="12" RowSpacing="14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock
+                                            x:Name="KeepAliveLabel"
+                                            Grid.Row="0"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <ToggleSwitch
+                                            x:Name="KeepAliveToggle"
+                                            Grid.Row="0"
+                                            Grid.Column="1"
+                                            OffContent=""
+                                            OnContent=""
+                                            Toggled="KeepAliveToggle_Toggled" />
+
+                                        <TextBlock
+                                            x:Name="IntervalLabel"
+                                            Grid.Row="1"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <NumberBox
+                                            x:Name="KeepAliveSecondsBox"
+                                            Grid.Row="1"
+                                            Grid.Column="1"
+                                            Width="150"
+                                            FontSize="12"
+                                            VerticalContentAlignment="Center"
+                                            HorizontalAlignment="Left"
+                                            IsEnabled="False"
+                                            Maximum="3600"
+                                            Minimum="1"
+                                            SpinButtonPlacementMode="Compact"
+                                            Value="15"
+                                            ValueChanged="FieldValueChanged" />
+
+                                        <TextBlock
+                                            x:Name="TimeoutLabel"
+                                            Grid.Row="2"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <StackPanel
+                                            Grid.Row="2"
+                                            Grid.Column="1"
+                                            Orientation="Horizontal"
+                                            Spacing="10">
+                                            <Slider
+                                                x:Name="TimeoutSlider"
+                                                Width="140"
+                                                Minimum="15"
+                                                Maximum="30"
+                                                StepFrequency="5"
+                                                SnapsTo="StepValues"
+                                                TickPlacement="Outside"
+                                                VerticalAlignment="Center"
+                                                ValueChanged="ConnectSlider_ValueChanged" />
+                                            <TextBlock
+                                                x:Name="TimeoutValueText"
+                                                MinWidth="36"
+                                                FontSize="12"
+                                                VerticalAlignment="Center" />
+                                        </StackPanel>
+
+                                        <TextBlock
+                                            x:Name="MaxRetriesLabel"
+                                            Grid.Row="3"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <StackPanel
+                                            Grid.Row="3"
+                                            Grid.Column="1"
+                                            Orientation="Horizontal"
+                                            Spacing="10">
+                                            <Slider
+                                                x:Name="MaxRetriesSlider"
+                                                Width="140"
+                                                Minimum="1"
+                                                Maximum="3"
+                                                StepFrequency="1"
+                                                SnapsTo="StepValues"
+                                                TickPlacement="Outside"
+                                                VerticalAlignment="Center"
+                                                ValueChanged="ConnectSlider_ValueChanged" />
+                                            <TextBlock
+                                                x:Name="MaxRetriesValueText"
+                                                MinWidth="36"
+                                                FontSize="12"
+                                                VerticalAlignment="Center" />
+                                        </StackPanel>
+
+                                        <TextBlock
+                                            x:Name="RetryDelayLabel"
+                                            Grid.Row="4"
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center" />
+                                        <StackPanel
+                                            Grid.Row="4"
+                                            Grid.Column="1"
+                                            Orientation="Horizontal"
+                                            Spacing="10">
+                                            <Slider
+                                                x:Name="RetryDelaySlider"
+                                                Width="140"
+                                                Minimum="3"
+                                                Maximum="10"
+                                                StepFrequency="1"
+                                                SnapsTo="StepValues"
+                                                TickPlacement="Outside"
+                                                VerticalAlignment="Center"
+                                                ValueChanged="ConnectSlider_ValueChanged" />
+                                            <TextBlock
+                                                x:Name="RetryDelayValueText"
+                                                MinWidth="36"
+                                                FontSize="12"
+                                                VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Grid>
+                                </ScrollViewer>
+                            </TabViewItem>
+                        </TabView>
+
+                        <!-- 底部按钮行 (右卡片内部, 居左): 顶部分隔线 + 保存 / 测试 / 关闭 -->
+                        <Grid Grid.Row="1" Margin="10,0,10,10">
+                            <Rectangle
+                                Height="1"
+                                VerticalAlignment="Top"
+                                Fill="{ThemeResource CardStrokeColorDefaultBrush}" />
+                            <StackPanel
+                                Margin="0,8,0,0"
+                                HorizontalAlignment="Left"
+                                Orientation="Horizontal"
+                                Spacing="8">
+                                <!-- UIA Name 取自 Content (ApplyResources 设本地化文案), 不硬编码 -->
+                                <Button
+                                    x:Name="SaveBtn"
+                                    Padding="14,5"
+                                    FontSize="12"
+                                    Background="#0078D4"
+                                    BorderThickness="0"
+                                    AutomationProperties.Name="SaveHostsButton"
+                                    Click="SaveBtn_Click"
+                                    Foreground="White"
+                                    GettingFocus="SaveBtn_GettingFocus">
+                                    <Button.Resources>
+                                        <!-- 悬停/按下用更深蓝色, 保持白字可读 (与标题栏主机按钮一致) -->
+                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                    </Button.Resources>
+                                </Button>
+                                <Button
+                                    x:Name="TestBtn"
+                                    Padding="14,5"
+                                    FontSize="12"
+                                    Click="TestBtn_Click" />
+                                <Button
+                                    x:Name="CloseBtn"
+                                    Padding="14,5"
+                                    FontSize="12"
+                                    AutomationProperties.Name="CloseHostPanelButton"
+                                    Click="CloseBtn_Click" />
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- 测试结果提示: 浮层居中, 底边距 footer 顶边 10px (footer 总高约 51px) -->
+                        <InfoBar
+                            x:Name="TestAlert"
+                            Grid.Row="0"
+                            Grid.RowSpan="2"
+                            Margin="20,0,20,61"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Bottom"
+                            IsOpen="False" />
+                    </Grid>
+                </Border>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

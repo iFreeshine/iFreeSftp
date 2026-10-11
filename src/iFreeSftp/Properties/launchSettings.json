@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "iFreeSftp (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "iFreeSftp (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

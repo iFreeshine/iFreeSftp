@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="iFreeSftp.Views.Header"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:controls="using:iFreeSftp.Controls"
+    xmlns:views="using:iFreeSftp.Views"
+    Title="iFreeSftp"
+    mc:Ignorable="d">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <!-- header 用该色系较浅一档的颜色, 主容器用深一档 (画刷定义见 App.xaml)。
+         根元素为 HandCursorRoot (Grid 子类): 封装按钮/Tab 的悬停手型光标方案。 -->
+    <controls:HandCursorRoot x:Name="RootGrid" Background="{ThemeResource HeaderAreaBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!--
+            沉浸式标题栏: TitleBar 控件负责拖拽区域与系统 caption 按钮;
+            最大化/最小化/关闭由系统绘制在控件右端。
+            模板默认图标 16px/标题 12px 偏小, 且 Content 插槽被模板水平居中,
+            故 logo 与应用名不放 TitleBar 内部插槽, 而是与其他自定义内容一样
+            overlay 在同格 Row 0 (见下)。
+        -->
+        <TitleBar x:Name="AppTitleBar" />
+
+        <!--
+            左侧品牌区 (logo + 应用名): overlay 在 Row 0, z 序在 TitleBar 之上。
+            不用 TitleBar.LeftHeader —— 其模板内容区有 48 逻辑px 的最小高度,
+            高 DPI 下运行时把控件高度钳制为 caption 实际高度后, LeftHeader 内部
+            仍按 48px 盒子居中, 内容会偏低 (1.75x 缩放实测 logo/标题中心比
+            caption 中心线低 6 物理px)。overlay 后与右侧按钮组同一居中机制:
+            Row 0 高度 = 钳制后的 caption 条高度, Center 即精确居中。
+            IsHitTestVisible=False 使鼠标穿透到下层 TitleBar, 在 logo/文字上
+            按下拖动仍可移动窗口。
+        -->
+        <StackPanel
+            x:Name="TitleBrandingPanel"
+            Grid.Row="0"
+            Margin="10,0,0,0"
+            HorizontalAlignment="Left"
+            VerticalAlignment="Center"
+            Orientation="Horizontal"
+            Spacing="10"
+            IsHitTestVisible="False">
+            <Image
+                Width="26"
+                Height="26"
+                VerticalAlignment="Center"
+                Source="ms-appx:///Assets/TitleBarLogo.png" />
+            <TextBlock
+                VerticalAlignment="Center"
+                FontSize="16"
+                FontWeight="SemiBold"
+                Text="iFreeSftp" />
+        </StackPanel>
+
+        <!--
+            标题栏右侧按钮组: 叠放在 TitleBar 控件上层 (同在 Row 0, 靠后声明 z 序更高)。
+            不用 TitleBar.RightHeader —— 其模板在 RightHeader 与系统 caption 按钮之间
+            保留一段随窗口宽度变化的空白, 按钮无法紧贴 caption 按钮; 故手动右对齐,
+            右边距在代码中按 AppWindow.TitleBar.RightInset (caption 按钮区宽度) 动态计算。
+            按钮高度运行时按 caption 条高 − 10 自适应 (上下各留 5 逻辑px), XAML 的
+            Height="33" 仅为初值, 见 Header.xaml.cs UpdateTitleBarMetrics。
+        -->
+        <StackPanel
+            x:Name="TitleButtonsPanel"
+            Grid.Row="0"
+            Margin="0,0,160,0"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Center"
+            Orientation="Horizontal"
+            Spacing="4">
+            <!-- 顺序: 模式胶囊(同步浏览/文件比对) -> 主机 -> 设置 -> 主题 -> 语言 -->
+            <!--
+                模式胶囊: 主机按钮左侧, 内含两个图标 ToggleButton (文字在 tooltip,
+                双语见 ApplyTitleBarResources)。胶囊保留 subtle 底 + 最淡描边;
+                内部按钮未选中态全透明 (无底色/描边/悬停灰), 选中态用主机按钮
+                同款蓝 (醒目), 悬停/按下加深保持白字。
+            -->
+            <Border
+                Height="33"
+                Margin="0,0,8,0"
+                Padding="2"
+                VerticalAlignment="Center"
+                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                BorderBrush="{ThemeResource SeparatorLineBrush}"
+                BorderThickness="1"
+                CornerRadius="16">
+                <Border.Resources>
+                    <!-- 按钮未选中态透明底无描边; hover/按下用 ControlFill 系圆角块
+                         (Subtle 系无 Primary 档, 引用不存在的资源键 hover 即崩) -->
+                    <SolidColorBrush x:Key="ToggleButtonBackground" Color="Transparent" />
+                    <ThemeResource x:Key="ToggleButtonBackgroundPointerOver" ResourceKey="ControlFillColorSecondaryBrush" />
+                    <ThemeResource x:Key="ToggleButtonBackgroundPressed" ResourceKey="ControlFillColorTertiaryBrush" />
+                    <SolidColorBrush x:Key="ToggleButtonBorderBrush" Color="Transparent" />
+                    <SolidColorBrush x:Key="ToggleButtonBorderBrushPointerOver" Color="Transparent" />
+                    <SolidColorBrush x:Key="ToggleButtonBorderBrushPressed" Color="Transparent" />
+                    <!-- 选中态醒目: 固定成功绿 #107C10 (系统 SystemFillColorSuccess 的
+                         亮色值 #0F5B00 过于暗沉, 观感近似警示土黄), 白字, hover/按下同色 -->
+                    <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#107C10" />
+                    <SolidColorBrush x:Key="ToggleButtonBorderBrushChecked" Color="#107C10" />
+                    <SolidColorBrush x:Key="ToggleButtonForegroundChecked" Color="White" />
+                    <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="#107C10" />
+                    <SolidColorBrush x:Key="ToggleButtonBorderBrushCheckedPointerOver" Color="#107C10" />
+                    <SolidColorBrush x:Key="ToggleButtonForegroundCheckedPointerOver" Color="White" />
+                    <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="#107C10" />
+                    <SolidColorBrush x:Key="ToggleButtonBorderBrushCheckedPressed" Color="#107C10" />
+                    <SolidColorBrush x:Key="ToggleButtonForegroundCheckedPressed" Color="White" />
+                </Border.Resources>
+                <StackPanel Orientation="Horizontal" Spacing="2">
+                    <!-- E895 = Sync 双环箭头 (同步浏览联动)。
+                         tooltip 挂透明宿主而非按钮: WinUI 禁用控件不参与命中测试,
+                         挂在按钮上 disable 时永远不显示 tooltip (无 ShowOnDisabled) -->
+                    <Grid x:Name="SyncBrowseToggleHost" Background="Transparent">
+                        <ToggleButton
+                            x:Name="SyncBrowseToggle"
+                            Width="30"
+                            Height="27"
+                            Padding="0"
+                            CornerRadius="12"
+                            Click="SyncBrowseToggle_Click">
+                            <FontIcon FontSize="13" Glyph="&#xE895;" />
+                        </ToggleButton>
+                    </Grid>
+                    <!-- E8C8 = 双页文件 (两份内容比对) -->
+                    <Grid x:Name="CompareToggleHost" Background="Transparent">
+                        <ToggleButton
+                            x:Name="CompareToggle"
+                            Width="30"
+                            Height="27"
+                            Padding="0"
+                            CornerRadius="12"
+                            Click="CompareToggle_Click">
+                            <FontIcon FontSize="13" Glyph="&#xE8C8;" />
+                        </ToggleButton>
+                    </Grid>
+                </StackPanel>
+            </Border>
+            <Button
+                x:Name="HostBtn"
+                Height="33"
+                MinWidth="36"
+                Padding="10,0"
+                Background="#0078D4"
+                Foreground="White"
+                BorderThickness="0"
+                Click="HostBtn_Click">
+                <Button.Resources>
+                    <!-- 悬停/按下用更深蓝色, 保持白字可读 (覆盖默认灰色主题画刷) -->
+                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                </Button.Resources>
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <!-- E968 = 塔式服务器/主机图标 -->
+                    <FontIcon FontSize="13" Glyph="&#xE968;" />
+                    <TextBlock x:Name="HostBtnText" FontSize="13" Text="" />
+                </StackPanel>
+            </Button>
+            <Button
+                x:Name="SettingsBtn"
+                Width="36"
+                Height="33"
+                Padding="0"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="SettingsBtn_Click">
+                <FontIcon FontSize="14" Glyph="&#xE713;" />
+            </Button>
+            <Button
+                x:Name="ThemeToggleBtn"
+                Width="36"
+                Height="33"
+                Padding="0"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="ThemeToggleBtn_Click">
+                <FontIcon x:Name="ThemeIcon" FontSize="14" Glyph="&#xE708;" />
+            </Button>
+            <Button
+                x:Name="LangToggleBtn"
+                Width="36"
+                Height="33"
+                Padding="0"
+                Background="Transparent"
+                BorderThickness="0"
+                Click="LangToggleBtn_Click">
+                <!-- E8C1 = "A+字" 翻译/语言图标, 替换原来的 E909 球体 -->
+                <FontIcon FontSize="14" Glyph="&#xE8C1;" />
+            </Button>
+        </StackPanel>
+
+        <!--
+            The Frame hosts pages for your application content. Add your UI to
+            MainContainer.xaml rather than here so you can use Page features such as
+            navigation events and the Loaded lifecycle.
+        -->
+        <Frame x:Name="RootFrame" Grid.Row="1" />
+
+        <!--
+            主机设置面板覆盖层: 最后声明 z 序最高, RowSpan=2 覆盖全窗 (含标题条)。
+            平时 Collapsed, 由 HostBtn_Click 切换显示; 内部自带遮罩/卡片与关闭逻辑。
+        -->
+        <views:HostPanel x:Name="HostPanelOverlay" Grid.RowSpan="2" Visibility="Collapsed" />
+
+        <!--
+            设置面板覆盖层 (右上角设置按钮): 结构与主机面板同款 (自带遮罩/卡片/关闭),
+            平时 Collapsed, 由 SettingsBtn_Click 切换显示。
+        -->
+        <views:SettingsPanel x:Name="SettingsPanelOverlay" Grid.RowSpan="2" Visibility="Collapsed" />
+
+        <!--
+            打开内容选择器覆盖层 (tab 栏 + 按钮 / 空状态"选择主机"按钮):
+            最后声明保证 z 序最高; 自带遮罩/卡片/关闭, 平时 Collapsed, 打开后
+            点"本地文件系统"或某主机行即选择关闭, 由 Header 编排落位。
+        -->
+        <views:HostPickerPanel x:Name="HostPickerOverlay" Grid.RowSpan="2" Visibility="Collapsed" />
+    </controls:HandCursorRoot>
+</Window>

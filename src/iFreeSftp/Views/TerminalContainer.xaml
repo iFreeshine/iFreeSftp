@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="iFreeSftp.Views.TerminalContainer"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:services="using:iFreeSftp.Services"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <!-- 终端配色: 亮暗主题各自的基色加大 G 值 (背景与文字都偏绿调, 与整体主题协调);
+                 偏移量取轻量档, 避免绿调过重 -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <!-- 背景指定 #F9FCF9 (2026-09: 由 #E0E9E0 大幅调淡, 近容器底色带微绿) ;
+                         正文 #1A2C1A 淡化 +20 ; 时间戳 #666E66 淡化 +14 -->
+                    <SolidColorBrush x:Key="TerminalBackgroundBrush" Color="#F9FCF9" />
+                    <SolidColorBrush x:Key="TerminalTextBrush" Color="#3A4C3A" />
+                    <SolidColorBrush x:Key="TerminalTimeBrush" Color="#7A827A" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <!-- 背景指定 #1B2A30 ; 正文 #E6F2E6 淡化 -20 ; 时间戳 #9EAC9E 淡化 -14 -->
+                    <SolidColorBrush x:Key="TerminalBackgroundBrush" Color="#1B2A30" />
+                    <SolidColorBrush x:Key="TerminalTextBrush" Color="#C6D2C6" />
+                    <SolidColorBrush x:Key="TerminalTimeBrush" Color="#8A988A" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+
+            <!-- 全区右键菜单: 清除全部 / 复制到粘贴板。共享实例同时挂到根 Border 与正文
+                 TextBlock 的 ContextFlyout 上——TextBlock 选择模式的默认 TextCommandBarFlyout
+                 (含"全选") 只能靠 ContextFlyout 替换 (ContextRequested 里设 Handled 无效,
+                 默认菜单在其内部类处理中已弹出); SelectionFlyout 置空防选中时再弹默认菜单 -->
+            <MenuFlyout x:Name="TerminalMenuFlyout">
+                <MenuFlyoutItem x:Name="ClearAllItem" FontSize="12" Click="ClearAll_Click" />
+                <MenuFlyoutItem x:Name="CopyAllItem" FontSize="12" Click="CopyAll_Click" />
+            </MenuFlyout>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <!--
+        终端容器: 主机命令窗 (位于右文件夹容器下方), 暗绿终端风格。
+        无标题栏; loading 圈悬浮右上角; 每条日志独立段落 (段间距加大),
+        时间戳固定列 + 正文自动换行, 续行自然对齐在时间戳之后。
+    -->
+    <Border
+        x:Name="RootBorder"
+        Background="{ThemeResource TerminalBackgroundBrush}"
+        CornerRadius="8"
+        ContextFlyout="{StaticResource TerminalMenuFlyout}">
+        <Grid>
+            <ScrollViewer
+                x:Name="LogScroll"
+                Padding="12,8"
+                HorizontalScrollBarVisibility="Disabled"
+                VerticalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="LogList" ItemsSource="{x:Bind Lines}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="services:TerminalLogEntry">
+                            <Grid
+                                Margin="0,0,0,7"
+                                ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock
+                                    Grid.Column="0"
+                                    FontFamily="Cascadia Mono, Consolas, Courier New"
+                                    FontSize="11"
+                                    Foreground="{ThemeResource TerminalTimeBrush}"
+                                    Text="{x:Bind Time}" />
+                                <TextBlock
+                                    Grid.Column="1"
+                                    FontFamily="Cascadia Mono, Consolas, Courier New"
+                                    FontSize="11"
+                                    Foreground="{ThemeResource TerminalTextBrush}"
+                                    ContextFlyout="{StaticResource TerminalMenuFlyout}"
+                                    IsTextSelectionEnabled="True"
+                                    SelectionFlyout="{x:Null}"
+                                    Text="{x:Bind Text}"
+                                    TextWrapping="Wrap" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <!-- loading 圈: 连接进行中悬浮右上角 (无标题栏后不再占独立行) -->
+            <ProgressRing
+                x:Name="BusyRing"
+                Width="18"
+                Height="18"
+                Margin="0,9,12,0"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                IsActive="False" />
+        </Grid>
+    </Border>
+</UserControl>

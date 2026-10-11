@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>x64</Platforms>
+    <RootNamespace>iFreeSftp.WpfEditor</RootNamespace>
+    <!-- Release pdb 内嵌: 发布目录不出现本项目的 .pdb 散件 (主项目同款设置) -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AvalonEdit: 开源代码编辑器内核（ICSharpCode 出品）, 自带多语言语法高亮定义 -->
+    <PackageReference Include="AvalonEdit" Version="6.3.1.120" />
+  </ItemGroup>
+
+</Project>

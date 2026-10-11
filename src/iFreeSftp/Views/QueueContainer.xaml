@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    传输队列容器 (左文件夹容器下方): head 表头 + 队列列表 + foot 状态页签
+    (队列中/传输失败/传输完成)。列表经 TransferQueueService 按页签过滤绑定:
+    队列中 = 源/目标/大小/速度(等待中·传输中·实时速度);
+    传输失败 = 源/目标/大小/时间/原因; 传输完成 = 源/目标/大小/时间。
+    表头整面为指针命中面 (透明背景): 悬停靠近列分割线 ±6px 显示 ↔ 光标,
+    按住拖拽调宽: 星号列在两侧间转移宽度, 定宽列调像素, 每个页签独立记忆列宽;
+    行网格与表头同构, 宽度由代码同步应用。
+-->
+<UserControl
+    x:Class="iFreeSftp.Views.QueueContainer"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:iFreeSftp.Views"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <!-- foot 状态页签: 纯文本分段样式 (选中主色加粗, hover 浅底), 无系统圆点 -->
+        <Style x:Key="QTabStyle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="UseSystemFocusVisuals" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border
+                            Padding="10,4"
+                            Background="Transparent"
+                            CornerRadius="4">
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal" />
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="CheckStates">
+                                    <VisualState x:Name="Unchecked" />
+                                    <VisualState x:Name="Checked">
+                                        <VisualState.Setters>
+                                            <Setter Target="TabText.Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                            <Setter Target="TabText.FontWeight" Value="SemiBold" />
+                                            <Setter Target="TabCount.Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                <TextBlock
+                                    x:Name="TabText"
+                                    Foreground="{TemplateBinding Foreground}"
+                                    FontSize="{TemplateBinding FontSize}"
+                                    Text="{TemplateBinding Content}" />
+                                <!-- 计数 (Tag 传入): 未选中淡色, 选中转主色 (不加粗, 主次分明) -->
+                                <TextBlock
+                                    x:Name="TabCount"
+                                    FontSize="{TemplateBinding FontSize}"
+                                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                    Text="{TemplateBinding Tag}" />
+                            </StackPanel>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 队列右键菜单: 按状态显隐, 弹出位置与可见性由代码后置 Root_RightTapped 决定
+             (样式与终端命令窗一致: presenter 背景代码后置按主题直配, 字号 12)。
+             弹出规则: 传输中 = 暂停 + 停止 + 删除所有 / 暂停中 = 继续传输 + 停止 +
+             删除所有 / 全部成功或含失败 = 删除所有 + 重置并重新请求所有。队列空不弹 -->
+        <MenuFlyout x:Name="QueueMenuFlyout">
+            <MenuFlyoutItem x:Name="PauseItem" FontSize="12" Click="PauseItem_Click" />
+            <MenuFlyoutItem x:Name="ResumeItem" FontSize="12" Click="ResumeItem_Click" />
+            <MenuFlyoutItem x:Name="StopItem" FontSize="12" Click="StopItem_Click" />
+            <MenuFlyoutItem x:Name="DeleteAllItem" FontSize="12" Click="DeleteAllItem_Click" />
+            <MenuFlyoutItem x:Name="RetryAllItem" FontSize="12" Click="RetryAllItem_Click" />
+        </MenuFlyout>
+    </UserControl.Resources>
+
+    <Grid RightTapped="Root_RightTapped">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- head: 表头 (5 列: 源/目标/大小/速度或时间/原因; 非失败页签隐藏第 5 列)。
+             整条表头为命中面 (透明背景, 橡皮筋同款指针机制): 悬停靠近列分割线 ±6px
+             显示 ↔ 光标, 按住分割线拖拽即调宽; 列间可见分割线作拖拽位置提示 -->
+        <Border
+            x:Name="HeaderBar"
+            Grid.Row="0"
+            Padding="12,5"
+            Background="Transparent"
+            BorderBrush="{ThemeResource SeparatorLineBrush}"
+            BorderThickness="0,0,0,1"
+            PointerCanceled="HeaderBar_Released"
+            PointerExited="HeaderBar_Exited"
+            PointerMoved="HeaderBar_Moved"
+            PointerPressed="HeaderBar_Pressed"
+            PointerReleased="HeaderBar_Released">
+            <Grid x:Name="HeaderGrid" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="2*" />
+                    <ColumnDefinition Width="2*" />
+                    <ColumnDefinition Width="90" />
+                    <ColumnDefinition Width="90" />
+                    <ColumnDefinition Width="0" />
+                </Grid.ColumnDefinitions>
+                <TextBlock
+                    x:Name="ColSource"
+                    Grid.Column="0"
+                    FontSize="12"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextTrimming="CharacterEllipsis" />
+                <TextBlock
+                    x:Name="ColDest"
+                    Grid.Column="1"
+                    FontSize="12"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextTrimming="CharacterEllipsis" />
+                <TextBlock
+                    x:Name="ColSize"
+                    Grid.Column="2"
+                    FontSize="12"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock
+                    x:Name="ColSpeed"
+                    Grid.Column="3"
+                    FontSize="12"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock
+                    x:Name="ColReason"
+                    Grid.Column="4"
+                    FontSize="12"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Visibility="Collapsed" />
+                <!-- 列分割线 (12px 间距中点): 拖拽位置提示; 第 4 条仅失败页签 (原因列左缘) -->
+                <Rectangle
+                    x:Name="Div0"
+                    Grid.Column="0"
+                    Width="1"
+                    Margin="0,0,-6.5,0"
+                    HorizontalAlignment="Right"
+                    Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                <Rectangle
+                    x:Name="Div1"
+                    Grid.Column="1"
+                    Width="1"
+                    Margin="0,0,-6.5,0"
+                    HorizontalAlignment="Right"
+                    Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                <Rectangle
+                    x:Name="Div2"
+                    Grid.Column="2"
+                    Width="1"
+                    Margin="0,0,-6.5,0"
+                    HorizontalAlignment="Right"
+                    Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                <Rectangle
+                    x:Name="Div3"
+                    Grid.Column="3"
+                    Width="1"
+                    Margin="0,0,-6.5,0"
+                    HorizontalAlignment="Right"
+                    Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
+                    Visibility="Collapsed" />
+            </Grid>
+        </Border>
+
+        <!-- 队列列表: 按 foot 页签过滤绑定 (队列中=等待+传输中 / 传输失败 / 传输完成);
+             行网格与 head 表头同构 5 列, 第 4 列=速度(队列中)或时间(失败/完成),
+             第 5 列=原因(仅失败页签), 列宽与可见性由代码按当前页签同步应用 -->
+        <ListView
+            x:Name="QueueList"
+            Grid.Row="1"
+            Padding="0"
+            SelectionMode="None">
+            <ListView.ItemTemplate>
+                <DataTemplate>
+                    <Grid x:Name="RowRoot" Padding="12,5" ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2*" />
+                            <ColumnDefinition Width="2*" />
+                            <ColumnDefinition Width="90" />
+                            <ColumnDefinition Width="90" />
+                            <ColumnDefinition Width="0" />
+                        </Grid.ColumnDefinitions>
+                        <!-- 源/目标列 hover 原位覆盖显示完整路径 (Popup 不随鼠标漂移,
+                             代码后置 PathText_PointerEntered; 系统ToolTip贴指针且离块远已弃用) -->
+                        <TextBlock
+                            Grid.Column="0"
+                            FontSize="12"
+                            Text="{Binding Source}"
+                            TextTrimming="CharacterEllipsis"
+                            PointerEntered="PathText_PointerEntered"
+                            PointerExited="PathText_PointerExited" />
+                        <TextBlock
+                            Grid.Column="1"
+                            FontSize="12"
+                            Text="{Binding Dest}"
+                            TextTrimming="CharacterEllipsis"
+                            PointerEntered="PathText_PointerEntered"
+                            PointerExited="PathText_PointerExited" />
+                        <TextBlock
+                            Grid.Column="2"
+                            FontSize="12"
+                            Text="{Binding SizeText}"
+                            TextTrimming="CharacterEllipsis" />
+                        <TextBlock
+                            Grid.Column="3"
+                            FontSize="12"
+                            Text="{Binding StatusText}"
+                            TextTrimming="CharacterEllipsis" />
+                        <TextBlock
+                            Grid.Column="4"
+                            FontSize="12"
+                            Text="{Binding ErrorText}"
+                            TextTrimming="CharacterEllipsis"
+                            ToolTipService.ToolTip="{Binding ErrorText}"
+                            Visibility="Collapsed" />
+                    </Grid>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+            <!-- 容器清零默认 Padding/MinHeight (FileView 列表同款):
+                 否则行文字被系统内边距缩进 (与表头 12px 对不齐) 且行高被撑高 -->
+            <ListView.ItemContainerStyle>
+                <Style BasedOn="{StaticResource DefaultListViewItemStyle}" TargetType="ListViewItem">
+                    <Setter Property="Padding" Value="0" />
+                    <Setter Property="MinHeight" Value="0" />
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                </Style>
+            </ListView.ItemContainerStyle>
+        </ListView>
+
+        <!-- foot: 状态页签栏 -->
+        <Border
+            Grid.Row="2"
+            Padding="6,2"
+            BorderBrush="{ThemeResource SeparatorLineBrush}"
+            BorderThickness="0,1,0,0">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+                <RadioButton
+                    x:Name="TabActive"
+                    Checked="Tab_Checked"
+                    GroupName="QTabs"
+                    IsChecked="True"
+                    Style="{StaticResource QTabStyle}" />
+                <RadioButton
+                    x:Name="TabFailed"
+                    Checked="Tab_Checked"
+                    GroupName="QTabs"
+                    Style="{StaticResource QTabStyle}" />
+                <RadioButton
+                    x:Name="TabDone"
+                    Checked="Tab_Checked"
+                    GroupName="QTabs"
+                    Style="{StaticResource QTabStyle}" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

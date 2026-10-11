@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    文件夹窗格: 复用 IdeTabStrip 标签条, 每个标签承载一个 FileView。
+    标签条 UI (标签模板/配色/基线/+ 按钮) 全部由 IdeTabStrip 封装,
+    此处只保留业务逻辑 (创建/释放 FileView、本地化、本地-远程模式切换)。
+-->
+<UserControl
+    x:Class="iFreeSftp.Views.FolderContainer"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:iFreeSftp.Views"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <local:IdeTabStrip x:Name="Strip" />
+</UserControl>

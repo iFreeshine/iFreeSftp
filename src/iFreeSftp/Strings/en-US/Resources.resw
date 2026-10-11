@@ -1,0 +1,926 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <!--
+    WinUI 3 string resources (.resw) for the English locale.
+    Loaded at runtime by LocalizationService via ResourceLoader.
+  -->
+  <data name="AppTitle" xml:space="preserve">
+    <value>iFreeSftp</value>
+  </data>
+  <data name="ThemeToggleLabel" xml:space="preserve">
+    <value>Toggle theme</value>
+  </data>
+  <data name="SettingsLabel" xml:space="preserve">
+    <value>Settings</value>
+  </data>
+  <data name="ThemeLight" xml:space="preserve">
+    <value>Light</value>
+  </data>
+  <data name="ThemeDark" xml:space="preserve">
+    <value>Dark</value>
+  </data>
+  <data name="LanguageLabel" xml:space="preserve">
+    <value>Language</value>
+  </data>
+  <data name="LangEnglish" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="LangChinese" xml:space="preserve">
+    <value>中文</value>
+  </data>
+  <data name="PaneLeft" xml:space="preserve">
+    <value>Local site</value>
+  </data>
+  <data name="PaneRight" xml:space="preserve">
+    <value>Remote site</value>
+  </data>
+  <data name="NewTab" xml:space="preserve">
+    <value>New tab</value>
+  </data>
+  <data name="CloseTab" xml:space="preserve">
+    <value>Close tab</value>
+  </data>
+  <data name="TabLocal" xml:space="preserve">
+    <value>Local</value>
+  </data>
+  <data name="TabRemote" xml:space="preserve">
+    <value>Remote</value>
+  </data>
+  <data name="Connect" xml:space="preserve">
+    <value>Connect</value>
+  </data>
+  <data name="Disconnect" xml:space="preserve">
+    <value>Disconnect</value>
+  </data>
+  <data name="LocalMode" xml:space="preserve">
+    <value>Local</value>
+  </data>
+  <data name="RemoteMode" xml:space="preserve">
+    <value>Remote</value>
+  </data>
+  <data name="Host" xml:space="preserve">
+    <value>Host</value>
+  </data>
+  <data name="Port" xml:space="preserve">
+    <value>Port</value>
+  </data>
+  <data name="Username" xml:space="preserve">
+    <value>Username</value>
+  </data>
+  <data name="Password" xml:space="preserve">
+    <value>Password</value>
+  </data>
+  <data name="Path" xml:space="preserve">
+    <value>Path</value>
+  </data>
+  <data name="ColName" xml:space="preserve">
+    <value>Name</value>
+  </data>
+  <data name="ColSize" xml:space="preserve">
+    <value>Size</value>
+  </data>
+  <data name="ColModified" xml:space="preserve">
+    <value>Modified</value>
+  </data>
+  <data name="ColType" xml:space="preserve">
+    <value>Type</value>
+  </data>
+  <data name="ColPermissions" xml:space="preserve">
+    <value>Permissions</value>
+  </data>
+  <data name="KeepAlive" xml:space="preserve">
+    <value>keep-alive</value>
+  </data>
+  <data name="Transfer" xml:space="preserve">
+    <value>Transfer</value>
+  </data>
+  <data name="Upload" xml:space="preserve">
+    <value>Upload</value>
+  </data>
+  <data name="Download" xml:space="preserve">
+    <value>Download</value>
+  </data>
+  <data name="Refresh" xml:space="preserve">
+    <value>Refresh</value>
+  </data>
+  <data name="UpOneLevel" xml:space="preserve">
+    <value>Up one level</value>
+  </data>
+  <data name="StatusDisconnected" xml:space="preserve">
+    <value>Disconnected</value>
+  </data>
+  <data name="FolderType" xml:space="preserve">
+    <value>Folder</value>
+  </data>
+  <data name="FileType" xml:space="preserve">
+    <value>File</value>
+  </data>
+  <data name="FolderTypeName" xml:space="preserve">
+    <value>File folder</value>
+  </data>
+  <data name="ExtFileFormat" xml:space="preserve">
+    <value>{0} file</value>
+  </data>
+  <data name="SymlinkTypeName" xml:space="preserve">
+    <value>Shortcut</value>
+  </data>
+  <data name="ExecutableTypeName" xml:space="preserve">
+    <value>Application</value>
+  </data>
+  <data name="TextFileTypeName" xml:space="preserve">
+    <value>Text Document</value>
+  </data>
+  <data name="PdfFileTypeName" xml:space="preserve">
+    <value>PDF File</value>
+  </data>
+  <data name="ImageFileTypeName" xml:space="preserve">
+    <value>Image File</value>
+  </data>
+  <data name="VideoFileTypeName" xml:space="preserve">
+    <value>Video File</value>
+  </data>
+  <data name="AudioFileTypeName" xml:space="preserve">
+    <value>Audio File</value>
+  </data>
+  <data name="ArchiveFileTypeName" xml:space="preserve">
+    <value>Archive File</value>
+  </data>
+  <data name="ScriptFileTypeName" xml:space="preserve">
+    <value>Script File</value>
+  </data>
+  <data name="SourceCodeFileTypeName" xml:space="preserve">
+    <value>Source Code File</value>
+  </data>
+  <data name="DocumentFileTypeName" xml:space="preserve">
+    <value>Document File</value>
+  </data>
+  <data name="LibraryFileTypeName" xml:space="preserve">
+    <value>Shared Library</value>
+  </data>
+  <data name="StatusDirCount" xml:space="preserve">
+    <value>{0} folders</value>
+  </data>
+  <data name="StatusFileCount" xml:space="preserve">
+    <value>{0} files</value>
+  </data>
+  <data name="StatusTotalBytes" xml:space="preserve">
+    <value>total {0} bytes</value>
+  </data>
+  <data name="MenuCopyToOpposite" xml:space="preserve">
+    <value>Transfer to other pane</value>
+  </data>
+  <data name="DragDropCaption" xml:space="preserve">
+    <value>Transfer to {0}</value>
+  </data>
+  <data name="TransferConflictTitle" xml:space="preserve">
+    <value>Transfer Confirmation</value>
+  </data>
+  <data name="TransferConflictQuestion" xml:space="preserve">
+    <value>"{0}" already exists at the destination. Overwrite?</value>
+  </data>
+  <data name="TransferSource" xml:space="preserve">
+    <value>Source</value>
+  </data>
+  <data name="TransferTarget" xml:space="preserve">
+    <value>Destination</value>
+  </data>
+  <data name="TransferOverwrite" xml:space="preserve">
+    <value>Overwrite</value>
+  </data>
+  <data name="TransferSkip" xml:space="preserve">
+    <value>Skip</value>
+  </data>
+  <data name="TransferApplyAll" xml:space="preserve">
+    <value>Apply to all remaining conflicts in this batch</value>
+  </data>
+  <data name="StatusTransferring" xml:space="preserve">
+    <value>Transferring {0}…</value>
+  </data>
+  <data name="StatusTransferDone" xml:space="preserve">
+    <value>Transferred {0} item(s), skipped {1}</value>
+  </data>
+  <data name="StatusTransferCancelled" xml:space="preserve">
+    <value>Transfer cancelled</value>
+  </data>
+  <data name="StatusTransferDoneFailed" xml:space="preserve">
+    <value>Transferred {0} item(s), skipped {1}, failed {2}</value>
+  </data>
+  <data name="StatusTransferBusy" xml:space="preserve">
+    <value>A transfer is already in progress</value>
+  </data>
+  <data name="MenuEdit" xml:space="preserve">
+    <value>Edit</value>
+  </data>
+  <data name="MenuOpen" xml:space="preserve">
+    <value>Open</value>
+  </data>
+  <data name="MenuNewFolder" xml:space="preserve">
+    <value>New folder</value>
+  </data>
+  <data name="MenuNewFile" xml:space="preserve">
+    <value>New file</value>
+  </data>
+  <data name="MenuRename" xml:space="preserve">
+    <value>Rename</value>
+  </data>
+  <data name="MenuDelete" xml:space="preserve">
+    <value>Delete</value>
+  </data>
+  <data name="DeleteConfirmMessage" xml:space="preserve">
+    <value>Permanently delete: {0}
+This cannot be undone.</value>
+  </data>
+  <data name="DeleteConfirmMessageMulti" xml:space="preserve">
+    <value>Permanently delete {0} item(s).
+This cannot be undone.</value>
+  </data>
+  <data name="DeleteConfirmBody" xml:space="preserve">
+    <value>The selected items will be permanently deleted. This cannot be undone.</value>
+  </data>
+  <data name="DeleteConfirmBodyRecycle" xml:space="preserve">
+    <value>The selected items will be moved to the Recycle Bin and can be restored.</value>
+  </data>
+  <data name="ErrRecycleDelete" xml:space="preserve">
+    <value>Failed to move to the Recycle Bin (file may be in use or no longer exists).</value>
+  </data>
+  <data name="DeleteConfirmMore" xml:space="preserve">
+    <value>and {0} more item(s)</value>
+  </data>
+  <data name="StatusDeletedCount" xml:space="preserve">
+    <value>Deleted {0} item(s)</value>
+  </data>
+  <data name="RemoteEditNotText" xml:space="preserve">
+    <value>Not a text file, opening cancelled</value>
+  </data>
+  <data name="RemoteEditTooLarge" xml:space="preserve">
+    <value>File exceeds 10 MB, remote editing is not supported</value>
+  </data>
+  <data name="RemoteEditConflict" xml:space="preserve">
+    <value>The remote file has been modified. Overwrite anyway?</value>
+  </data>
+  <data name="RemoteEditChanged" xml:space="preserve">
+    <value>The cached copy of "{0}" has changed. Save the edits to the server?</value>
+  </data>
+  <data name="RemoteEditSave" xml:space="preserve">
+    <value>Save to server</value>
+  </data>
+  <data name="RemoteEditOverwrite" xml:space="preserve">
+    <value>Overwrite</value>
+  </data>
+  <data name="RemoteEditUploaded" xml:space="preserve">
+    <value>Uploaded back to remote</value>
+  </data>
+  <data name="CategoryFileEdit" xml:space="preserve">
+    <value>File Editing</value>
+  </data>
+  <data name="CategoryTransfer" xml:space="preserve">
+    <value>Transfer</value>
+  </data>
+  <data name="CategoryRegistration" xml:space="preserve">
+    <value>Registration</value>
+  </data>
+  <data name="CategoryAbout" xml:space="preserve">
+    <value>About</value>
+  </data>
+  <data name="SettingsAboutTitle" xml:space="preserve">
+    <value>About iFreeSftp</value>
+  </data>
+  <data name="AppVersionDescFormat" xml:space="preserve">
+    <value>Version {0} · built {1}</value>
+  </data>
+  <data name="AppWebsiteBtn" xml:space="preserve">
+    <value>Visit website</value>
+  </data>
+  <data name="AppChannelsLabel" xml:space="preserve">
+    <value>Release channels</value>
+  </data>
+  <data name="AppChannelsDesc" xml:space="preserve">
+    <value>Latest releases and updates — see the website / GitHub repository</value>
+  </data>
+  <data name="AppLicenseLabel" xml:space="preserve">
+    <value>License</value>
+  </data>
+  <data name="AppLicenseDesc" xml:space="preserve">
+    <value>The app is released as open source under the GNU AGPL-3.0 license. Official builds additionally bundle separately distributed value-added components; community builds are made entirely from the open-source code.</value>
+  </data>
+  <data name="AppCopyrightLabel" xml:space="preserve">
+    <value>Copyright</value>
+  </data>
+  <data name="AppCopyrightDesc" xml:space="preserve">
+    <value>Copyright © 2026 ifrees.top</value>
+  </data>
+  <data name="RegFreeTitle" xml:space="preserve">
+    <value>Free for everyone</value>
+  </data>
+  <data name="RegFreeDesc" xml:space="preserve">
+    <value>All features are free to use, forever. The supporter badge is entirely voluntary — it unlocks nothing and restricts nothing.</value>
+  </data>
+  <data name="AppSupportTitle" xml:space="preserve">
+    <value>Support the project</value>
+  </data>
+  <data name="AppSupportDesc" xml:space="preserve">
+    <value>iFreeSftp is free, forever. If you find it useful, please consider registering as a supporter — a purely voluntary way to support development, not a feature unlock.</value>
+  </data>
+  <data name="SettingsRegistrationTitle" xml:space="preserve">
+    <value>Registration</value>
+  </data>
+  <data name="RegStatusLabel" xml:space="preserve">
+    <value>Registration status</value>
+  </data>
+  <data name="RegStatusFree" xml:space="preserve">
+    <value>Free to use · register to earn the supporter badge</value>
+  </data>
+  <data name="RegStatusOk" xml:space="preserve">
+    <value>Registered: {0} ({1})</value>
+  </data>
+  <data name="RegStatusRevoked" xml:space="preserve">
+    <value>Registration revoked, please activate again</value>
+  </data>
+  <data name="RegPermanent" xml:space="preserve">
+    <value>permanent</value>
+  </data>
+  <data name="RegExpiresTo" xml:space="preserve">
+    <value>valid until {0}</value>
+  </data>
+  <data name="RegBadgeFallback" xml:space="preserve">
+    <value>Supporter</value>
+  </data>
+  <data name="RegCodeLabel" xml:space="preserve">
+    <value>Registration code</value>
+  </data>
+  <data name="RegCodeHint" xml:space="preserve">
+    <value>Paste the code you received, then activate</value>
+  </data>
+  <data name="RegActivateBtn" xml:space="preserve">
+    <value>Activate</value>
+  </data>
+  <data name="RegBuyCnBtn" xml:space="preserve">
+    <value>购买注册码 (爱发电)</value>
+  </data>
+  <data name="RegBuyIntlBtn" xml:space="preserve">
+    <value>Get License (Ko-fi)</value>
+  </data>
+  <data name="RegActivateOk" xml:space="preserve">
+    <value>Activated. Thank you for your support!</value>
+  </data>
+  <data name="RegErrFormat" xml:space="preserve">
+    <value>Invalid registration code format</value>
+  </data>
+  <data name="RegErrOfficialOnly" xml:space="preserve">
+    <value>Activation requires the official build: the community build does not include the registration module. Get the official release from ifrees.top</value>
+  </data>
+  <data name="RegErrSignature" xml:space="preserve">
+    <value>Registration code verification failed</value>
+  </data>
+  <data name="RegErrExpired" xml:space="preserve">
+    <value>Registration code has expired</value>
+  </data>
+  <data name="RegNoticeLabel" xml:space="preserve">
+    <value>Notice</value>
+  </data>
+  <data name="ConcurrentTransfers" xml:space="preserve">
+    <value>Concurrent transfers</value>
+  </data>
+  <data name="ConcurrentTransfersHint" xml:space="preserve">
+    <value>Number of transfers running at the same time. 1 = serial on the current connection; above 1 each task uses its own connection, which speeds up multi-file transfers, but some servers may limit connections.</value>
+  </data>
+  <data name="EditorModeLabel" xml:space="preserve">
+    <value>Editor</value>
+  </data>
+  <data name="EditorBuiltinOption" xml:space="preserve">
+    <value>Built-in editor</value>
+  </data>
+  <data name="EditorExternalOption" xml:space="preserve">
+    <value>External editor</value>
+  </data>
+  <data name="EditorPathLabel" xml:space="preserve">
+    <value>Editor path</value>
+  </data>
+  <data name="EditorBrowseBtn" xml:space="preserve">
+    <value>Browse…</value>
+  </data>
+  <data name="EditorPathHint" xml:space="preserve">
+    <value>Pick the executable of your external editor (e.g. Notepad++, VS Code). Leave empty to fall back to the built-in editor.</value>
+  </data>
+  <data name="SettingsAppearanceTitle" xml:space="preserve">
+    <value>Appearance</value>
+  </data>
+  <data name="SettingsConnectionTitle" xml:space="preserve">
+    <value>Connection</value>
+  </data>
+  <data name="SettingsFileEditTitle" xml:space="preserve">
+    <value>File editing</value>
+  </data>
+  <data name="SettingsTransferTitle" xml:space="preserve">
+    <value>Transfer</value>
+  </data>
+  <data name="ThemeDesc" xml:space="preserve">
+    <value>Follow the system theme, or pick dark or light manually</value>
+  </data>
+  <data name="LanguageDesc" xml:space="preserve">
+    <value>Language used across the app</value>
+  </data>
+  <data name="TimeoutDesc" xml:space="preserve">
+    <value>Max wait while establishing the SSH connection (seconds); auto-retries on timeout</value>
+  </data>
+  <data name="MaxRetriesDesc" xml:space="preserve">
+    <value>Automatic retry attempts after a failed connection</value>
+  </data>
+  <data name="RetryDelayDesc" xml:space="preserve">
+    <value>Wait time between retries (seconds)</value>
+  </data>
+  <data name="OpenModeDesc" xml:space="preserve">
+    <value>How the right pane opens when connecting from a host card</value>
+  </data>
+  <data name="OperationTimeoutDesc" xml:space="preserve">
+    <value>Per-request response timeout (seconds); expires as an error instead of hanging</value>
+  </data>
+  <data name="KeepAliveLabel" xml:space="preserve">
+    <value>Keep alive</value>
+  </data>
+  <data name="KeepAliveDesc" xml:space="preserve">
+    <value>Send periodic heartbeats so routers or firewalls keep the connection open</value>
+  </data>
+  <data name="KeepAliveIntervalLabel" xml:space="preserve">
+    <value>Keep alive interval</value>
+  </data>
+  <data name="KeepAliveIntervalDesc" xml:space="preserve">
+    <value>Heartbeat period (seconds); requires keep alive enabled</value>
+  </data>
+  <data name="EditorModeDesc" xml:space="preserve">
+    <value>Which editor opens when editing files</value>
+  </data>
+  <data name="StatusCopyTargetInvalid" xml:space="preserve">
+    <value>Other pane not ready: open a local folder there first</value>
+  </data>
+  <data name="StatusCopiedCount" xml:space="preserve">
+    <value>Copied {0} item(s) to other pane</value>
+  </data>
+  <data name="QueueLabel" xml:space="preserve">
+    <value>Upload queue</value>
+  </data>
+  <data name="QColSource" xml:space="preserve">
+    <value>Source</value>
+  </data>
+  <data name="QColDest" xml:space="preserve">
+    <value>Destination</value>
+  </data>
+  <data name="QColSize" xml:space="preserve">
+    <value>Size</value>
+  </data>
+  <data name="QColSpeed" xml:space="preserve">
+    <value>Speed</value>
+  </data>
+  <data name="QTabActive" xml:space="preserve">
+    <value>Queued</value>
+  </data>
+  <data name="QTabFailed" xml:space="preserve">
+    <value>Failed</value>
+  </data>
+  <data name="QTabDone" xml:space="preserve">
+    <value>Completed</value>
+  </data>
+  <data name="QStateWaiting" xml:space="preserve">
+    <value>Waiting</value>
+  </data>
+  <data name="QColTime" xml:space="preserve">
+    <value>Time</value>
+  </data>
+  <data name="QColReason" xml:space="preserve">
+    <value>Reason</value>
+  </data>
+  <data name="QStateTransferring" xml:space="preserve">
+    <value>Transferring</value>
+  </data>
+  <data name="QStateDone" xml:space="preserve">
+    <value>Completed</value>
+  </data>
+  <data name="QStateFailed" xml:space="preserve">
+    <value>Failed</value>
+  </data>
+  <data name="TerminalLabel" xml:space="preserve">
+    <value>Terminal</value>
+  </data>
+  <data name="ItemsCount" xml:space="preserve">
+    <value>{0} items</value>
+  </data>
+  <data name="HostPanelTitle" xml:space="preserve">
+    <value>Host Settings</value>
+  </data>
+  <data name="AddHost" xml:space="preserve">
+    <value>Add host</value>
+  </data>
+  <data name="EditHost" xml:space="preserve">
+    <value>Edit host</value>
+  </data>
+  <data name="MenuConnect" xml:space="preserve">
+    <value>Connect</value>
+  </data>
+  <data name="MenuEdit" xml:space="preserve">
+    <value>Edit</value>
+  </data>
+  <data name="MenuDuplicate" xml:space="preserve">
+    <value>Duplicate</value>
+  </data>
+  <data name="MenuDelete" xml:space="preserve">
+    <value>Delete</value>
+  </data>
+  <data name="DuplicateSuffix" xml:space="preserve">
+    <value>Copy</value>
+  </data>
+  <data name="TabGeneral" xml:space="preserve">
+    <value>General</value>
+  </data>
+  <data name="TabSync" xml:space="preserve">
+    <value>Sync</value>
+  </data>
+  <data name="TabTransfer" xml:space="preserve">
+    <value>Transfer</value>
+  </data>
+  <data name="HostNameLabel" xml:space="preserve">
+    <value>Name</value>
+  </data>
+  <data name="IpLabel" xml:space="preserve">
+    <value>IP address</value>
+  </data>
+  <data name="LoginMethod" xml:space="preserve">
+    <value>Authentication</value>
+  </data>
+  <data name="AuthModePassword" xml:space="preserve">
+    <value>Password</value>
+  </data>
+  <data name="AuthModeKeyFile" xml:space="preserve">
+    <value>Key file</value>
+  </data>
+  <data name="KeyPathLabel" xml:space="preserve">
+    <value>Key file path</value>
+  </data>
+  <data name="Browse" xml:space="preserve">
+    <value>Browse</value>
+  </data>
+  <data name="LocalSyncPath" xml:space="preserve">
+    <value>Local sync path</value>
+  </data>
+  <data name="RemoteSyncPath" xml:space="preserve">
+    <value>Remote sync path</value>
+  </data>
+  <data name="EnableSync" xml:space="preserve">
+    <value>Enable sync</value>
+  </data>
+  <data name="EnableCompare" xml:space="preserve">
+    <value>Enable comparison</value>
+  </data>
+  <data name="EnableKeepAlive" xml:space="preserve">
+    <value>keep-alive</value>
+  </data>
+  <data name="KeepAliveInterval" xml:space="preserve">
+    <value>Interval (s)</value>
+  </data>
+  <data name="TestNeedKeyFile" xml:space="preserve">
+    <value>Select a key file for key authentication</value>
+  </data>
+  <data name="Save" xml:space="preserve">
+    <value>Save</value>
+  </data>
+  <data name="Close" xml:space="preserve">
+    <value>Close</value>
+  </data>
+  <data name="EmptyHostList" xml:space="preserve">
+    <value>No hosts yet. Click + to add one</value>
+  </data>
+  <data name="NewHostName" xml:space="preserve">
+    <value>New host</value>
+  </data>
+  <data name="TestConnection" xml:space="preserve">
+    <value>Test connection</value>
+  </data>
+  <data name="Testing" xml:space="preserve">
+    <value>Connecting…</value>
+  </data>
+  <data name="TestOkTitle" xml:space="preserve">
+    <value>Connection successful</value>
+  </data>
+  <data name="SaveOkTitle" xml:space="preserve">
+    <value>Saved successfully</value>
+  </data>
+  <data name="SyncBrowseMismatch" xml:space="preserve">
+    <value>Sync browse: directories out of sync, linkage disabled</value>
+  </data>
+  <data name="HeaderSyncBrowse" xml:space="preserve">
+    <value>Sync browse</value>
+  </data>
+  <data name="HeaderCompare" xml:space="preserve">
+    <value>Compare files</value>
+  </data>
+  <data name="SyncMismatchTitle" xml:space="preserve">
+    <value>Sync browse</value>
+  </data>
+  <data name="SyncMismatchMsg" xml:space="preserve">
+    <value>The two sides are out of sync; sync browse cannot start</value>
+  </data>
+  <data name="SyncMismatchNotConfigured" xml:space="preserve">
+    <value>Host has no sync-browse directories, or one side has no sync base</value>
+  </data>
+  <data name="SyncMismatchClose" xml:space="preserve">
+    <value>OK</value>
+  </data>
+  <data name="TestFailTitle" xml:space="preserve">
+    <value>Connection failed</value>
+  </data>
+  <data name="TestNeedFields" xml:space="preserve">
+    <value>Enter IP address and username first</value>
+  </data>
+  <data name="HostKeyTitle" xml:space="preserve">
+    <value>Confirm host fingerprint</value>
+  </data>
+  <data name="HostKeyMessage" xml:space="preserve">
+    <value>Connecting to {0} for the first time. The host identity cannot be verified.
+
+Host key fingerprint (SHA256):
+{1}
+
+Trust this host and continue?</value>
+  </data>
+  <data name="HostKeyTrust" xml:space="preserve">
+    <value>Trust &amp; Continue</value>
+  </data>
+  <data name="Cancel" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
+  <data name="TerminalTitle" xml:space="preserve">
+    <value>Host console</value>
+  </data>
+  <data name="LogConnecting" xml:space="preserve">
+    <value>Connecting to {0}:{1} …</value>
+  </data>
+  <data name="LogWaitFingerprint" xml:space="preserve">
+    <value>Waiting for host fingerprint confirmation …</value>
+  </data>
+  <data name="LogFingerprintSaved" xml:space="preserve">
+    <value>Host fingerprint saved, will be verified automatically next time</value>
+  </data>
+  <data name="LogFingerprintRejected" xml:space="preserve">
+    <value>Host fingerprint rejected by user, connection aborted</value>
+  </data>
+  <data name="LogFingerprintMismatch" xml:space="preserve">
+    <value>Host key verification failed: stored {0}, presented {1} (re-trust if the server key changed)</value>
+  </data>
+  <data name="LogFingerprintChangedTrusted" xml:space="preserve">
+    <value>Host fingerprint archive updated, will be verified automatically next time</value>
+  </data>
+  <data name="HostKeyChangedTitle" xml:space="preserve">
+    <value>Host key has changed</value>
+  </data>
+  <data name="HostKeyChangedMessage" xml:space="preserve">
+    <value>The host key presented by {0} does not match the previously trusted one.
+
+Previously trusted: {1}
+Presented now: {2}
+
+Common causes: server reinstalled/replaced, or the host card's IP was edited.
+Update and trust only if you are aware of this change; otherwise reject to prevent man-in-the-middle attacks.</value>
+  </data>
+  <data name="HostKeyChangedTrust" xml:space="preserve">
+    <value>Update and trust</value>
+  </data>
+  <data name="LogConnected" xml:space="preserve">
+    <value>Connected to {0}</value>
+  </data>
+  <data name="LogConnectFailed" xml:space="preserve">
+    <value>Connection failed: {0}</value>
+  </data>
+  <data name="LogRetry" xml:space="preserve">
+    <value>Connection failed: {0}. Retrying (attempt {2}/{3}) in {1} s …</value>
+  </data>
+  <data name="TimeoutSeconds" xml:space="preserve">
+    <value>Connect timeout (s)</value>
+  </data>
+  <data name="ValueFormatSeconds" xml:space="preserve">
+    <value>{0} s</value>
+  </data>
+  <data name="ValueFormatTimes" xml:space="preserve">
+    <value>{0} times</value>
+  </data>
+  <data name="ValueFormatTasks" xml:space="preserve">
+    <value>{0} task(s)</value>
+  </data>
+  <data name="OperationTimeoutSeconds" xml:space="preserve">
+    <value>Operation timeout (s)</value>
+  </data>
+  <data name="ErrRemoteTimeout" xml:space="preserve">
+    <value>Server did not respond within the timeout (connection limit reached or server busy). Retry later or reconnect.</value>
+  </data>
+  <data name="ErrServerCopy" xml:space="preserve">
+    <value>Server-side copy failed (server does not support cp or invalid path)</value>
+  </data>
+  <data name="LogDirExpandFailed" xml:space="preserve">
+    <value>Failed to enumerate directory, skipped: {0} ({1})</value>
+  </data>
+  <data name="LogTransferStart" xml:space="preserve">
+    <value>Transferring {0} item(s) → {1}</value>
+  </data>
+  <data name="LogTransferDone" xml:space="preserve">
+    <value>Transfer finished: {0} succeeded, {1} skipped, {2} failed</value>
+  </data>
+  <data name="MaxRetries" xml:space="preserve">
+    <value>Max retries</value>
+  </data>
+  <data name="RetryDelaySeconds" xml:space="preserve">
+    <value>Retry delay (s)</value>
+  </data>
+  <data name="SettingsTitle" xml:space="preserve">
+    <value>Settings</value>
+  </data>
+  <data name="ThemeLabel" xml:space="preserve">
+    <value>Theme</value>
+  </data>
+  <data name="ThemeDark" xml:space="preserve">
+    <value>Dark</value>
+  </data>
+  <data name="ThemeLight" xml:space="preserve">
+    <value>Light</value>
+  </data>
+  <data name="LanguageLabel" xml:space="preserve">
+    <value>Language</value>
+  </data>
+  <data name="CategoryAppearance" xml:space="preserve">
+    <value>Appearance</value>
+  </data>
+  <data name="CategoryConnection" xml:space="preserve">
+    <value>Connection</value>
+  </data>
+  <data name="ConnectOpenMode" xml:space="preserve">
+    <value>Open connections in</value>
+  </data>
+  <data name="OpenModeAsk" xml:space="preserve">
+    <value>Ask every time</value>
+  </data>
+  <data name="OpenModeCurrent" xml:space="preserve">
+    <value>Always current tab</value>
+  </data>
+  <data name="OpenModeNew" xml:space="preserve">
+    <value>Always new tab</value>
+  </data>
+  <data name="OpenTabTitle" xml:space="preserve">
+    <value>Open host files</value>
+  </data>
+  <data name="OpenTabMessage" xml:space="preserve">
+    <value>Which tab should open the file list of {0}?</value>
+  </data>
+  <data name="OpenTabAlways" xml:space="preserve">
+    <value>Always do this and don't ask again</value>
+  </data>
+  <data name="OpenTabCurrent" xml:space="preserve">
+    <value>Current tab</value>
+  </data>
+  <data name="OpenTabNew" xml:space="preserve">
+    <value>New tab</value>
+  </data>
+  <data name="EmptyStateTitle" xml:space="preserve">
+    <value>Select a host first</value>
+  </data>
+  <data name="EmptyStateMessage" xml:space="preserve">
+    <value>Choose a local or remote file system to browse</value>
+  </data>
+  <data name="EmptyStateButton" xml:space="preserve">
+    <value>Choose host</value>
+  </data>
+  <data name="ChooserTitle" xml:space="preserve">
+    <value>Open target</value>
+  </data>
+  <data name="ChooserLocalSection" xml:space="preserve">
+    <value>Local</value>
+  </data>
+  <data name="ChooserHostsSection" xml:space="preserve">
+    <value>Hosts</value>
+  </data>
+  <data name="ChooserLocalTitle" xml:space="preserve">
+    <value>Local file system</value>
+  </data>
+  <data name="ChooserBrowseLocal" xml:space="preserve">
+    <value>Browse local files</value>
+  </data>
+  <data name="OpenDirectory" xml:space="preserve">
+    <value>Open folder</value>
+  </data>
+  <data name="ToggleTree" xml:space="preserve">
+    <value>Toggle folder tree</value>
+  </data>
+  <data name="ThisPC" xml:space="preserve">
+    <value>This PC</value>
+  </data>
+  <data name="StatusSelected" xml:space="preserve">
+    <value>{0} selected</value>
+  </data>
+  <data name="DirNotFound" xml:space="preserve">
+    <value>Directory not found: {0}</value>
+  </data>
+  <data name="NewFolder" xml:space="preserve">
+    <value>New folder</value>
+  </data>
+  <data name="NewFile" xml:space="preserve">
+    <value>New file</value>
+  </data>
+  <data name="ToggleHidden" xml:space="preserve">
+    <value>Show/hide hidden files</value>
+  </data>
+  <data name="NewFolderName" xml:space="preserve">
+    <value>New folder</value>
+  </data>
+  <data name="NewFileName" xml:space="preserve">
+    <value>New Text Document.txt</value>
+  </data>
+  <data name="MenuPermissions" xml:space="preserve">
+    <value>Permissions</value>
+  </data>
+  <data name="PermOwner" xml:space="preserve">
+    <value>Owner</value>
+  </data>
+  <data name="PermGroup" xml:space="preserve">
+    <value>Group</value>
+  </data>
+  <data name="PermOthers" xml:space="preserve">
+    <value>Others</value>
+  </data>
+  <data name="PermRead" xml:space="preserve">
+    <value>Read</value>
+  </data>
+  <data name="PermWrite" xml:space="preserve">
+    <value>Write</value>
+  </data>
+  <data name="PermExecute" xml:space="preserve">
+    <value>Execute</value>
+  </data>
+  <data name="PermApply" xml:space="preserve">
+    <value>Apply</value>
+  </data>
+  <data name="StatusPermUpdated" xml:space="preserve">
+    <value>Permissions updated to {0}</value>
+  </data>
+  <data name="MenuChecksum" xml:space="preserve">
+    <value>Checksum</value>
+  </data>
+  <data name="ChkAlgorithm" xml:space="preserve">
+    <value>Algorithm</value>
+  </data>
+  <data name="ChkComputing" xml:space="preserve">
+    <value>Computing…</value>
+  </data>
+  <data name="ChkCopy" xml:space="preserve">
+    <value>Copy</value>
+  </data>
+  <data name="ChkCopied" xml:space="preserve">
+    <value>Copied</value>
+  </data>
+  <data name="TerminalClearAll" xml:space="preserve">
+    <value>Clear all</value>
+  </data>
+  <data name="TerminalCopyAll" xml:space="preserve">
+    <value>Copy to clipboard</value>
+  </data>
+  <data name="QMenuPause" xml:space="preserve">
+    <value>Pause</value>
+  </data>
+  <data name="QMenuResume" xml:space="preserve">
+    <value>Resume transfer</value>
+  </data>
+  <data name="QMenuStop" xml:space="preserve">
+    <value>Stop</value>
+  </data>
+  <data name="QMenuDeleteAll" xml:space="preserve">
+    <value>Delete all</value>
+  </data>
+  <data name="QMenuRetryAll" xml:space="preserve">
+    <value>Reset and re-request all</value>
+  </data>
+  <data name="QStatePaused" xml:space="preserve">
+    <value>Paused</value>
+  </data>
+  <data name="QStoppedReason" xml:space="preserve">
+    <value>Stopped</value>
+  </data>
+  <data name="LogQueuePaused" xml:space="preserve">
+    <value>Transfer paused</value>
+  </data>
+  <data name="LogQueueResumed" xml:space="preserve">
+    <value>Transfer resumed</value>
+  </data>
+  <data name="LogQueueStopped" xml:space="preserve">
+    <value>Transfer stopped</value>
+  </data>
+  <data name="LogQueueRerun" xml:space="preserve">
+    <value>Reset and re-request all: {0} items</value>
+  </data>
+  <data name="DeleteModeLabel" xml:space="preserve">
+    <value>Remote deletion</value>
+  </data>
+  <data name="DeleteModeHintExec" xml:space="preserve">
+    <value>Deletes directories via the server-side command (rm -rf) first — huge directories finish in seconds; falls back to SFTP recursion when the command channel is unavailable or the removal is incomplete.</value>
+  </data>
+  <data name="DeleteModeHintRecursive" xml:space="preserve">
+    <value>No server-side command; deletes item by item over the SFTP protocol, works with every server, slower for large directories.</value>
+  </data>
+  <data name="LogDeleteFallback" xml:space="preserve">
+    <value>Server-side delete failed, fell back to SFTP recursive delete</value>
+  </data>
+</root>

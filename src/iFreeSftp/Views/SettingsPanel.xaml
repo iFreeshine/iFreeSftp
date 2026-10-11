@@ -1,0 +1,816 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="iFreeSftp.Views.SettingsPanel"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <!--
+        设置面板覆盖层: 外壳与主机面板一致 (遮罩 + 居中 920x640 卡片 + 标题栏)。
+        主体 = 左侧大类导航 (13px) + 右侧设置页, 采用 WinUI 3 官方设置排版
+        (SettingsCard 卡片行): 页顶大标题, 每项一张圆角描边卡片——左侧"设置名 13px
+        + 灰色描述 11px", 右侧值控件; 卡片间距 4px。
+        修改即时生效并落盘 (AppSettingsService), 无保存按钮。导航按钮选中/块底配色
+        在代码后置按 ActualTheme 直配 (ThemeDictionaries 索引器解析的画刷切主题后
+        不重新解析, 2026-09-30 取证弃用)。
+    -->
+    <UserControl.Resources>
+        <!-- 官方 SettingsCard 卡片行: 圆角描边卡片 + 左文右值 -->
+        <Style x:Key="SettingsCardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="16,10" />
+        </Style>
+        <!-- 卡片描述行: 11px 次级灰, 自动换行 -->
+        <Style x:Key="SettingsDescStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+    </UserControl.Resources>
+    <Grid x:Name="PanelRoot">
+
+        <!-- 遮罩: 点击直接关闭 (应用设置即时生效, 无未保存概念) -->
+        <Border x:Name="MaskBorder" Background="#80000000" Tapped="MaskBorder_Tapped" />
+
+        <!-- 面板卡片: 与主机面板同尺寸同配色; 标题栏通栏贴边, 外壳与标题栏同色 (DialogTitleBarBrush);
+             内容区 Margin 5px -->
+        <Border
+            x:Name="CardBorder"
+            Width="920"
+            Height="640"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Background="{ThemeResource DialogTitleBarBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="DragTransform" />
+            </Border.RenderTransform>
+            <Grid RowSpacing="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- 标题栏: 与主机面板一致 (缩小标题 + 右上关闭钮); 通栏贴边 + DialogTitleBarBrush
+                     背景 (亮=主标题栏加深, 暗=卡片底色; 顶部两角由卡片 CornerRadius 裁剪);
+                     拖拽照搬选择面板 (HostPickerPanel) 的增量法实现 -->
+                <Grid
+                    x:Name="TitleBar"
+                    Grid.Row="0"
+                    Padding="14,5,5,2"
+                    ColumnSpacing="8"
+                    Background="{ThemeResource DialogTitleBarBrush}"
+                    PointerMoved="TitleBar_PointerMoved"
+                    PointerPressed="TitleBar_PointerPressed"
+                    PointerReleased="TitleBar_PointerReleased">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        x:Name="TitleText"
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        FontSize="16"
+                        FontWeight="SemiBold" />
+                    <Button
+                        x:Name="TitleCloseBtn"
+                        Grid.Column="1"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Click="CloseBtn_Click">
+                        <!-- hover/按下用系统悬停色 (Transparent 底默认 hover 变化太弱不可辨) -->
+                        <Button.Resources>
+                            <ThemeResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
+                            <ThemeResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
+                        </Button.Resources>
+                        <FontIcon FontSize="11" Glyph="&#xE8BB;" />
+                    </Button>
+                </Grid>
+
+                <!-- 主体: 左侧大类导航卡片 + 右侧设置页卡片; Margin 5px 补偿卡片移除的 Padding -->
+                <Grid Grid.Row="1" Margin="5" ColumnSpacing="5">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="150" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左卡片: 大类导航 (竖排按钮, 选中态近黑底); 亮暗均无边框线。
+                         Border.Resources 按主题重定义按钮模板键 ButtonBackgroundPointerOver/
+                         Pressed (仅作用于此卡片内的导航按钮, 直接写 SolidColorBrush —
+                         字典内 ThemeResource 间接引用会启动崩溃): 亮 #E9E9E9/#E0E0E0,
+                         暗 #2C3B52/#22314A (tab 同款) -->
+                    <Border
+                        Grid.Column="0"
+                        Padding="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        CornerRadius="6">
+                        <Border.Resources>
+                            <ResourceDictionary>
+                                <ResourceDictionary.ThemeDictionaries>
+                                    <ResourceDictionary x:Key="Light">
+                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#E9E9E9" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#E0E0E0" />
+                                    </ResourceDictionary>
+                                    <ResourceDictionary x:Key="Dark">
+                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#2C3B52" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#22314A" />
+                                    </ResourceDictionary>
+                                </ResourceDictionary.ThemeDictionaries>
+                            </ResourceDictionary>
+                        </Border.Resources>
+                        <StackPanel Spacing="4">
+                            <Button
+                                x:Name="AppearanceCatBtn"
+                                Padding="14,9"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                CornerRadius="4"
+                                FontSize="13"
+                                Tag="Appearance"
+                                Click="Category_Click" />
+                            <Button
+                                x:Name="ConnectionCatBtn"
+                                Padding="14,9"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                CornerRadius="4"
+                                FontSize="13"
+                                Tag="Connection"
+                                Click="Category_Click" />
+                            <Button
+                                x:Name="FileEditCatBtn"
+                                Padding="14,9"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                CornerRadius="4"
+                                FontSize="13"
+                                Tag="FileEdit"
+                                Click="Category_Click" />
+                            <Button
+                                x:Name="TransferCatBtn"
+                                Padding="14,9"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                CornerRadius="4"
+                                FontSize="13"
+                                Tag="Transfer"
+                                Click="Category_Click" />
+                            <Button
+                                x:Name="RegistrationCatBtn"
+                                Padding="14,9"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                CornerRadius="4"
+                                FontSize="13"
+                                Tag="Registration"
+                                Click="Category_Click" />
+                            <Button
+                                x:Name="AboutCatBtn"
+                                Padding="14,9"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                CornerRadius="4"
+                                FontSize="13"
+                                Tag="About"
+                                Click="Category_Click" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 右卡片: 设置页 (SettingsCard 卡片行, 五页切换); 亮暗均无边框线。
+                         Padding 不放在 Border 而移到内容 Grid——否则滚动条被内缩 20px 不贴卡片右缘;
+                         滚动条 Hidden: 各页内容远小于视口, hover 时零点几像素的布局累积溢出
+                         会让 overlay 滚动条冒出 (视觉上"不需要滚动却有滚动条"), 隐藏后滚轮仍可滚 -->
+                    <Border
+                        Grid.Column="1"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        CornerRadius="6">
+                        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Hidden">
+                            <Grid Margin="20,16">
+                                <!-- 外观页: 主题 + 语言 -->
+                                <StackPanel x:Name="AppearancePanel" Spacing="4">
+                                    <TextBlock
+                                        x:Name="AppearanceTitle"
+                                        Margin="0,0,0,12"
+                                        FontSize="20"
+                                        FontWeight="SemiBold" />
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="ThemeLabel" FontSize="13" />
+                                                <TextBlock x:Name="ThemeDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ComboBox
+                                                x:Name="ThemeOptions"
+                                                Grid.Column="1"
+                                                Width="150"
+                                                FontSize="13"
+                                                VerticalAlignment="Center"
+                                                SelectionChanged="ThemeOptions_SelectionChanged">
+                                                <ComboBoxItem x:Name="ThemeDarkOption" />
+                                                <ComboBoxItem x:Name="ThemeLightOption" />
+                                            </ComboBox>
+                                        </Grid>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="LanguageLabel" FontSize="13" />
+                                                <TextBlock x:Name="LanguageDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <!-- 选项动态填充: 内置 zh-CN/en-US + locales 目录发现的语言
+                                                 (PopulateLanguages, 见 code-behind) -->
+                                            <ComboBox
+                                                x:Name="LangOptions"
+                                                Grid.Column="1"
+                                                Width="150"
+                                                FontSize="13"
+                                                VerticalAlignment="Center"
+                                                SelectionChanged="LangOptions_SelectionChanged" />
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+
+                                <!-- 连接页: 全局连接默认值 (超时/重试/重试延迟/打开方式/操作超时) -->
+                                <StackPanel x:Name="ConnectionPanel" Spacing="4" Visibility="Collapsed">
+                                    <TextBlock
+                                        x:Name="ConnectionTitle"
+                                        Margin="0,0,0,12"
+                                        FontSize="20"
+                                        FontWeight="SemiBold" />
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="TimeoutLabel" FontSize="13" />
+                                                <TextBlock x:Name="TimeoutDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                                                <Slider
+                                                    x:Name="TimeoutSlider"
+                                                    Width="140"
+                                                    Minimum="15"
+                                                    Maximum="30"
+                                                    StepFrequency="5"
+                                                    SnapsTo="StepValues"
+                                                    TickPlacement="Outside"
+                                                    VerticalAlignment="Center"
+                                                    ValueChanged="ConnectSlider_ValueChanged" />
+                                                <TextBlock
+                                                    x:Name="TimeoutValueText"
+                                                    MinWidth="36"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="MaxRetriesLabel" FontSize="13" />
+                                                <TextBlock x:Name="MaxRetriesDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                                                <Slider
+                                                    x:Name="MaxRetriesSlider"
+                                                    Width="140"
+                                                    Minimum="1"
+                                                    Maximum="3"
+                                                    StepFrequency="1"
+                                                    SnapsTo="StepValues"
+                                                    TickPlacement="Outside"
+                                                    VerticalAlignment="Center"
+                                                    ValueChanged="ConnectSlider_ValueChanged" />
+                                                <TextBlock
+                                                    x:Name="MaxRetriesValueText"
+                                                    MinWidth="36"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="RetryDelayLabel" FontSize="13" />
+                                                <TextBlock x:Name="RetryDelayDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                                                <Slider
+                                                    x:Name="RetryDelaySlider"
+                                                    Width="140"
+                                                    Minimum="3"
+                                                    Maximum="10"
+                                                    StepFrequency="1"
+                                                    SnapsTo="StepValues"
+                                                    TickPlacement="Outside"
+                                                    VerticalAlignment="Center"
+                                                    ValueChanged="ConnectSlider_ValueChanged" />
+                                                <TextBlock
+                                                    x:Name="RetryDelayValueText"
+                                                    MinWidth="36"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    <!-- 连接打开方式: 点击主机卡片连接时右窗口用当前还是新建标签页 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="OpenModeLabel" FontSize="13" />
+                                                <TextBlock x:Name="OpenModeDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ComboBox
+                                                x:Name="OpenModeBox"
+                                                Grid.Column="1"
+                                                Width="150"
+                                                FontSize="13"
+                                                VerticalAlignment="Center"
+                                                SelectionChanged="OpenModeBox_SelectionChanged">
+                                                <ComboBoxItem x:Name="OpenModeAskItem" />
+                                                <ComboBoxItem x:Name="OpenModeCurrentItem" />
+                                                <ComboBoxItem x:Name="OpenModeNewItem" />
+                                            </ComboBox>
+                                        </Grid>
+                                    </Border>
+                                    <!-- 操作超时: SFTP 单次请求等待响应上限, 0=禁用 (无限等待);
+                                         服务器无响应时按上限报错, 避免"已连接但列表永不显示" -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="OperationTimeoutLabel" FontSize="13" />
+                                                <TextBlock x:Name="OperationTimeoutDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                                                <Slider
+                                                    x:Name="OperationTimeoutSlider"
+                                                    Width="140"
+                                                    Minimum="5"
+                                                    Maximum="15"
+                                                    StepFrequency="5"
+                                                    SnapsTo="StepValues"
+                                                    TickPlacement="Outside"
+                                                    VerticalAlignment="Center"
+                                                    ValueChanged="ConnectSlider_ValueChanged" />
+                                                <TextBlock
+                                                    x:Name="OperationTimeoutValueText"
+                                                    MinWidth="36"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- 保活连接: 开关 = 统一贴右 ToggleSwitch 样式
+                                         (On/Off/Header 均 {x:Null} 清空占位 + Width 46 负 margin 贴右缘) -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="KeepAliveLabel" FontSize="13" />
+                                                <TextBlock x:Name="KeepAliveDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ToggleSwitch
+                                                x:Name="KeepAliveToggle"
+                                                Grid.Column="1"
+                                                Width="46"
+                                                MinWidth="0"
+                                                Padding="0"
+                                                Margin="0,0,-2,0"
+                                                VerticalAlignment="Center"
+                                                HorizontalAlignment="Right"
+                                                Header="{x:Null}"
+                                                OnContent="{x:Null}"
+                                                OffContent="{x:Null}"
+                                                Toggled="KeepAliveToggle_Toggled" />
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- 保活间隔: 开关关闭时整卡禁用 -->
+                                    <Border x:Name="KeepAliveIntervalCard" Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="KeepAliveIntervalLabel" FontSize="13" />
+                                                <TextBlock x:Name="KeepAliveIntervalDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                                                <Slider
+                                                    x:Name="KeepAliveIntervalSlider"
+                                                    Width="140"
+                                                    Minimum="15"
+                                                    Maximum="60"
+                                                    StepFrequency="15"
+                                                    SnapsTo="StepValues"
+                                                    TickPlacement="Outside"
+                                                    VerticalAlignment="Center"
+                                                    ValueChanged="KeepAliveIntervalSlider_ValueChanged" />
+                                                <TextBlock
+                                                    x:Name="KeepAliveIntervalValueText"
+                                                    MinWidth="36"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+
+                                <!-- 文件编辑页: 编辑方式 (内置/外部) + 外部编辑器路径 -->
+                                <StackPanel x:Name="FileEditPanel" Spacing="4" Visibility="Collapsed">
+                                    <TextBlock
+                                        x:Name="FileEditTitle"
+                                        Margin="0,0,0,12"
+                                        FontSize="20"
+                                        FontWeight="SemiBold" />
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="EditorModeLabel" FontSize="13" />
+                                                <TextBlock x:Name="EditorModeDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <RadioButtons
+                                                x:Name="EditorModeOptions"
+                                                Grid.Column="1"
+                                                VerticalAlignment="Center"
+                                                FontSize="13"
+                                                SelectionChanged="EditorModeOptions_SelectionChanged">
+                                                <RadioButton x:Name="EditorBuiltinOption" FontSize="13" />
+                                                <RadioButton x:Name="EditorExternalOption" FontSize="13" />
+                                            </RadioButtons>
+                                        </Grid>
+                                    </Border>
+                                    <!-- hint 作为卡片描述 (官方排版: 描述随设置名在左, 值控件在右);
+                                         内置编辑器时整卡变灰禁用 (同保活间隔卡片联动效果) -->
+                                    <Border x:Name="EditorPathCard" Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="EditorPathLabel" FontSize="13" />
+                                                <TextBlock x:Name="EditorPathHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <Grid
+                                                x:Name="EditorPathRow"
+                                                Grid.Column="1"
+                                                VerticalAlignment="Center"
+                                                ColumnSpacing="6">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox
+                                                    x:Name="EditorPathBox"
+                                                    Grid.Column="0"
+                                                    Width="220"
+                                                    FontSize="13"
+                                                    VerticalContentAlignment="Center"
+                                                    TextChanged="EditorPathBox_TextChanged" />
+                                                <Button
+                                                    x:Name="EditorBrowseBtn"
+                                                    Grid.Column="1"
+                                                    Padding="12,5"
+                                                    FontSize="13"
+                                                    Click="EditorBrowseBtn_Click" />
+                                            </Grid>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+
+                                <!-- 传输页: 并发传输数 + 远程删除方式 -->
+                                <StackPanel x:Name="TransferPanel" Spacing="4" Visibility="Collapsed">
+                                    <TextBlock
+                                        x:Name="TransferTitle"
+                                        Margin="0,0,0,12"
+                                        FontSize="20"
+                                        FontWeight="SemiBold" />
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="ConcurrentLabel" FontSize="13" />
+                                                <TextBlock x:Name="ConcurrentHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                                                <Slider
+                                                    x:Name="ConcurrentSlider"
+                                                    Width="140"
+                                                    Minimum="1"
+                                                    Maximum="3"
+                                                    StepFrequency="1"
+                                                    SnapsTo="StepValues"
+                                                    TickPlacement="Outside"
+                                                    VerticalAlignment="Center"
+                                                    ValueChanged="TransferSlider_ValueChanged" />
+                                                <TextBlock
+                                                    x:Name="ConcurrentValueText"
+                                                    MinWidth="36"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    <!-- hint 作为卡片描述 (官方排版); 远程删除方式: 目录删除分流——
+                                         服务端命令 rm -rf (exec 通道) 优先, 不可用/失败自动回退 SFTP 递归 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="DeleteModeLabel" FontSize="13" />
+                                                <TextBlock x:Name="DeleteModeHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <!-- 开=服务端命令优先 (失败自动回退 SFTP 递归), 关=纯 SFTP 递归;
+                                                 隐藏 On/Off 文字, 状态语义由描述行说明 -->
+                                            <ToggleSwitch x:Name="DeleteServerCmdToggle"
+              Grid.Column="1"
+              VerticalAlignment="Center"
+              HorizontalAlignment="Right"
+              OnContent="{x:Null}"
+              OffContent="{x:Null}"
+              Header="{x:Null}"
+              Padding="0"
+              MinWidth="0"
+              Width="46"
+              Margin="0,0,-2,0"
+              Toggled="DeleteServerCmdToggle_Toggled" />
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+
+                                <!-- 注册页: 注册状态 + 勋章 / 注册码激活 / 远程公告。
+                                     勋章 = 本地金色胶囊 (激活即显), 远程可下发文字或整体关闭;
+                                     注册与免费版功能无差别, 勋章纯荣誉 -->
+                                <StackPanel x:Name="RegistrationPanel" Spacing="4" Visibility="Collapsed">
+                                    <TextBlock
+                                        x:Name="RegistrationTitle"
+                                        Margin="0,0,0,12"
+                                        FontSize="20"
+                                        FontWeight="SemiBold" />
+                                    <!-- 免费承诺卡: 注册不附加任何功能差异 (donationware 国际惯例措辞) -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                                            <TextBlock x:Name="RegFreeTitle" FontSize="13" />
+                                            <TextBlock
+                                                x:Name="RegFreeDesc"
+                                                Style="{StaticResource SettingsDescStyle}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <!-- 状态卡: 左状态文本, 右勋章胶囊 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="RegStatusLabel" FontSize="13" />
+                                                <TextBlock x:Name="RegStatusDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <Border
+                                                x:Name="RegBadgePill"
+                                                Grid.Column="1"
+                                                Padding="12,5"
+                                                VerticalAlignment="Center"
+                                                Background="#26D4A017"
+                                                BorderBrush="#66D4A017"
+                                                BorderThickness="1"
+                                                CornerRadius="12"
+                                                Visibility="Collapsed">
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <FontIcon
+                                                        FontSize="13"
+                                                        Foreground="#D4A017"
+                                                        Glyph="&#xE734;" />
+                                                    <TextBlock
+                                                        x:Name="RegBadgeText"
+                                                        FontSize="12"
+                                                        FontWeight="SemiBold"
+                                                        Foreground="#D4A017"
+                                                        VerticalAlignment="Center" />
+                                                </StackPanel>
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                    <!-- 激活卡: 注册码输入 + 激活/获取按钮; 结果 (成功/错误) 临时写入 hint 行 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="RegCodeLabel" FontSize="13" />
+                                                <TextBlock
+                                                    x:Name="RegCodeHint"
+                                                    Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel
+                                                Grid.Column="1"
+                                                Orientation="Horizontal"
+                                                Spacing="8"
+                                                VerticalAlignment="Center">
+                                                <TextBox
+                                                    x:Name="RegCodeBox"
+                                                    Width="250"
+                                                    FontSize="13"
+                                                    VerticalContentAlignment="Center" />
+                                                <Button
+                                                    x:Name="RegActivateBtn"
+                                                    Padding="12,5"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center"
+                                                    Click="RegActivateBtn_Click" />
+                                                <Button
+                                                    x:Name="RegBuyCnBtn"
+                                                    Padding="12,5"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="Collapsed"
+                                                    Click="RegBuyCnBtn_Click" />
+                                                <Button
+                                                    x:Name="RegBuyIntlBtn"
+                                                    Padding="12,5"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="Collapsed"
+                                                    Click="RegBuyIntlBtn_Click" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    <!-- 公告卡: 远程下发, 无公告时整卡隐藏 -->
+                                    <Border
+                                        x:Name="RegNoticeCard"
+                                        Style="{StaticResource SettingsCardStyle}"
+                                        Visibility="Collapsed">
+                                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                                            <TextBlock x:Name="RegNoticeLabel" FontSize="13" />
+                                            <TextBlock
+                                                x:Name="RegNoticeText"
+                                                Style="{StaticResource SettingsDescStyle}" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+
+                                <!-- 关于页: 版本/构建日期 + 发布渠道 + 许可证 (AGPL-3.0 主体 +
+                                     闭源核心组件分层说明, 见技术文档) + 版权。
+                                     版本/构建日期由代码后置动态填充 (程序集版本 / exe 修改时间),
+                                     官网域名 ifrees.top 已注册, GitHub 仓库与商店上架后链接由官网承载 -->
+                                <StackPanel x:Name="AboutPanel" Spacing="4" Visibility="Collapsed">
+                                    <TextBlock
+                                        x:Name="AboutTitle"
+                                        Margin="0,0,0,12"
+                                        FontSize="20"
+                                        FontWeight="SemiBold" />
+                                    <!-- 应用卡: 名称 + 版本/构建日期, 右侧官网链接 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock
+                                                    x:Name="AppInfoName"
+                                                    FontSize="13"
+                                                    FontWeight="SemiBold"
+                                                    Text="iFreeSftp" />
+                                                <TextBlock
+                                                    x:Name="AppVersionDesc"
+                                                    Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <HyperlinkButton
+                                                x:Name="AppWebsiteBtn"
+                                                Grid.Column="1"
+                                                Padding="0"
+                                                FontSize="13"
+                                                VerticalAlignment="Center"
+                                                Click="AppWebsiteBtn_Click" />
+                                        </Grid>
+                                    </Border>
+                                    <!-- 发布渠道卡: 右侧 GitHub 仓库直链 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="AppChannelsLabel" FontSize="13" />
+                                                <TextBlock
+                                                    x:Name="AppChannelsDesc"
+                                                    Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <HyperlinkButton
+                                                x:Name="AppGitHubBtn"
+                                                Grid.Column="1"
+                                                Padding="0"
+                                                FontSize="13"
+                                                VerticalAlignment="Center"
+                                                Content="GitHub"
+                                                Click="AppGitHubBtn_Click" />
+                                        </Grid>
+                                    </Border>
+                                    <!-- 许可证卡: AGPL-3.0 主体 + 官方版闭源核心组件说明 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                                            <TextBlock x:Name="AppLicenseLabel" FontSize="13" />
+                                            <TextBlock
+                                                x:Name="AppLicenseDesc"
+                                                Style="{StaticResource SettingsDescStyle}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <!-- 支持开发卡: 赞助自愿、不与功能绑定 (donationware 国际惯例措辞) -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                                            <TextBlock x:Name="AppSupportTitle" FontSize="13" />
+                                            <TextBlock
+                                                x:Name="AppSupportDesc"
+                                                Style="{StaticResource SettingsDescStyle}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <!-- 版权卡 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                                            <TextBlock x:Name="AppCopyrightLabel" FontSize="13" />
+                                            <TextBlock
+                                                x:Name="AppCopyrightDesc"
+                                                Style="{StaticResource SettingsDescStyle}" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

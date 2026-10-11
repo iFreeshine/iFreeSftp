@@ -1,0 +1,261 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    远程文件/目录权限编辑弹窗 (初始版, 模态): 遮罩 + 居中卡片。
+    九宫格复选框编辑 属主/属组/其他 × 读/写/执行, 底部实时显示
+    八进制与符号值; "应用"经 ApplyRequested 回调交由 FileView 走 SFTP chmod。
+    样式遵循 README 3.9 弹框统一原则 (与 HostPickerPanel 同构):
+    窄标题栏通栏 + 关闭钮 hover、卡片 CornerRadius=8 描边、内容圆弧容器、
+    ESC/遮罩/关闭钮均可关闭、标题栏可拖拽、打开时重置拖拽偏移。
+-->
+<UserControl
+    x:Class="iFreeSftp.Views.PermissionDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid x:Name="PanelRoot">
+        <!-- 遮罩: 点击空白关闭 (与 HostPanel/HostPickerPanel 同款半透明黑) -->
+        <Border x:Name="Mask" Background="#80000000" Tapped="Mask_Tapped" />
+
+        <!-- 卡片: 不透明底 (DialogTitleBarBrush, 外壳与标题栏同色一体) + 标题栏拖拽 -->
+        <Border
+            x:Name="Card"
+            Width="384"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Background="{ThemeResource DialogTitleBarBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="DragTransform" />
+            </Border.RenderTransform>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- 标题栏: 窄标题栏通栏贴边 (顶部两角由卡片圆角裁剪), 无底部分隔线;
+                     按住空白区拖动卡片 -->
+                <Grid
+                    Grid.Row="0"
+                    Padding="14,5,5,2"
+                    ColumnSpacing="8"
+                    Background="{ThemeResource DialogTitleBarBrush}"
+                    PointerMoved="TitleBar_PointerMoved"
+                    PointerPressed="TitleBar_PointerPressed"
+                    PointerReleased="TitleBar_PointerReleased">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        x:Name="TitleText"
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        FontSize="14"
+                        FontWeight="SemiBold" />
+                    <Button
+                        Grid.Column="1"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Click="CloseBtn_Click">
+                        <!-- hover/按下用系统悬停色 (Transparent 底默认 hover 变化太弱不可辨) -->
+                        <Button.Resources>
+                            <ThemeResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
+                            <ThemeResource x:Key="ButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
+                        </Button.Resources>
+                        <FontIcon FontSize="10" Glyph="&#xE8BB;" />
+                    </Button>
+                </Grid>
+
+                <!-- 内容面板: 圆弧容器, 距弹框边框 5px, 圆角 6,
+                     背景 CardBackgroundFillColorDefaultBrush 随亮暗主题, 亮暗均无边框线 -->
+                <Border
+                    Grid.Row="1"
+                    Margin="5,0,5,5"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    CornerRadius="6">
+                    <StackPanel Padding="16,12" Spacing="14">
+
+                        <!-- 条目行: 类型图标 + 名称 (超长省略) -->
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon
+                                x:Name="EntryIcon"
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                FontSize="16"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Glyph="&#xE7C3;" />
+                            <TextBlock
+                                x:Name="EntryName"
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                FontSize="14"
+                                Opacity="0.5"
+                                TextTrimming="CharacterEllipsis" />
+                        </Grid>
+
+                        <!-- 权限九宫格: 行=属主/属组/其他, 列=读/写/执行 -->
+                        <Grid ColumnSpacing="0" RowSpacing="4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="72" />
+                                <ColumnDefinition Width="72" />
+                                <ColumnDefinition Width="72" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock
+                                x:Name="ColRead"
+                                Grid.Row="0"
+                                Grid.Column="1"
+                                HorizontalAlignment="Center"
+                                FontSize="14"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock
+                                x:Name="ColWrite"
+                                Grid.Row="0"
+                                Grid.Column="2"
+                                HorizontalAlignment="Center"
+                                FontSize="14"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock
+                                x:Name="ColExec"
+                                Grid.Row="0"
+                                Grid.Column="3"
+                                HorizontalAlignment="Center"
+                                FontSize="14"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                            <TextBlock
+                                x:Name="OwnerLabel"
+                                Grid.Row="1"
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                FontSize="14" />
+                            <CheckBox
+                                x:Name="OwnerReadCb"
+                                Grid.Row="1"
+                                Grid.Column="1"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+                            <CheckBox
+                                x:Name="OwnerWriteCb"
+                                Grid.Row="1"
+                                Grid.Column="2"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+                            <CheckBox
+                                x:Name="OwnerExecCb"
+                                Grid.Row="1"
+                                Grid.Column="3"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+
+                            <TextBlock
+                                x:Name="GroupLabel"
+                                Grid.Row="2"
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                FontSize="14" />
+                            <CheckBox
+                                x:Name="GroupReadCb"
+                                Grid.Row="2"
+                                Grid.Column="1"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+                            <CheckBox
+                                x:Name="GroupWriteCb"
+                                Grid.Row="2"
+                                Grid.Column="2"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+                            <CheckBox
+                                x:Name="GroupExecCb"
+                                Grid.Row="2"
+                                Grid.Column="3"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+
+                            <TextBlock
+                                x:Name="OthersLabel"
+                                Grid.Row="3"
+                                Grid.Column="0"
+                                VerticalAlignment="Center"
+                                FontSize="14" />
+                            <CheckBox
+                                x:Name="OthersReadCb"
+                                Grid.Row="3"
+                                Grid.Column="1"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+                            <CheckBox
+                                x:Name="OthersWriteCb"
+                                Grid.Row="3"
+                                Grid.Column="2"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+                            <CheckBox
+                                x:Name="OthersExecCb"
+                                Grid.Row="3"
+                                Grid.Column="3"
+                                MinWidth="0"
+                                HorizontalAlignment="Center"
+                                Checked="PermBox_ValueChanged"
+                                Unchecked="PermBox_ValueChanged" />
+                        </Grid>
+
+                        <!-- 当前值: 八进制 + 符号串, 勾选变化实时重算 -->
+                        <TextBlock
+                            x:Name="ValueText"
+                            HorizontalAlignment="Center"
+                            FontSize="12"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                        <!-- 操作按钮: 应用 / 取消 -->
+                        <StackPanel
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal"
+                            Spacing="8">
+                            <Button x:Name="ApplyBtn" Click="ApplyBtn_Click" />
+                            <Button x:Name="CancelBtn" Click="CancelBtn_Click" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>
