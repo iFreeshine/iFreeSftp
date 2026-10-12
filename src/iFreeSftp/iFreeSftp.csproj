@@ -23,7 +23,7 @@
     <!-- 构建产物也自包含: SDK 安装在用户目录而非系统级, 框架依赖模式会弹"安装 .NET Desktop Runtime"提示 -->
     <SelfContained Condition="'$(SelfContained)' == ''">true</SelfContained>
     <!-- 语义版本 (设置→关于 卡片显示, 官网/发布物共用): 从 0.8.0 起 -->
-    <Version>0.8.0</Version>
+    <Version>0.8.1</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -99,7 +99,11 @@
   <!-- Publish Properties -->
   <PropertyGroup>
     <!-- 发布产物统一输出到仓库根 release\<RID>\ (多 RID 天然分子目录);
-         卫星语言/AI 裁剪两个 target 均基于 $(PublishDir), 自动跟随无需调整 -->
+         卫星语言/AI 裁剪两个 target 均基于 $(PublishDir), 自动跟随无需调整。
+         裸命令 dotnet publish -c Release -r win-x64 即可正确落位此处并打出单文件。
+         勿在 Properties\PublishProfiles\ 下放 .pubxml: publish 时会被静默自动导入,
+         其中的 PublishSingleFile=False / PublishDir=bin\... 会无条件覆盖本文件
+         (0.8.1 曾因此误发 411 散件的目录式包, 见 README 坑位 3.19) -->
     <PublishDir>$(MSBuildProjectDirectory)\..\..\release\$(RuntimeIdentifier)\</PublishDir>
     <!-- 托管程序集打进单 exe 并压缩 (体积 -40% 量级, 首启有一次性解压开销)。
          WinAppSDK targets 会默认 IncludeAllContentForSelfExtract=true: native 依赖与

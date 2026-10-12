@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iFreeSftp - 让每个人都可以轻松使用 SFTP</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+<meta name="description" content="iFreeSftp 是一款基于 WinUI 3 的免费开源 Windows SFTP 客户端：IDE 式双窗格多标签、服务端命令通道直达传输、远程编辑自动回传、SHA-256/SM3 校验码。">
+<link rel="stylesheet" href="../assets/tailwind.css">
+<script>
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('details[open]').forEach((d) => {
+    if (!d.contains(e.target)) d.removeAttribute('open');
+  });
+});
+</script>
+<style>
+  html { scroll-behavior: smooth; }
+  .shot { border: 1px solid #21262d; border-radius: 8px; box-shadow: 0 16px 48px rgba(0,0,0,.45); }
+  @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+  .breathe { animation: breathe 2.4s ease-in-out infinite; }
+</style>
+</head>
+<body class="bg-ink font-sans text-body antialiased">
+
+<!-- ===== 顶部导航 ===== -->
+<header class="sticky top-0 z-50 bg-ink">
+  <div class="mx-auto flex h-16 max-w-6xl items-center px-4">
+    <a href="#" class="flex items-center gap-2.5">
+      <img src="../assets/logo.png" alt="iFreeSftp" class="h-9 w-9">
+      <span class="text-xl font-semibold text-body">iFreeSftp</span>
+    </a>
+    <nav class="ml-auto hidden items-center gap-1 text-sm md:flex">
+      <a href="changelog.html" class="px-3 py-2.5 text-body hover:text-white">更新日志</a>
+      <a href="../index.html" class="px-3 hidden text-body hover:text-white sm:block" title="English">English</a>
+    </nav>
+    <div class="ml-auto flex items-center gap-3 text-sm md:ml-0">
+      <details class="group relative md:hidden">
+        <summary class="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-lg text-body transition-colors hover:bg-edge hover:text-white [&::-webkit-details-marker]:hidden">
+          <svg class="h-5 w-5 group-open:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          <svg class="hidden h-5 w-5 group-open:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </summary>
+        <nav class="absolute right-0 top-12 z-50 w-44 rounded-lg bg-panel py-2 shadow-xl">
+          <a href="changelog.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">更新日志</a>
+          <a href="license.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">软件许可</a>
+          <a href="../index.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">English</a>
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>
+
+<!-- ===== Hero（截图渐隐背景 + 左文右图） ===== -->
+<section class="relative overflow-hidden bg-ink">
+  <div class="pointer-events-none absolute inset-0" aria-hidden="true">
+    <img src="../assets/screenshots/app-main-light.png" alt="" class="h-full w-full object-cover object-top opacity-30">
+    <div class="absolute inset-0 bg-gradient-to-b from-ink/30 via-ink/40 to-ink"></div>
+  </div>
+  <div class="relative mx-auto grid max-w-6xl items-center gap-12 px-4 pb-24 pt-14 sm:pt-20 lg:grid-cols-2">
+    <!-- 左：文案 -->
+    <div class="text-center lg:text-left">
+      <h1 class="text-2xl font-bold leading-tight text-white sm:text-3xl md:text-4xl">轻松使用 SFTP</h1>
+      <p class="mx-auto mt-6 max-w-xl text-base leading-relaxed text-body lg:mx-0">
+        免费、开源的 Windows SFTP 客户端。左右双窗格、各自独立多标签，独有服务端命令通道——远程到远程直达、海量文件秒删、大文件校验秒算。
+      </p>
+      <div class="mt-10 flex flex-wrap items-center justify-center gap-4 lg:justify-start">
+        <a href="https://github.com/iFreeshine/iFreeSftp/releases/download/v0.8.1/iFreeSftp-v0.8.1-win-x64.zip" target="_blank" rel="noopener"
+           class="rounded bg-primary px-8 py-3.5 text-sm font-medium text-white transition-colors hover:bg-primaryhi">下载 Windows 版</a>
+        <a href="https://github.com/iFreeshine/iFreeSftp" target="_blank" rel="noopener"
+           class="rounded bg-panel px-8 py-3.5 text-sm font-medium text-white ring-1 ring-edge transition-colors hover:bg-edge">GitHub 开源</a>
+      </div>
+      <p class="pt-4 text-xs leading-5 text-faint">版本 v0.8.1 · Windows 10 1809+ / Windows 11 · x64 · 免安装，解压即用 · AGPL-3.0 开源</p>
+    </div>
+    <!-- 右：CSS 仿应用界面（仿 UGit 手绘屏风格，突出双窗格多标签） -->
+    <div class="relative">
+      <div class="shot w-full overflow-hidden bg-panel">
+        <div class="flex aspect-[16/10] flex-col">
+          <!-- 标题栏 -->
+          <div class="flex h-8 shrink-0 items-center justify-between bg-ink px-3">
+            <div class="flex items-center gap-2">
+              <img src="../assets/logo.png" alt="" class="h-3.5 w-3.5">
+            </div>
+            <div class="flex items-center gap-2.5 text-faint">
+              <svg class="h-2.5 w-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1 5h8"/></svg>
+              <svg class="h-2.5 w-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="1.5" width="7" height="7"/></svg>
+              <svg class="h-2.5 w-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg>
+            </div>
+          </div>
+          <!-- 双窗格主体 -->
+          <div class="relative flex min-h-0 flex-1">
+            <!-- 左窗格（本地） -->
+            <div class="flex min-w-0 flex-1 flex-col border-r border-edge">
+              <div class="flex items-end gap-1 bg-ink px-2 pt-1.5">
+                <div class="whitespace-nowrap rounded-t bg-panel px-2.5 py-1 text-[10px] leading-none text-white shadow-[inset_0_2px_0_#0089ff]">本地</div>
+                <div class="hidden whitespace-nowrap rounded-t px-2.5 py-1 text-[10px] leading-none text-faint sm:block">远端1</div>
+                <span class="px-1 pb-0.5 text-[11px] leading-none text-faint">＋</span>
+              </div>
+              <div class="flex items-center gap-2 border-b border-edge bg-panel px-2.5 py-1.5">
+                <div class="h-1.5 w-24 rounded-full bg-edge"></div>
+                <div class="ml-auto flex gap-1.5">
+                  <span class="h-3.5 w-3.5 rounded-sm bg-[#2d333b]"></span>
+                  <span class="h-3.5 w-3.5 rounded-sm bg-[#2d333b]"></span>
+                  <span class="h-3.5 w-3.5 rounded-sm bg-primary"></span>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 bg-ink px-2.5 py-1">
+                <span class="h-1 w-10 rounded-full bg-[#30363d]"></span>
+                <span class="ml-auto h-1 w-6 rounded-full bg-[#30363d]"></span>
+              </div>
+              <div class="flex min-h-0 flex-1 flex-col justify-center gap-2.5 px-2.5">
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div class="h-1.5 w-3/5 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-8 rounded-full bg-[#21262d]"></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z"/></svg><div class="h-1.5 w-2/5 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-6 rounded-full bg-[#21262d]"></div></div>
+                <div class="-mx-1 flex items-center gap-2 rounded bg-primary/10 px-1"><svg class="h-3 w-3 shrink-0 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div class="h-1.5 w-1/2 rounded-full bg-primary/60"></div><div class="ml-auto h-1.5 w-8 rounded-full bg-primary/30"></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z"/></svg><div class="h-1.5 w-2/3 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-6 rounded-full bg-[#21262d]"></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div class="h-1.5 w-1/3 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-8 rounded-full bg-[#21262d]"></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z"/></svg><div class="h-1.5 w-1/2 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-6 rounded-full bg-[#21262d]"></div></div>
+              </div>
+            </div>
+            <!-- 右窗格（远程） -->
+            <div class="flex min-w-0 flex-1 flex-col">
+              <div class="flex items-end gap-1 bg-ink px-2 pt-1.5">
+                <div class="whitespace-nowrap rounded-t bg-panel px-2.5 py-1 text-[10px] leading-none text-white shadow-[inset_0_2px_0_#0089ff]">远端2</div>
+                <div class="hidden whitespace-nowrap rounded-t px-2.5 py-1 text-[10px] leading-none text-faint sm:block">backup.io</div>
+                <span class="px-1 pb-0.5 text-[11px] leading-none text-faint">＋</span>
+              </div>
+              <div class="flex items-center gap-2 border-b border-edge bg-panel px-2.5 py-1.5">
+                <div class="h-1.5 w-20 rounded-full bg-edge"></div>
+                <div class="ml-auto flex gap-1.5">
+                  <span class="h-3.5 w-3.5 rounded-sm bg-[#2d333b]"></span>
+                  <span class="h-3.5 w-3.5 rounded-sm bg-[#2d333b]"></span>
+                  <span class="h-3.5 w-3.5 rounded-sm bg-primary"></span>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 bg-ink px-2.5 py-1">
+                <span class="h-1 w-10 rounded-full bg-[#30363d]"></span>
+                <span class="ml-auto h-1 w-6 rounded-full bg-[#30363d]"></span>
+              </div>
+              <div class="flex min-h-0 flex-1 flex-col justify-center gap-2.5 px-2.5">
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div class="h-1.5 w-1/2 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-8 rounded-full bg-[#21262d]"></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z"/></svg><div class="h-1.5 w-3/5 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-6 rounded-full bg-[#21262d]"></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div class="h-1.5 w-1/3 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-8 rounded-full bg-[#21262d]"></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z"/></svg><div class="h-1.5 w-2/5 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-14 overflow-hidden rounded-full bg-[#21262d]"><div class="h-full w-3/5 rounded-full bg-primary"></div></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div class="h-1.5 w-1/2 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-6 rounded-full bg-[#21262d]"></div></div>
+                <div class="flex items-center gap-2"><svg class="h-3 w-3 shrink-0 text-[#6e7681]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z"/></svg><div class="h-1.5 w-1/3 rounded-full bg-[#30363d]"></div><div class="ml-auto h-1.5 w-8 rounded-full bg-[#21262d]"></div></div>
+              </div>
+            </div>
+            <!-- 中央胶囊：双窗格 · 各自多标签 -->
+            <div class="absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 whitespace-nowrap rounded-full bg-tang/10 px-4 py-1 text-xs text-tang ring-1 ring-tang/30">
+              <svg class="h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="9" height="16" rx="1.5"/><rect x="13" y="4" width="9" height="16" rx="1.5"/></svg>双窗格 · 各自多标签
+            </div>
+          </div>
+          <!-- 状态栏：主动保活 -->
+          <div class="flex h-7 shrink-0 items-center gap-3 border-t border-edge bg-ink px-3 text-[10px]">
+            <span class="breathe flex items-center gap-1.5 text-mint"><span class="h-1.5 w-1.5 rounded-full bg-mint"></span>已连接 · 心跳保活 30s</span>
+            <span class="ml-auto hidden text-faint sm:block">↑ 12.4 MB/s · ↓ 8.1 MB/s</span>
+            <span class="ml-auto text-faint sm:ml-0">SM3 ✓</span>
+          </div>
+        </div>
+      </div>
+      <div class="absolute bottom-8 left-1/2 z-10 hidden -translate-x-1/2 items-center gap-3 md:flex">
+        <span class="flex items-center gap-2 whitespace-nowrap rounded-full bg-white/10 px-4 py-1 text-xs text-white ring-1 ring-white/30">
+          <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>服务端命令直达
+        </span>
+        <span class="flex items-center gap-2 whitespace-nowrap rounded-full bg-primary/20 px-4 py-1 text-xs text-primary ring-1 ring-primary/40">
+          <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>SM3 国密校验
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 功能区 ===== -->
+<section id="features" class="bg-ink py-20">
+  <div class="mx-auto max-w-6xl px-4">
+    <h2 class="text-center text-2xl font-bold text-white md:text-3xl">核心功能</h2>
+    <p class="mt-4 text-center text-faint">左右双窗口、各自多标签，本地与远程随时同屏</p>
+  </div>
+</section>
+
+<!-- 功能 1：双窗格多标签（文左图右） -->
+<section class="bg-panel py-16">
+  <div class="mx-auto grid max-w-6xl items-center gap-10 px-4 md:grid-cols-2">
+    <div>
+      <div class="flex items-center gap-3">
+        <span class="flex h-10 w-10 items-center justify-center rounded-full bg-primary">
+          <svg class="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="9" height="16" rx="1.5"/><rect x="13" y="4" width="9" height="16" rx="1.5"/></svg>
+        </span>
+        <h3 class="text-xl font-bold text-white">IDE 式双窗格，左右各自多标签</h3>
+      </div>
+      <ul class="mt-6 list-disc space-y-3 pl-5 text-sm leading-relaxed text-faint">
+        <li>左右两个文件夹窗口<b class="text-white">各自独立多开标签页</b>，每个标签既可浏览本地、也可连接远程主机，任意组合同屏</li>
+        <li>四方向传输全覆盖：本地⇄本地、远程⇄远程，支持多选与目录递归</li>
+        <li>按住条目拖到对侧即传，悬停高亮提示目标目录</li>
+        <li>同步浏览、文件比对高亮、橡皮筋框选多选</li>
+      </ul>
+    </div>
+    <img src="../assets/screenshots/app-main-dark.png" alt="双窗格多标签" class="shot w-full">
+  </div>
+</section>
+
+<!-- 功能 2：服务端命令通道（图左文右） -->
+<section class="bg-ink py-16">
+  <div class="mx-auto grid max-w-6xl items-center gap-10 px-4 md:grid-cols-2">
+    <img src="../assets/screenshots/app-settings-2.png" alt="服务端命令通道" class="shot w-full">
+    <div>
+      <div class="flex items-center gap-3">
+        <span class="flex h-10 w-10 items-center justify-center rounded-full bg-mint">
+          <svg class="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </span>
+        <h3 class="text-xl font-bold text-white">服务端命令通道：能不过本机，就不过本机</h3>
+      </div>
+      <ul class="mt-6 list-disc space-y-3 pl-5 text-sm leading-relaxed text-faint">
+        <li><b class="text-white">远程 → 远程同机直达</b>：服务器本地 cp 直拷，文件数据只在服务器磁盘间流动，零本地流量——传统客户端要先把整个目录下载回来再传上去</li>
+        <li><b class="text-white">海量文件秒删</b>：服务端一条 rm -rf，告别 SFTP 协议逐条遍历删除的漫长等待</li>
+        <li>命令不可用时（如服务器禁用 shell）自动回退 SFTP 逐条方案，<b class="text-white">最坏情况也和传统客户端持平，永远不会更差</b></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 功能 3：校验码 + 保活 + 安全（文左图右） -->
+<section class="bg-panel py-16">
+  <div class="mx-auto grid max-w-6xl items-center gap-10 px-4 md:grid-cols-2">
+    <div>
+      <div class="flex items-center gap-3">
+        <span class="flex h-10 w-10 items-center justify-center rounded-full bg-sky">
+          <svg class="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/><polyline points="9 12 11 14 15 10"/></svg>
+        </span>
+        <h3 class="text-xl font-bold text-white">大文件校验秒算，连接稳定可查</h3>
+      </div>
+      <ul class="mt-6 list-disc space-y-3 pl-5 text-sm leading-relaxed text-faint">
+        <li>文件校验码：SHA-256 / SHA-512 / <b class="text-white">SM3（国密）</b>下拉即算 + 一键复制</li>
+        <li>服务端命令优先：数百 MB 大文件校验秒级完成，不占传输链路；命令缺失自动拉流回退</li>
+        <li><b class="text-white">主动心跳保活</b>：连接闲置不断线，保活间隔可调——FileZilla 没有主动保活，挂机久了就掉线</li>
+        <li>首次连接确认主机指纹（SHA256），服务器密钥变更直接拒绝，防中间人攻击；密码 / 私钥认证，超时与重试全可调</li>
+      </ul>
+    </div>
+    <img src="../assets/screenshots/app-settings.png" alt="文件校验码" class="shot w-full">
+  </div>
+</section>
+
+<!-- ===== 同类对比 ===== -->
+<section id="compare" class="bg-ink py-20">
+  <div class="mx-auto max-w-6xl px-4">
+    <h2 class="text-center text-2xl font-bold text-white md:text-3xl">与 FileZilla / WinSCP / Xftp 对比</h2>
+    <p class="mt-4 text-center text-faint">同为 SSH 文件传输工具，差别在"怎么传"——信息来自各官方文档，截至 2026-10</p>
+
+    <div class="mt-12 overflow-x-auto">
+      <table class="w-full min-w-[760px] border-collapse text-sm">
+        <thead>
+          <tr>
+            <th class="w-[24%] rounded-tl-lg bg-panel p-4 text-left font-semibold text-white"></th>
+            <th class="w-[19%] bg-primary/10 p-4 text-center">
+              <img src="../assets/logo.png" alt="iFreeSftp" class="mx-auto mb-1 h-7 w-7"><span class="font-bold text-primary">iFreeSftp</span>
+            </th>
+            <th class="w-[19%] bg-panel p-4 text-center font-semibold text-white">FileZilla</th>
+            <th class="w-[19%] bg-panel p-4 text-center font-semibold text-white">WinSCP</th>
+            <th class="w-[19%] rounded-tr-lg bg-panel p-4 text-center font-semibold text-white">Xftp</th>
+          </tr>
+        </thead>
+        <tbody class="leading-relaxed">
+          <tr>
+            <td class="p-4 font-medium text-white">许可证</td>
+            <td class="bg-primary/10 p-4 text-center font-semibold">AGPL-3.0 开源</td>
+            <td class="p-4 text-center text-faint">GPL-2+ 开源</td>
+            <td class="p-4 text-center text-faint">GPL-3.0 开源</td>
+            <td class="p-4 text-center text-faint">专有闭源</td>
+          </tr>
+          <tr>
+            <td class="p-4 font-medium text-white">费用</td>
+            <td class="bg-primary/10 p-4 text-center font-semibold">全部功能永久免费</td>
+            <td class="p-4 text-center text-faint">免费</td>
+            <td class="p-4 text-center text-faint">免费</td>
+            <td class="p-4 text-center text-faint">家庭/学校免费，<br>商用需付费</td>
+          </tr>
+          <tr>
+            <td class="p-4 font-medium text-white">双窗格多标签</td>
+            <td class="bg-primary/10 p-4 text-center font-semibold text-primary">✓ 左右窗格独立多标签<br><span class="text-xs font-normal text-faint">支持本地-远程、远程-远程互传</span></td>
+            <td class="p-4 text-center text-faint">✗ 单一连接视图</td>
+            <td class="p-4 text-center text-faint">会话标签（单窗格）</td>
+            <td class="p-4 text-center text-faint">会话标签（单窗格）</td>
+          </tr>
+          <tr>
+            <td class="p-4 font-medium text-white">海量文件递归删除</td>
+            <td class="bg-primary/10 p-4 text-center font-semibold text-primary">✓ 服务端 rm -rf<br><span class="text-xs font-normal text-faint">秒级，可回退</span></td>
+            <td class="p-4 text-center text-faint">逐条遍历</td>
+            <td class="p-4 text-center text-faint">逐条遍历</td>
+            <td class="p-4 text-center text-faint">逐条遍历</td>
+          </tr>
+          <tr>
+            <td class="p-4 font-medium text-white">传输完整性校验</td>
+            <td class="bg-primary/10 p-4 text-center font-semibold text-primary">✓ SHA-256/512 + SM3<br><span class="text-xs font-normal text-faint">服务端优先秒算</span></td>
+            <td class="p-4 text-center text-faint">✗</td>
+            <td class="p-4 text-center text-faint">脚本级（checksum）</td>
+            <td class="p-4 text-center text-faint">✗</td>
+          </tr>
+          <tr>
+            <td class="p-4 font-medium text-white">断线保活</td>
+            <td class="bg-primary/10 p-4 text-center font-semibold text-primary">✓ 主动心跳保活<br><span class="text-xs font-normal text-faint">间隔可调，挂机不断线</span></td>
+            <td class="p-4 text-center text-faint">✗ 无主动保活<br><span class="text-xs">闲置易断连</span></td>
+            <td class="p-4 text-center text-faint">✓ 可配置</td>
+            <td class="p-4 text-center text-faint">✓ 可配置</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 差异化的由来 -->
+    <div class="mt-14 grid gap-6 md:grid-cols-2">
+      <div class="rounded-lg bg-panel p-8">
+        <h4 class="text-base font-bold text-white">为什么 FileZilla / WinSCP 不做命令通道？</h4>
+        <p class="mt-4 text-sm leading-relaxed text-faint">
+          它们面向任意服务器：大量主机用 OpenSSH 的 <code class="rounded bg-edge px-1.5 py-0.5 text-xs">ForceCommand internal-sftp</code> 把用户锁死在 SFTP 子系统里，shell 根本不存在；而 SFTP v3 协议本身没有递归删除、服务端复制原语，所有人只能逐条往返。FileZilla 更是连 SCP 都不支持，官方论坛多次拒绝"执行命令"的特性请求——协议里没有的一概不做，换来的是处处可预测。
+        </p>
+      </div>
+      <div class="rounded-lg bg-primary/10 p-8">
+        <h4 class="text-base font-bold text-primary">命令通道优先，SFTP 兜底：能快则快，绝不更慢</h4>
+        <p class="mt-4 text-sm leading-relaxed text-faint">
+          命令通道可用时，服务端直达快至百倍；不可用时自动回退 SFTP 逐条方案，最坏情况就是 FileZilla 的现状——永远不会更差。WinSCP 的 SCP 模式其实试过命令路线，因兼容负担太重已沦为遗留模式；iFreeSftp 的混合分流让它只赚不赔。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 免费承诺 ===== -->
+<section id="free" class="border-t border-edge bg-panel py-20">
+  <div class="mx-auto max-w-6xl px-4 text-center">
+    <h2 class="text-2xl font-bold text-white md:text-3xl">免费承诺</h2>
+    <p class="mt-4 text-faint">全部功能对所有用户永久免费开放，不解锁、不限制任何功能</p>
+    <div class="mt-12 grid gap-6 text-left md:grid-cols-3">
+      <div class="rounded-lg bg-ink p-8">
+        <span class="flex h-10 w-10 items-center justify-center rounded-full bg-mint">
+          <svg class="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        </span>
+        <h4 class="mt-4 text-base font-bold text-white">永久免费</h4>
+        <p class="mt-2 text-sm leading-relaxed text-faint">没有任何付费墙：传输、命令通道、远程编辑、校验码、双主题双语，全部开放。</p>
+      </div>
+      <div class="rounded-lg bg-ink p-8">
+        <span class="flex h-10 w-10 items-center justify-center rounded-full bg-primary">
+          <svg class="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-8-4.5-10-10c-1.2-3.4 1-7 4.5-7C9 4 10.5 5.5 12 7c1.5-1.5 3-3 5.5-3C21 4 23.2 7.6 22 11c-2 5.5-10 10-10 10z"/></svg>
+        </span>
+        <h4 class="mt-4 text-base font-bold text-white">自愿赞助</h4>
+        <p class="mt-2 text-sm leading-relaxed text-faint">注册勋章纯属自愿赞助的荣誉标记，注册与否功能完全无差别。</p>
+        <a href="https://afdian.com/item/3a69f926c4ac11f1878052540025c377" target="_blank" rel="noopener" class="mt-3 inline-block text-sm font-medium text-link hover:underline">赞助获得注册码 →</a>
+      </div>
+      <div class="rounded-lg bg-ink p-8">
+        <span class="flex h-10 w-10 items-center justify-center rounded-full bg-tang">
+          <svg class="h-5 w-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/></svg>
+        </span>
+        <h4 class="mt-4 text-base font-bold text-white">AGPL-3.0 开源</h4>
+        <p class="mt-2 text-sm leading-relaxed text-faint">源码开放、允许商用与二次开发，社区构建与官方构建同源。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 页脚 ===== -->
+<footer class="border-t border-edge bg-ink py-10 text-center text-sm text-faint">
+  <div class="mx-auto max-w-6xl px-4">
+    <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
+      <a href="license.html" class="hover:text-body">软件许可</a>
+      <!-- 上线前替换为爱发电创作者主页 URL -->
+      <a href="https://afdian.com/item/3a69f926c4ac11f1878052540025c377" target="_blank" rel="noopener" class="hover:text-body">赞助支持（爱发电）</a>
+    </div>
+    <p class="mt-4">Copyright © 2026 ifrees.top · 基于 GNU AGPL-3.0 许可证开源</p>
+  </div>
+</footer>
+
+</body>
+</html>

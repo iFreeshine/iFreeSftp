@@ -30,7 +30,15 @@ public sealed partial class DeleteConfirmDialog : UserControl
         Card.Shadow = _shadow;
         Card.Translation = new Vector3(0, 0, 32);
         ApplyResources();
-        LocalizationService.CultureChanged += ApplyResources;
+        // 语言切换订阅与宿主生命周期配对: Loaded 订阅 / Unloaded 退订 (WinUI 布局
+        // 重排会 Unloaded→Loaded 重放, 订阅随之恢复; 宿主销毁后保持退订防泄漏)。
+        // Loaded 先退订再订阅, 防重放时重复累加订阅计数。
+        Loaded += (_, _) =>
+        {
+            LocalizationService.CultureChanged -= ApplyResources;
+            LocalizationService.CultureChanged += ApplyResources;
+        };
+        Unloaded += (_, _) => LocalizationService.CultureChanged -= ApplyResources;
     }
 
     /// <summary>打开弹窗并等待结果: true = 确认删除, false = 取消。
@@ -38,6 +46,9 @@ public sealed partial class DeleteConfirmDialog : UserControl
     /// false = 远程永久删除 (文案提示无法恢复)。</summary>
     public Task<bool> ShowAsync(int count, string firstName, bool toRecycleBin = false)
     {
+        // 终结上一轮未 Close 的等待 (防御: 上次弹窗未关就再次 ShowAsync,
+        // 旧 Task 若不终结则永远悬挂)
+        _tcs?.TrySetResult(false);
         _tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _toRecycleBin = toRecycleBin;
         DragTransform.X = 0; // 打开时重置拖拽偏移 (居中)

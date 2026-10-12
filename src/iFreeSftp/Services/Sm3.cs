@@ -180,4 +180,46 @@ public sealed class Sm3
     private static uint P0(uint x) => x ^ Rotl(x, 9) ^ Rotl(x, 17);
 
     private static uint P1(uint x) => x ^ Rotl(x, 15) ^ Rotl(x, 23);
+
+#if DEBUG
+    /// <summary>
+    /// GB/T 32905-2016 附录 A 标准向量自测（仅 DEBUG 启动跑一次；向量值经 OpenSSL
+    /// 独立实现复核）。覆盖三条压缩路径：单块短消息、整 64B 块、67B 跨块收尾；
+    /// 并验证流式分块追加与整算一致。失败抛异常拦截启动（自实现被误改时立即暴露）。
+    /// </summary>
+    public static void RunSelfTest()
+    {
+        (byte[] Data, string Expected)[] vectors =
+        {
+            ("abc"u8.ToArray(), "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"),
+            ("abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"u8.ToArray(),
+             "debe9ff92275b8a138604889c18e5a4d6fdb70e5387e5765293dcba39c0c5732"),
+            ("abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabc"u8.ToArray(),
+             "952eb84cacee9c10bde4d6882d29d63140ba72af6fe485085095dccd5b872453"),
+        };
+
+        foreach (var (data, expected) in vectors)
+        {
+            var sm3 = new Sm3();
+            sm3.AppendData(data, data.Length);
+            AssertHex(sm3.GetHashHex(), expected, $"整算 ({data.Length}B)");
+        }
+
+        // 流式分块: 向量 3 拆两次追加 (16B + 剩余 51B), 验证跨块缓冲与整算一致
+        var streamed = new Sm3();
+        streamed.AppendData(vectors[2].Data, 16);
+        var rest = vectors[2].Data.AsSpan(16).ToArray();
+        streamed.AppendData(rest, rest.Length);
+        AssertHex(streamed.GetHashHex(), vectors[2].Expected, "流式分块");
+
+        static void AssertHex(string actual, string expected, string label)
+        {
+            if (actual != expected)
+            {
+                throw new InvalidOperationException(
+                    $"SM3 标准向量自测失败 [{label}]: 期望 {expected}, 实得 {actual}");
+            }
+        }
+    }
+#endif
 }

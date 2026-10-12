@@ -1,12 +1,13 @@
-# iFreeSftp build script
+﻿# iFreeSftp build script
 # Usage:
 #   .\build.ps1              # Debug build
 #   .\build.ps1 build        # Debug build
 #   .\build.ps1 release      # Publish single-file exe to release\win-x64\ (all deps bundled, extracted to temp at first launch)
+#   .\build.ps1 msix         # MSIX package (Store submission) via tools\make-msix.ps1 -> release\iFreeSftp-<ver>-x64.msix
 #   .\build.ps1 run          # Build and run (Debug)
 #   .\build.ps1 clean        # Clean all build outputs
 param(
-    [ValidateSet('build', 'release', 'run', 'clean')]
+    [ValidateSet('build', 'release', 'msix', 'run', 'clean')]
     [string]$Action = 'build',
 
     # 核心实现模式 (开源闭源分层, 见技术文档):
@@ -43,6 +44,9 @@ function Invoke-Build {
 }
 
 function Invoke-Release {
+    # 发布前防漏校验: csproj / app.manifest / README 徽章 / CHANGELOG / 官网版本号必须一致
+    & (Join-Path $PSScriptRoot 'tools\check-version.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'check-version 失败, 已阻止发布 - 先把所有版本声明点同步后再发' }
     $outDir = Join-Path $RepoRoot 'release\win-x64'
     Write-Host "==> dotnet publish (Release, self-contained, single-file) -> $outDir" -ForegroundColor Cyan
     # Official single-file config for unpackaged self-contained WinUI 3 (WinAppSDK >= 1.5):
@@ -95,6 +99,7 @@ function Invoke-Clean {
 switch ($Action) {
     'build'   { Invoke-Build }
     'release' { Invoke-Release }
+    'msix'    { & (Join-Path $PSScriptRoot 'tools\make-msix.ps1') -Core $Core }
     'run'     { Invoke-Run }
     'clean'   { Invoke-Clean }
 }

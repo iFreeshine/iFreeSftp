@@ -49,6 +49,13 @@ public sealed partial class HostPanel : UserControl
         SettingsTabs.Loaded += (_, _) =>
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, HideTabSeparators);
         ApplyResources();
+        // hosts.json 读取失败已自动备份: 面板打开时给出数据去向提示 (红色 InfoBar, 可手动关闭)。
+        if (HostStoreService.LoadFailedBackupPath is not null)
+        {
+            ShowTestAlert(false, LocalizationService.GetString("HostLoadFailTitle"),
+                string.Format(LocalizationService.GetString("HostLoadFailMsg"),
+                    HostStoreService.LoadFailedBackupPath));
+        }
     }
 
     /// <summary>主机卡片右键菜单样式: 照搬主框架文件夹右键菜单 (FileView.PaneMenuPresenterStyle)——
@@ -246,7 +253,7 @@ public sealed partial class HostPanel : UserControl
             return;
         }
 
-        if (host.AuthMode == "KeyFile" && string.IsNullOrWhiteSpace(host.KeyFilePath))
+        if (host.AuthMode == AuthMode.KeyFile && string.IsNullOrWhiteSpace(host.KeyFilePath))
         {
             ShowTestAlert(false, LocalizationService.GetString("TestNeedKeyFile"), string.Empty);
             return;
@@ -258,8 +265,34 @@ public sealed partial class HostPanel : UserControl
         var detail = string.Empty;
         try
         {
-            using var session = new SftpSessionService();
+            using var session = new SftpSessionService
+            {
+                ConfirmHostKey = fp =>
+                {
+                    TerminalLogService.Log(LocalizationService.GetString("LogWaitFingerprint"));
+                    return HostKeyConfirmDialog.ShowFromWorkerAsync(this, host.Host, fp);
+                },
+                ConfirmHostKeyChange = (stored, presented) =>
+                {
+                    TerminalLogService.Log(LocalizationService.GetString("LogWaitFingerprint"));
+                    return HostKeyConfirmDialog.ShowChangeFromWorkerAsync(this, host.Host, stored, presented);
+                },
+            };
+            session.SetTrustedFingerprint(string.IsNullOrWhiteSpace(host.HostKeyFingerprint)
+                ? null
+                : host.HostKeyFingerprint);
             ok = await session.ConnectAsync(host, retry: false); // 测试连接不重试, 快速反馈
+            // 测试中首次确认的指纹写回存档, 正式连接即可自动校验 (与连接路径持久化口径一致)。
+            // SaveSingle 只落盘该条指纹: 不把工作集里其他主机的未保存修改一起带上 (显式保存语义)。
+            if (ok && session.ConfirmedFingerprint is not null
+                && session.ConfirmedFingerprint != host.HostKeyFingerprint)
+            {
+                host.HostKeyFingerprint = session.ConfirmedFingerprint;
+                if (HostStoreService.SaveSingle(host))
+                {
+                    TerminalLogService.Log(LocalizationService.GetString("LogFingerprintSaved"));
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -402,7 +435,7 @@ public sealed partial class HostPanel : UserControl
             return;
         }
 
-        if (host.AuthMode == "KeyFile" && string.IsNullOrWhiteSpace(host.KeyFilePath))
+        if (host.AuthMode == AuthMode.KeyFile && string.IsNullOrWhiteSpace(host.KeyFilePath))
         {
             ShowTestAlert(false, LocalizationService.GetString("TestNeedKeyFile"), string.Empty);
             return;
@@ -563,7 +596,11 @@ public sealed partial class HostPanel : UserControl
     }
 
     private void EditBtn_Loading(object sender, object args)
-        => ToolTipService.SetToolTip((FrameworkElement)sender, MakeAccentTip(LocalizationService.GetString("EditHost")));
+    {
+        var tip = LocalizationService.GetString("EditHost");
+        ToolTipService.SetToolTip((FrameworkElement)sender, MakeAccentTip(tip));
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName((FrameworkElement)sender, tip);
+    }
 
     /// <summary>编辑按钮：选中该卡片，右侧表单随之载入。</summary>
     private void EditBtn_Click(object sender, RoutedEventArgs e)
@@ -736,7 +773,7 @@ public sealed partial class HostPanel : UserControl
         }
         _selected.Host = newHost;
         _selected.Port = int.TryParse(PortBox.Text.Trim(), out var port) ? Math.Clamp(port, 1, 65535) : 22;
-        _selected.AuthMode = AuthModeBox.SelectedIndex == 1 ? "KeyFile" : "Password";
+        _selected.AuthMode = AuthModeBox.SelectedIndex == 1 ? AuthMode.KeyFile : AuthMode.Password;
         _selected.KeyFilePath = KeyPathBox.Text.Trim();
         _selected.Username = UsernameBox.Text.Trim();
         _selected.Password = LoginPwdBox.Password;
@@ -780,7 +817,7 @@ public sealed partial class HostPanel : UserControl
                 NameBox.Text = _selected.Name;
                 HostBox.Text = _selected.Host;
                 PortBox.Text = _selected.Port.ToString();
-                AuthModeBox.SelectedIndex = _selected.AuthMode == "KeyFile" ? 1 : 0;
+                AuthModeBox.SelectedIndex = _selected.AuthMode == AuthMode.KeyFile ? 1 : 0;
                 LoginPwdBox.Password = _selected.Password;
                 KeyPathBox.Text = _selected.KeyFilePath;
                 UsernameBox.Text = _selected.Username;
@@ -1011,6 +1048,7 @@ public sealed partial class HostPanel : UserControl
     {
         TitleText.Text = LocalizationService.GetString("HostPanelTitle");
         ToolTipService.SetToolTip(AddBtn, MakeAccentTip(LocalizationService.GetString("AddHost")));
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(AddBtn, LocalizationService.GetString("AddHost"));
         var closeText = LocalizationService.GetString("Close");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(TitleCloseBtn, closeText);
         ToolTipService.SetToolTip(TitleCloseBtn, MakeAccentTip(closeText));

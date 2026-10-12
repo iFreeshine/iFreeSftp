@@ -43,6 +43,19 @@ public sealed class FileColumnState
     public const double MaxColWidth = 400;
     public const double MinNameColWidth = 60;
     public const double MaxNameColWidth = 1200;
+
+    // 列模板几何常量: XAML 侧经 StaticResource 同值引用 (FileView.xaml 资源
+    // IconCellSize/ColSpacing), 改这里不会自动同步 XAML——两处是同一来源的镜像,
+    // 调整任一侧需同步另一侧 (WinUI XAML 不支持 x:Static, 只能如此镜像)。
+    /// <summary>图标格边长: 条目模板与列头首列同宽。</summary>
+    public const double IconCellSize = 22;
+    /// <summary>条目/列头网格的列间距 (ColumnSpacing)。</summary>
+    public const double ColSpacing = 12;
+    /// <summary>条目/列头水平内边距 (单侧, Padding="4,x")。</summary>
+    public const double RowPaddingH = 4;
+    /// <summary>名称列宽计算固定开销 = 左右内边距 + 图标列 + 名称列前间距。</summary>
+    public const double NameColFixedOverhead = RowPaddingH * 2 + IconCellSize + ColSpacing;
+
     public double NameColWidth = 160;
     public double SizeColWidth = 90;
     public double TypeColWidth = 100;
@@ -383,13 +396,19 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     private static void SetTip(FrameworkElement element, string key)
         => SetTipText(element, LocalizationService.GetString(key));
 
-    /// <summary>设置元素 tooltip (直接文本, 面包屑段显示截止到该项的完整路径用)。</summary>
+    /// <summary>设置元素 tooltip (直接文本, 面包屑段显示截止到该项的完整路径用)。
+    /// 同步设置 AutomationProperties.Name: 图标按钮无文本内容, 不补名读屏器报不出控件。
+    /// </summary>
     private static void SetTipText(FrameworkElement element, string text)
-        => element.SetValue(ToolTipService.ToolTipProperty, new ToolTip
+    {
+        element.SetValue(ToolTipService.ToolTipProperty, new ToolTip
         {
             Content = text,
             Style = (Style)Application.Current.Resources["AccentToolTipStyle"],
         });
+        element.SetValue(
+            Microsoft.UI.Xaml.Automation.AutomationProperties.NameProperty, text);
+    }
 
     /// <summary>重新应用本地化文本。</summary>
     public void ApplyResources()
@@ -1625,12 +1644,12 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             cols.Add(("Permissions", _cols.PermissionsColWidth, FileColumnState.MinColWidth,
                 _cols.PermissionsColDef, w => _cols.PermissionsColWidth = w));
         }
-        // 总需求 = 固定开销 42 (左右 Padding 8 + 图标列 22 + 名称列前间距 12)
-        //          + Σ(每列宽 + 12 列间距)。
-        double needed = 42;
+        // 总需求 = 固定开销 (左右 Padding 8 + 图标列 22 + 名称列前间距 12)
+        //          + Σ(每列宽 + 列间距 12); 几何常量与 XAML 列模板同源。
+        double needed = FileColumnState.NameColFixedOverhead;
         foreach (var (_, width, _, _, _) in cols)
         {
-            needed += width + 12;
+            needed += width + FileColumnState.ColSpacing;
         }
         // 0.5 DIP 容差防抖动; 压缩/回涨互斥, 中间留 1 DIP 滞回带防震荡。
         bool changed = false;
@@ -3749,9 +3768,9 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         return (FileEntry.FormatSize(fi.Length), fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm"));
     }
 
-    /// <summary>远程路径拼接 (根 '/' 兼容: TrimEnd 后补分隔符)。</summary>
+    /// <summary>远程路径拼接 (逻辑在 Models.RemotePath 纯函数, 可单测)。</summary>
     private static string JoinRemotePath(string dir, string name)
-        => dir.TrimEnd('/') + "/" + name;
+        => Models.RemotePath.Join(dir, name);
 
     /// <summary>递归上传目录 (顶层同名已获覆盖许可; 递归内部同名直接合并/覆盖, 不再逐项询问)。</summary>
     private static async Task UploadDirAsync(IRemoteTransferOps sftp, string localDir, string remoteDir)

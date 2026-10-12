@@ -120,6 +120,11 @@ public partial class App : Application
         // WPF 集群目录 (wpf\) 挂载托管/native 解析路径 (bundle 形态无该目录, 空转)
         Services.WpfBundle.Initialize();
 
+#if DEBUG
+        // SM3 自实现标准向量自检 (GB/T 32905-2016 附录 A): 被误改时启动即暴露
+        Services.Sm3.RunSelfTest();
+#endif
+
         // 主面板切换明暗主题时, 同步所有已打开的 WPF 编辑器窗口（各自 STA 线程上重放主题）。
         Services.ThemeService.ThemeChanged += dark => WpfEditor.WpfEditorWindow.ApplyThemeAll(dark);
 

@@ -35,14 +35,31 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
 
     /// <summary>
     /// 已信任的主机指纹（SHA256:xxx）。非空时连接自动校验：匹配才信任，
-    /// 不匹配直接拒绝（防中间人）。为空且无 ConfirmHostKey 回调时放行（测试连接）。
+    /// 不匹配直接拒绝（防中间人）。为空时走 ConfirmHostKey 确认回调；
+    /// 回调也为空时拒绝连接（fail-closed）。
+    /// 外部只能经 <see cref="SetTrustedFingerprint"/> 设置（收口 + 审计）；
+    /// 连接内部回填（重试/懒通道复用确认结果）不走该入口。
     /// </summary>
-    public string? TrustedFingerprint { get; set; }
+    public string? TrustedFingerprint { get; private set; }
 
     /// <summary>
-    /// 主机指纹确认回调（正式连接首次遇到未知主机密钥时由 UI 提供指纹确认框）。
+    /// 设置信任指纹的唯一入口（调用方用主机档案的存档指纹预填）。
+    /// 非空时记审计日志，便于排查"本次连接为何静默信任了该主机"。
+    /// </summary>
+    public void SetTrustedFingerprint(string? fingerprint)
+    {
+        TrustedFingerprint = fingerprint;
+        if (!string.IsNullOrEmpty(fingerprint))
+        {
+            TerminalLogService.Log(string.Format(
+                LocalizationService.GetString("LogTrustApplied"), fingerprint));
+        }
+    }
+
+    /// <summary>
+    /// 主机指纹确认回调（首次遇到未知主机密钥时由 UI 提供指纹确认框）。
     /// 参数为 SHA256 指纹，返回是否信任。在 SSH.NET 握手线程上同步等待结果。
-    /// 为空时（测试连接）自动放行。
+    /// 为空时无存档指纹的连接直接拒绝（fail-closed）。
     /// </summary>
     public Func<string, Task<bool>>? ConfirmHostKey { get; set; }
 
@@ -152,7 +169,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
     /// <summary>
     /// 主机密钥校验：有存档指纹时精确匹配才信任（不匹配拒绝）;
     /// 无存档时走确认回调询问用户（确认结果记录到 ConfirmedFingerprint 供调用方保存）;
-    /// 无回调（测试连接）放行。
+    /// 无回调时拒绝（fail-closed：所有调用方都必须接入指纹确认）。
     /// </summary>
     private void OnHostKeyReceived(object? sender, Renci.SshNet.Common.HostKeyEventArgs e)
     {
@@ -161,7 +178,9 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
         {
             if (ConfirmHostKey is null)
             {
-                e.CanTrust = true;
+                // fail-closed: 无存档指纹且无确认回调时拒绝。不再自动放行, 防止任何
+                // 未接入指纹确认的调用路径静默信任未知主机密钥 (中间人风险)。
+                e.CanTrust = false;
                 return;
             }
 
@@ -218,7 +237,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
     /// <summary>按登录方式构造认证凭据：密钥方式用私钥文件（不支持 .ppk），否则用密码。</summary>
     private static AuthenticationMethod CreateAuthMethod(HostProfile profile)
     {
-        if (profile.AuthMode == "KeyFile")
+        if (profile.AuthMode == AuthMode.KeyFile)
         {
             var keyFile = new PrivateKeyFile(profile.KeyFilePath);
             return new PrivateKeyAuthenticationMethod(profile.Username, keyFile);
@@ -798,8 +817,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             ?? throw new InvalidOperationException(LocalizationService.GetString("StatusDisconnected"));
         _execClient?.Dispose();
         var client = new SshClient(BuildConnectionInfo(profile));
-        // 懒连接发生在 SFTP 正式连接成功之后: 主机指纹首次连接时已确认, 复用静默信任
-        // (无确认结果时放行, 与测试连接口径一致)。
+        // 懒连接发生在 SFTP 正式连接成功之后: 指纹已被档案预填或确认回填, 直接精确匹配。
         if (TrustedFingerprint is null && ConfirmedFingerprint is not null)
         {
             TrustedFingerprint = ConfirmedFingerprint;
@@ -811,10 +829,14 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
         return client;
     }
 
-    /// <summary>Exec 通道主机密钥校验: 有已信任指纹则精确匹配, 否则放行（懒连接前置条件是主连接已建立）。</summary>
+    /// <summary>
+    /// Exec/传输通道主机密钥校验: 仅当有已信任指纹且精确匹配时才信任, 无指纹一律拒绝
+    /// (fail-closed)。懒连接前置条件是主连接已成功, 届时 TrustedFingerprint 必非空
+    /// (档案预填或确认回填), 不会误伤正常路径。
+    /// </summary>
     private void OnExecHostKeyReceived(object? sender, Renci.SshNet.Common.HostKeyEventArgs e)
-        => e.CanTrust = string.IsNullOrEmpty(TrustedFingerprint)
-            || string.Equals(e.FingerPrintSHA256, TrustedFingerprint, StringComparison.Ordinal);
+        => e.CanTrust = !string.IsNullOrEmpty(TrustedFingerprint)
+            && string.Equals(e.FingerPrintSHA256, TrustedFingerprint, StringComparison.Ordinal);
 
     /// <summary>
     /// 远程执行一条命令并取回结果（独立 Exec 通道, _execLock 串行, 默认 10 秒超时防挂;

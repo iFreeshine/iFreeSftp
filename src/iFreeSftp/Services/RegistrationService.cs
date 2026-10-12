@@ -53,6 +53,15 @@ public static class RegistrationService
 
     public static string PurchaseUrlIntl { get; private set; } = "";
 
+    /// <summary>版本探测: 远程下发了更高版本号 (UI 还需看 AppSettingsService.UpdateCheckEnabled 开关)。</summary>
+    public static bool UpdateAvailable { get; private set; }
+
+    /// <summary>远程下发的最新版本号 (空 = 无信息)。</summary>
+    public static string LatestVersion { get; private set; } = "";
+
+    /// <summary>"有新版本"徽标跳转页 (远程未下发时用官网默认)。</summary>
+    public static string UpdateUrl { get; private set; } = "https://ifrees.top";
+
     /// <summary>注册状态变化 (激活成功/远程吊销) 后 UI 刷新用。</summary>
     public static event Action? StateChanged;
 
@@ -94,22 +103,27 @@ public static class RegistrationService
         return err;
     }
 
-    /// <summary>远程刷新: 吊销/公告/勋章开关 (24h 节流; 失败静默)。</summary>
-    public static async Task RefreshRemoteStateAsync()
+    /// <summary>远程刷新: 吊销/公告/勋章开关/版本探测 (24h 节流; 失败静默)。
+    /// force=true 绕过节流 (设置页手动「检查更新」), 走网络刷新并覆盖缓存。
+    /// 返回本次是否获得可用远程状态 (缓存命中也算 true; 网络失败 false)。</summary>
+    public static async Task<bool> RefreshRemoteStateAsync(bool force = false)
     {
         if (string.IsNullOrEmpty(EndpointBase))
         {
-            return;
+            return false;
         }
 
         try
         {
-            if (File.Exists(RemoteCachePath))
+            if (!force && File.Exists(RemoteCachePath))
             {
                 var cached = File.ReadAllText(RemoteCachePath);
                 if (DateTimeOffset.UtcNow - ParseCachedTime(cached) < TimeSpan.FromHours(24))
                 {
-                    return;
+                    // 节流命中: 仍要把缓存内容应用到内存 (重启后公告/勋章/更新徽标即刻恢复,
+                    // 不必等 24h 过期), 只是不重新走网络。
+                    ApplyRemoteState(cached[(cached.IndexOf('\n') + 1)..]);
+                    return true;
                 }
             }
 
@@ -121,18 +135,21 @@ public static class RegistrationService
             File.WriteAllText(
                 RemoteCachePath,
                 DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString() + "\n" + json);
+            return true;
         }
         catch
         {
             // 远程不可达: 保持本地状态 (设计如此, 离线不影响注册)
+            return false;
         }
     }
 
-    /// <summary>构造机器指纹 (软绑定仅统计: 主机名+用户名哈希, 不限次数、不做硬限制)。</summary>
+    /// <summary>构造机器指纹 (软绑定仅统计: 主机名+用户名哈希, 不限次数、不做硬限制)。
+    /// SHA-256 前 16 hex (v0.8.0 曾用 MD5, 换哈希统计口径变化属预期, 老计数自然过期)。</summary>
     public static string MachineId()
     {
         var raw = Environment.MachineName + "|" + Environment.UserName;
-        return Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(raw)))[..16].ToLowerInvariant();
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))[..16].ToLowerInvariant();
     }
 
     /// <summary>注册码哈希 (远程吊销名单的 key; 不传码原文)。</summary>
@@ -251,7 +268,9 @@ public static class RegistrationService
             if (root.TryGetProperty("notice", out var notice) &&
                 notice.TryGetProperty("text", out var text))
             {
-                RemoteNotice = text.GetString() ?? "";
+                // 截断超长公告, 防止异常数据撑爆 UI/内存。
+                var noticeText = text.GetString() ?? "";
+                RemoteNotice = noticeText.Length > 2000 ? noticeText[..2000] : noticeText;
             }
 
             if (root.TryGetProperty("purchase", out var purchase))
@@ -265,6 +284,26 @@ public static class RegistrationService
                 {
                     PurchaseUrlIntl = pIntl.GetString() ?? "";
                 }
+            }
+
+            if (root.TryGetProperty("update", out var update))
+            {
+                if (update.TryGetProperty("latestVersion", out var lv))
+                {
+                    LatestVersion = lv.GetString() ?? "";
+                }
+
+                if (update.TryGetProperty("url", out var uu))
+                {
+                    var u = uu.GetString();
+                    // 入口白名单: 仅接受 http/https, 非法值维持默认官网 (消费点另有 UrlGuard 拦截)。
+                    if (UrlGuard.IsSafeWebUrl(u))
+                    {
+                        UpdateUrl = u!;
+                    }
+                }
+
+                UpdateAvailable = IsNewerVersion(LatestVersion, LocalVersion());
             }
 
             if (root.TryGetProperty("revoked", out var revoked) &&
@@ -296,6 +335,16 @@ public static class RegistrationService
             ? DateTimeOffset.FromUnixTimeSeconds(sec)
             : DateTimeOffset.MinValue;
     }
+
+    /// <summary>本地程序集版本 (csproj Version, 如 0.8.0 → "0.8.0")。</summary>
+    private static string LocalVersion()
+    {
+        return typeof(RegistrationService).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+    }
+
+    /// <summary>数字逐段比较, remote &gt; local 才算有更新 (逻辑在 Models.VersionCompare 纯函数, 可单测)。</summary>
+    private static bool IsNewerVersion(string remote, string local)
+        => Models.VersionCompare.IsNewer(remote, local);
 
     private static ByteArrayContent Json(object obj)
     {

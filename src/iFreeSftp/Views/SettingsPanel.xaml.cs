@@ -19,6 +19,9 @@ public sealed partial class SettingsPanel : UserControl
     /// <summary>同步选中项时抑制事件（如 Open 时按当前设置回填）。</summary>
     private bool _syncing;
 
+    /// <summary>「检查更新」请求进行中 (防重复点击并发刷新)。</summary>
+    private bool _checking;
+
     /// <summary>请求关闭（Header 负责隐藏覆盖层）。</summary>
     public event Action? CloseRequested;
 
@@ -226,6 +229,7 @@ public sealed partial class SettingsPanel : UserControl
         DeleteServerCmdToggle.IsOn = AppSettingsService.RemoteDeleteMode != "recursive";
         KeepAliveToggle.IsOn = AppSettingsService.KeepAliveEnabled;
         KeepAliveIntervalSlider.Value = AppSettingsService.KeepAliveIntervalSeconds;
+        UpdateCheckToggle.IsOn = AppSettingsService.UpdateCheckEnabled;
         UpdateKeepAliveIntervalEnabled();
         UpdateDeleteModeHint();
         UpdateEditorPathCardState();
@@ -386,6 +390,63 @@ public sealed partial class SettingsPanel : UserControl
         UpdateKeepAliveIntervalEnabled();
     }
 
+    /// <summary>更新提醒开关即时落盘 (SettingsChanged 事件联动标题徽标即时显隐)。</summary>
+    private void UpdateCheckToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetUpdateCheckEnabled(UpdateCheckToggle.IsOn);
+    }
+
+    /// <summary>手动检查更新: 强制走网络刷新 (绕过 24h 节流), 结果显示在描述行, 不弹窗。</summary>
+    private async void UpdateCheckBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_checking)
+        {
+            return;
+        }
+
+        _checking = true;
+        UpdateCheckBtn.IsEnabled = false;
+        UpdateCheckResult.Text = LocalizationService.GetString("UpdateChecking");
+        try
+        {
+            var ok = await RegistrationService.RefreshRemoteStateAsync(force: true);
+            UpdateCheckResult.Text = ok
+                ? (RegistrationService.LatestVersion.Length == 0
+                    ? LocalizationService.GetString("UpdateAlreadyLatest")
+                    : (RegistrationService.UpdateAvailable
+                        ? string.Format(
+                            LocalizationService.GetString("UpdateAvailable"),
+                            RegistrationService.LatestVersion)
+                        : LocalizationService.GetString("UpdateAlreadyLatest")))
+                : LocalizationService.GetString("UpdateCheckFailed");
+        }
+        finally
+        {
+            _checking = false;
+            UpdateCheckBtn.IsEnabled = true;
+        }
+    }
+
+    /// <summary>按远程探测结果刷新更新卡描述行 (启动回显/语言切换时复用; 无信息时空白)。</summary>
+    private void UpdateUpdateCheckResult()
+    {
+        if (RegistrationService.LatestVersion.Length == 0)
+        {
+            UpdateCheckResult.Text = "";
+            return;
+        }
+
+        UpdateCheckResult.Text = RegistrationService.UpdateAvailable
+            ? string.Format(
+                LocalizationService.GetString("UpdateAvailable"), RegistrationService.LatestVersion)
+            : LocalizationService.GetString("UpdateAlreadyLatest");
+    }
+
     /// <summary>保活间隔挡位拖动即时落盘（15/30/45/60 秒）。</summary>
     private void KeepAliveIntervalSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
@@ -508,6 +569,9 @@ public sealed partial class SettingsPanel : UserControl
         AppWebsiteBtn.Content = LocalizationService.GetString("AppWebsiteBtn");
         AppChannelsLabel.Text = LocalizationService.GetString("AppChannelsLabel");
         AppChannelsDesc.Text = LocalizationService.GetString("AppChannelsDesc");
+        UpdateCheckLabel.Text = LocalizationService.GetString("UpdateCheckLabel");
+        UpdateCheckBtn.Content = LocalizationService.GetString("UpdateCheckBtn");
+        UpdateUpdateCheckResult();
         AppLicenseLabel.Text = LocalizationService.GetString("AppLicenseLabel");
         AppLicenseDesc.Text = LocalizationService.GetString("AppLicenseDesc");
         AppCopyrightLabel.Text = LocalizationService.GetString("AppCopyrightLabel");
@@ -616,21 +680,15 @@ public sealed partial class SettingsPanel : UserControl
                 : Windows.UI.Color.FromArgb(255, 0xE0, 0x53, 0x53));
     }
 
-    /// <summary>购买注册码 (双渠道按钮): 国内跳爱发电, 国际跳 Ko-fi; URL 由 Worker 下发。</summary>
+    /// <summary>购买注册码 (双渠道按钮): 国内跳爱发电, 国际跳 Ko-fi; URL 由 Worker 下发, 经 UrlGuard 白名单拦截后启动。</summary>
     private async void RegBuyCnBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (Uri.TryCreate(RegistrationService.PurchaseUrlCn, UriKind.Absolute, out var uri))
-        {
-            _ = await Windows.System.Launcher.LaunchUriAsync(uri);
-        }
+        await UrlGuard.TryLaunchAsync(RegistrationService.PurchaseUrlCn);
     }
 
     private async void RegBuyIntlBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (Uri.TryCreate(RegistrationService.PurchaseUrlIntl, UriKind.Absolute, out var uri))
-        {
-            _ = await Windows.System.Launcher.LaunchUriAsync(uri);
-        }
+        await UrlGuard.TryLaunchAsync(RegistrationService.PurchaseUrlIntl);
     }
 
     // —— ESC 关闭（与主机面板同款, 加速键必须挂在窗口根元素上） ——

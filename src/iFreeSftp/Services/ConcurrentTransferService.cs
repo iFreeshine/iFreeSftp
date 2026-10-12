@@ -200,14 +200,20 @@ public sealed class TransferBatchConnections : IDisposable
 /// 并发传输执行器：worker 池（SemaphoreSlim 限流）消费一批已入队的传输任务。
 /// 冲突决策阶段完成后整批提交；Begin/Complete/Fail 由执行器统一推进——入队后保持
 /// "等待"直到 worker 领取，单项失败不影响其余任务（失败项进"传输失败"页签）。
-/// 全局控制（队列右键菜单）：暂停 = 暂停门置位，worker 不领取新任务（正在传输的
-/// 让其传完）；继续 = 打开门；停止 = 解除暂停 + 取消令牌，未领取的任务按"已停止"
-/// 记失败，正在传输的让其传完（SSH.NET 同步 API 无法安全中断）。
+/// 全局控制（队列右键菜单，跨窗格/跨批次共享单例语义）：暂停 = 取走暂停门许可，
+/// worker 在门上挂起（非轮询），不领取新任务（正在传输的让其传完）；继续 = 归还
+/// 许可；停止 = 归还许可 + 取消令牌，未领取的任务按"已停止"记失败，正在传输的
+/// 让其传完（SSH.NET 同步 API 无法安全中断）。
 /// </summary>
 public static class ConcurrentTransferService
 {
-    /// <summary>暂停门标志：true 时 worker 在领取新任务前自旋等待（100ms 轮询，
-    /// worker 数 ≤ 并发上限 4，开销可忽略）。</summary>
+    /// <summary>暂停门（全局）：开放态持有 1 个许可。暂停时取走，worker 挂起在
+    /// 门上（0 CPU 空转）；worker 通过检查点后立即归还，一次仅串行通过一个
+    /// （检查点只有几条指令，不构成吞吐瓶颈）。</summary>
+    private static readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>暂停门标志（volatile 保证 worker 可见；Pause/Resume/Stop 仅
+    /// UI 线程串行调用，标志本身无竞态）。暂停/停止入口按此防重复取还许可。</summary>
     private static volatile bool _paused;
 
     /// <summary>停止令牌：批次开始时快照，停止时换新 CTS 并取消旧的（跨批次全局）。</summary>
@@ -216,16 +222,47 @@ public static class ConcurrentTransferService
     /// <summary>是否处于暂停（队列右键菜单"继续传输"判定用）。</summary>
     public static bool Paused => _paused;
 
-    /// <summary>暂停：正在传输的任务传完，等待中的不开始。</summary>
-    public static void Pause() => _paused = true;
+    /// <summary>暂停：正在传输的任务传完，等待中的在门上挂起不开始。</summary>
+    public static void Pause()
+    {
+        if (_paused)
+        {
+            return;
+        }
 
-    /// <summary>继续：打开暂停门，worker 恢复领取任务。</summary>
-    public static void Resume() => _paused = false;
+        _paused = true;
+        _gate.Wait(); // 取走许可: 最多等一个正通过检查点的 worker 归还（瞬时）
+    }
 
-    /// <summary>停止：解除暂停并取消后续任务（正在传输的让其传完）。</summary>
+    /// <summary>继续：归还暂停门许可，worker 恢复领取任务。</summary>
+    public static void Resume()
+    {
+        if (!_paused)
+        {
+            return;
+        }
+
+        _paused = false;
+        _gate.Release();
+    }
+
+    /// <summary>停止：解除暂停（归还门让挂起 worker 醒来）并取消后续任务
+    /// （正在传输的让其传完；挂起的 worker 经取消令牌唤醒后按"已停止"记失败）。</summary>
     public static void RequestStop()
     {
-        _paused = false;
+        if (_paused)
+        {
+            _paused = false;
+            try
+            {
+                _gate.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // 门已被并发 Resume 归还: 不影响停止语义（令牌取消仍生效）
+            }
+        }
+
         Interlocked.Exchange(ref _cts, new CancellationTokenSource())?.Cancel();
     }
 
@@ -259,11 +296,17 @@ public static class ConcurrentTransferService
         await throttle.WaitAsync();
         try
         {
-            // 暂停门: 暂停期间不领取新任务 (正在传输的让其传完), 恢复后继续
-            // (_paused 为 volatile 字段, 读取自带获取语义)
-            while (_paused)
+            // 暂停门: 挂起等待而非轮询——暂停期间不领取新任务 (正在传输的让其传完)，
+            // 恢复/停止时经许可归还或取消令牌唤醒。循环仅覆盖"暂停置位与取门之间"
+            // 的边界竞态 (worker 已归还门但 Pause 尚未取走)，常态一次通过。
+            while (true)
             {
-                await Task.Delay(100);
+                await _gate.WaitAsync(token);
+                _gate.Release();
+                if (!_paused)
+                {
+                    break;
+                }
             }
 
             token.ThrowIfCancellationRequested();

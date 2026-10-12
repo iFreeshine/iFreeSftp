@@ -12,19 +12,30 @@ namespace iFreeSftp.Services;
 /// <summary>
 /// 系统文件图标服务: 经 Vanara SHGetFileInfo 取 Windows 真实文件图标,
 /// HICON → 32bpp DIB → SoftwareBitmap(预乘 α) → SoftwareBitmapSource, 双层缓存
-/// (位图按扩展名/路径, 源按位图实例)。仅文件列表条目使用, UI 装饰图标不受影响;
-/// 任意一步失败返回 null, 由调用方回退通用字形。查询均发生在 UI 线程, 用普通 Dictionary 即可。
+/// (位图按扩展名/路径, 源按位图实例), 均 LRU 上限防无限增长 (path: 键随浏览的
+/// 自带图标文件增多, 位图淘汰时级联清源缓存)。仅文件列表条目使用, UI 装饰图标不受影响;
+/// 任意一步失败返回 null, 由调用方回退通用字形。查询均发生在 UI 线程, 缓存无锁。
 /// </summary>
 public static class SystemIconService
 {
-    // 位图缓存: 键 → 图标位图 (null = 取不到, 也记住, 避免反复查询失败)。
-    private static readonly Dictionary<string, SoftwareBitmap?> _bitmapCache = new();
+    /// <summary>位图缓存容量 (条目数; 每张 32×32 位图约 4 KB, 512 条 ≈ 2 MB 封顶)。</summary>
+    private const int BitmapCacheCapacity = 512;
 
-    // 类型名缓存: 键 ("dir" / "ext:<小写扩展名>") → SHGFI_TYPENAME 文本 (空 = 取不到)。
-    private static readonly Dictionary<string, string> _typeNameCache = new();
+    /// <summary>类型名缓存容量 (字符串极小, 1024 条仅为防御性封顶)。</summary>
+    private const int TypeNameCacheCapacity = 1024;
 
     // 源缓存: 每份位图只创建一个 SoftwareBitmapSource, 供同键的所有条目共享。
+    // 容量经位图缓存淘汰级联封顶 (每个键都是 _bitmapCache 中的存活值), 不独立设限。
+    // (声明须在 _bitmapCache 之前: 淘汰回调引用本字段, 可空流分析要求先声明后引用)
     private static readonly Dictionary<SoftwareBitmap, SoftwareBitmapSource> _sourceCache = new();
+
+    // 位图缓存: 键 → 图标位图 (null = 取不到, 也记住, 避免反复查询失败)。
+    // 淘汰回调级联清源缓存, 防 SoftwareBitmapSource 以位图实例为键挂住引用泄漏。
+    private static readonly LruCache<string, SoftwareBitmap?> _bitmapCache = new(
+        BitmapCacheCapacity, (_, bmp) => { if (bmp is not null) { _sourceCache.Remove(bmp); } });
+
+    // 类型名缓存: 键 ("dir" / "ext:<小写扩展名>") → SHGFI_TYPENAME 文本 (空 = 取不到)。
+    private static readonly LruCache<string, string> _typeNameCache = new(TypeNameCacheCapacity);
 
     // 本地图标随文件不同而不同的扩展名 (exe 自带图标等), 按完整路径取与缓存。
     private static readonly HashSet<string> _perFileIconExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -52,7 +63,7 @@ public static class SystemIconService
             ? "path:" + fullPath.ToUpperInvariant()
             : isDirectory ? "dir" : "ext:" + Path.GetExtension(name).ToLowerInvariant();
 
-        if (_bitmapCache.TryGetValue(key, out var cached))
+        if (_bitmapCache.TryGet(key, out var cached))
         {
             return cached;
         }
@@ -69,7 +80,7 @@ public static class SystemIconService
         {
             // 图标获取失败 (异常路径字符等) 静默降级, 让调用方回退通用字形。
         }
-        _bitmapCache[key] = bitmap;
+        _bitmapCache.Set(key, bitmap);
         return bitmap;
     }
 
@@ -164,14 +175,14 @@ public static class SystemIconService
                 ? LocalizationService.GetString("FileType")
                 : string.Format(LocalizationService.GetString("ExtFileFormat"), ext.TrimStart('.').ToUpperInvariant());
         }
-        if (!_typeNameCache.TryGetValue(ext, out var shellName))
+        if (!_typeNameCache.TryGet(ext, out var shellName))
         {
             shellName = QueryTypeNameFromShell(name);
             if (shellName.Length == 0)
             {
                 shellName = QueryTypeNameFromRegistry(ext) ?? string.Empty;
             }
-            _typeNameCache[ext] = shellName;
+            _typeNameCache.Set(ext, shellName);
         }
         // 全链路取不到: 资源管理器惯例显示 "<EXT> 文件" (无扩展名显示"文件")。
         return shellName.Length > 0
@@ -396,6 +407,57 @@ public static class SystemIconService
             writer.WriteBytes(pixels);
             return SoftwareBitmap.CreateCopyFromBuffer(
                 writer.DetachBuffer(), BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Premultiplied);
+        }
+    }
+
+    /// <summary>简易 LRU 缓存 (查询均在 UI 线程, 故无锁): 命中/写入移至队首,
+    /// 超容量从队尾摘除最久未用项并可触发淘汰回调 (供级联清理关联缓存)。</summary>
+    private sealed class LruCache<TKey, TValue> where TKey : notnull
+    {
+        private readonly int _capacity;
+        private readonly LinkedList<TKey> _order = new(); // 队首 = 最近使用
+        private readonly Dictionary<TKey, (LinkedListNode<TKey> Node, TValue Value)> _map = new();
+        private readonly Action<TKey, TValue>? _onEvict;
+
+        public LruCache(int capacity, Action<TKey, TValue>? onEvict = null)
+        {
+            _capacity = capacity;
+            _onEvict = onEvict;
+        }
+
+        public bool TryGet(TKey key, out TValue value)
+        {
+            if (_map.TryGetValue(key, out var entry))
+            {
+                _order.Remove(entry.Node);
+                _order.AddFirst(entry.Node);
+                value = entry.Value;
+                return true;
+            }
+            value = default!;
+            return false;
+        }
+
+        public void Set(TKey key, TValue value)
+        {
+            if (_map.TryGetValue(key, out var entry))
+            {
+                _map[key] = (entry.Node, value);
+                _order.Remove(entry.Node);
+                _order.AddFirst(entry.Node);
+                return;
+            }
+            var node = new LinkedListNode<TKey>(key);
+            _map[key] = (node, value);
+            _order.AddFirst(node);
+            if (_map.Count > _capacity)
+            {
+                var eldest = _order.Last!;
+                _order.RemoveLast();
+                var evicted = _map[eldest.Value];
+                _map.Remove(eldest.Value);
+                _onEvict?.Invoke(eldest.Value, evicted.Value);
+            }
         }
     }
 }

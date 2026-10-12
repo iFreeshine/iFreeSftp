@@ -2,14 +2,12 @@
 
 [English](README.md) | 简体中文
 
-基于 WinUI 3 的桌面 SFTP 客户端——双窗格、多标签，快速、安全、完全免费。
+基于 WinUI 3 的桌面 SFTP 客户端——双窗格、多标签，快速、安全；永久免费，不解锁、不限制任何功能，赞助勋章纯属自愿。
 
-![Version](https://img.shields.io/badge/version-0.8.0-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.8.1-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
 
 官网 <https://ifrees.top> · 发布页 <https://github.com/iFreeshine/iFreeSftp/releases> · 赞助 <https://afdian.com/a/ifree>
 
-> **免费承诺**：全部功能对所有用户永久免费开放。注册勋章纯属自愿赞助，不解锁、不限制任何功能。
->
 > **许可证**：本应用以 [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) 许可证开源发布，克隆仓库即可完整编译。
 
 ---
@@ -53,6 +51,8 @@ locales\               # en-US / zh-CN 语言词典——可直接编辑翻译�
 ```
 
 解压到任意目录运行 `iFreeSftp.exe`；或从源码构建（见下）。
+
+> 请仅从上述官方渠道下载：单文件 exe 可被重打包篡改，第三方转载无完整性保证（与本应用组件的混淆保护无关）；解压目录内的 `iFreeSftp.exe` 与 `iFreeSftp.Core.dll` 请勿单独替换。
 
 ## 截图
 

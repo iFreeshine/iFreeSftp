@@ -297,6 +297,27 @@ This cannot be undone.</value>
   <data name="AppChannelsDesc" xml:space="preserve">
     <value>Latest releases and updates — see the website / GitHub repository</value>
   </data>
+  <data name="UpdateBadge" xml:space="preserve">
+    <value>New version v{0}</value>
+  </data>
+  <data name="UpdateCheckLabel" xml:space="preserve">
+    <value>Notify me on new versions</value>
+  </data>
+  <data name="UpdateCheckBtn" xml:space="preserve">
+    <value>Check for updates</value>
+  </data>
+  <data name="UpdateChecking" xml:space="preserve">
+    <value>Checking…</value>
+  </data>
+  <data name="UpdateAlreadyLatest" xml:space="preserve">
+    <value>You're up to date</value>
+  </data>
+  <data name="UpdateAvailable" xml:space="preserve">
+    <value>New version v{0} available — download from the website</value>
+  </data>
+  <data name="UpdateCheckFailed" xml:space="preserve">
+    <value>Couldn't reach the update server, try again later</value>
+  </data>
   <data name="AppLicenseLabel" xml:space="preserve">
     <value>License</value>
   </data>
@@ -516,14 +537,8 @@ This cannot be undone.</value>
   <data name="MenuConnect" xml:space="preserve">
     <value>Connect</value>
   </data>
-  <data name="MenuEdit" xml:space="preserve">
-    <value>Edit</value>
-  </data>
   <data name="MenuDuplicate" xml:space="preserve">
     <value>Duplicate</value>
-  </data>
-  <data name="MenuDelete" xml:space="preserve">
-    <value>Delete</value>
   </data>
   <data name="DuplicateSuffix" xml:space="preserve">
     <value>Copy</value>
@@ -662,6 +677,24 @@ Trust this host and continue?</value>
   <data name="LogFingerprintRejected" xml:space="preserve">
     <value>Host fingerprint rejected by user, connection aborted</value>
   </data>
+  <data name="LogUrlBlocked" xml:space="preserve">
+    <value>Blocked a link from remote channel (not http/https)</value>
+  </data>
+  <data name="LogTrustApplied" xml:space="preserve">
+    <value>Trusting archived fingerprint {0}</value>
+  </data>
+  <data name="LogHostStoreCorrupt" xml:space="preserve">
+    <value>hosts.json read failed ({1}), original file backed up to {0}</value>
+  </data>
+  <data name="LogPasswordUndecryptable" xml:space="preserve">
+    <value>Failed to decrypt a host password ({0}). The original ciphertext is kept — switch back to the original Windows account to recover it, or re-enter the password.</value>
+  </data>
+  <data name="HostLoadFailTitle" xml:space="preserve">
+    <value>Failed to load host profiles</value>
+  </data>
+  <data name="HostLoadFailMsg" xml:space="preserve">
+    <value>The original file was backed up to {0}. The host list has been reset — you can restore data from the backup manually.</value>
+  </data>
   <data name="LogFingerprintMismatch" xml:space="preserve">
     <value>Host key verification failed: stored {0}, presented {1} (re-trust if the server key changed)</value>
   </data>
@@ -733,15 +766,6 @@ Update and trust only if you are aware of this change; otherwise reject to preve
   </data>
   <data name="ThemeLabel" xml:space="preserve">
     <value>Theme</value>
-  </data>
-  <data name="ThemeDark" xml:space="preserve">
-    <value>Dark</value>
-  </data>
-  <data name="ThemeLight" xml:space="preserve">
-    <value>Light</value>
-  </data>
-  <data name="LanguageLabel" xml:space="preserve">
-    <value>Language</value>
   </data>
   <data name="CategoryAppearance" xml:space="preserve">
     <value>Appearance</value>

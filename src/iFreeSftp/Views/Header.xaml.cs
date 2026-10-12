@@ -6,6 +6,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Windows.Graphics;
 using Windows.UI;
@@ -97,12 +98,21 @@ public sealed partial class Header : Window
         SyncBrowseService.StateChanged += UpdateSyncButton;
         SyncBrowseService.MismatchDetected += OnSyncMismatch;
         FileCompareService.ActiveChanged += UpdateSyncButton;
+        // 更新徽标: 远程刷新 (启动/手动检查) 完成后重算可见性与文案;
+        // 事件从网络续体触发, 切回 UI 线程再动控件。
+        // 设置页关闭提醒开关经 SettingsChanged 即时隐藏徽标。
+        RegistrationService.StateChanged += OnUpdateBadgeSignal;
+        AppSettingsService.SettingsChanged += OnUpdateBadgeSignal;
         Closed += (_, _) =>
         {
             SyncBrowseService.StateChanged -= UpdateSyncButton;
             SyncBrowseService.MismatchDetected -= OnSyncMismatch;
             FileCompareService.ActiveChanged -= UpdateSyncButton;
+            RegistrationService.StateChanged -= OnUpdateBadgeSignal;
+            AppSettingsService.SettingsChanged -= OnUpdateBadgeSignal;
+            AppSettingsService.FlushNow(); // 防抖中的设置改动立即落盘, 退出不丢
         };
+        UpdateUpdateBadge();
 
         // 右边距依赖 XamlRoot, 在面板 Loaded 后计算。
         TitleButtonsPanel.Loaded += OnTitleButtonsPanelLoaded;
@@ -249,25 +259,68 @@ public sealed partial class Header : Window
         // 注意 Segoe Fluent Icons: E706=太阳, E708=月亮 (与直觉相反, 已实测字形)。
         ThemeIcon.Glyph = ThemeService.IsDark ? "\uE708" : "\uE706";
         ToolTipService.SetToolTip(ThemeToggleBtn, CreateAccentToolTip(LocalizationService.GetString("ThemeToggleLabel")));
+        AutomationProperties.SetName(ThemeToggleBtn, LocalizationService.GetString("ThemeToggleLabel"));
 
         // 主机文字按钮与设置图标按钮。
         HostBtnText.Text = LocalizationService.GetString("Host");
         ToolTipService.SetToolTip(SettingsBtn, CreateAccentToolTip(LocalizationService.GetString("SettingsLabel")));
+        AutomationProperties.SetName(SettingsBtn, LocalizationService.GetString("SettingsLabel"));
 
         // 模式胶囊 (主机按钮左侧): 同步浏览/文件比对, 文字显示在 tooltip。
-        // tooltip 挂透明宿主 (Grid) 而非按钮: 按钮禁用时不参与命中测试, 挂按钮上 disable 无 tooltip
+        // tooltip 挂透明宿主 (Grid) 而非按钮: 按钮禁用时不参与命中测试, 挂按钮上 disable 无 tooltip;
+        // 读屏可访问名挂实际按钮 (焦点落在 ToggleButton 上)。
         ToolTipService.SetToolTip(SyncBrowseToggleHost, CreateAccentToolTip(LocalizationService.GetString("HeaderSyncBrowse")));
+        AutomationProperties.SetName(SyncBrowseToggle, LocalizationService.GetString("HeaderSyncBrowse"));
         ToolTipService.SetToolTip(CompareToggleHost, CreateAccentToolTip(LocalizationService.GetString("HeaderCompare")));
+        AutomationProperties.SetName(CompareToggle, LocalizationService.GetString("HeaderCompare"));
 
         // 语言按钮 tooltip 显示即将切换到的目标语言。
         string langName = LocalizationService.CurrentCulture.StartsWith("zh", System.StringComparison.OrdinalIgnoreCase)
             ? LocalizationService.GetString("LangEnglish")
             : LocalizationService.GetString("LangChinese");
         ToolTipService.SetToolTip(LangToggleBtn, CreateAccentToolTip(langName));
+        AutomationProperties.SetName(LangToggleBtn, langName);
+
+        // 更新徽标文案随语言重刷 (可见性重算幂等)。
+        UpdateUpdateBadge();
 
         // 延迟再刷一次 caption 按钮颜色: TitleBar 控件可能在主题传播完成后
         // 才自行更新系统按钮, 需在其之后覆盖 (与 Mica 重挂同为低优先级时机)。
         RootGrid.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, UpdateCaptionButtonColors);
+    }
+
+    /// <summary>远程状态刷新完成或提醒设置变化 → 重算更新徽标。事件可能在非 UI 线程触发, 切回 UI 线程。</summary>
+    private void OnUpdateBadgeSignal()
+    {
+        RootGrid.DispatcherQueue.TryEnqueue(UpdateUpdateBadge);
+    }
+
+    /// <summary>更新徽标: 提醒开关开启 + 远程发现更高版本才显示, 文案双语。</summary>
+    private void UpdateUpdateBadge()
+    {
+        var show = AppSettingsService.UpdateCheckEnabled
+            && RegistrationService.UpdateAvailable
+            && RegistrationService.LatestVersion.Length > 0;
+        UpdateBadgeBtn.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (show)
+        {
+            UpdateBadgeText.Text = string.Format(
+                LocalizationService.GetString("UpdateBadge"), RegistrationService.LatestVersion);
+        }
+    }
+
+    /// <summary>点击更新徽标: 打开远程下发的下载页 (未下发时用官网默认 ifrees.top)。</summary>
+    private async void UpdateBadgeBtn_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            // UrlGuard 白名单拦截 (仅 http/https); 启动失败静默, 版本信息仍可在设置-关于查看。
+            await UrlGuard.TryLaunchAsync(RegistrationService.UpdateUrl);
+        }
+        catch
+        {
+            // 系统拒绝启动: 静默
+        }
     }
 
     /// <summary>创建图标按钮的 tooltip: 蓝色背景、显示在图标下方 (样式定义见 App.xaml)。</summary>

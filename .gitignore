@@ -1,0 +1,15 @@
+# 构建产物
+bin/
+obj/
+release/
+
+# IDE / 系统文件
+.vs/
+.idea/
+*.user
+*.suo
+Desktop.ini
+Thumbs.db
+
+# 日志
+*.log

@@ -77,7 +77,33 @@
             VerticalAlignment="Center"
             Orientation="Horizontal"
             Spacing="4">
-            <!-- 顺序: 模式胶囊(同步浏览/文件比对) -> 主机 -> 设置 -> 主题 -> 语言 -->
+            <!-- 顺序: 更新徽标(有新版本时) -> 模式胶囊(同步浏览/文件比对) -> 主机 -> 设置 -> 主题 -> 语言 -->
+            <!--
+                更新徽标: 版本探测发现远程新版本时显示 (RegistrationService.StateChanged 驱动),
+                点击打开官网下载页。平时 Collapsed 不占位。
+            -->
+            <Button
+                x:Name="UpdateBadgeBtn"
+                Height="33"
+                Padding="10,0"
+                Margin="0,0,4,0"
+                Background="#0078D4"
+                Foreground="White"
+                BorderThickness="0"
+                Visibility="Collapsed"
+                Click="UpdateBadgeBtn_Click">
+                <Button.Resources>
+                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                </Button.Resources>
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <!-- E896 = Download (向下箭头到横线) -->
+                    <FontIcon FontSize="12" Glyph="&#xE896;" />
+                    <TextBlock x:Name="UpdateBadgeText" FontSize="12" Text="" />
+                </StackPanel>
+            </Button>
             <!--
                 模式胶囊: 主机按钮左侧, 内含两个图标 ToggleButton (文字在 tooltip,
                 双语见 ApplyTitleBarResources)。胶囊保留 subtle 底 + 最淡描边;

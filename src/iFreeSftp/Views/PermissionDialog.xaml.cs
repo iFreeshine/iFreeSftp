@@ -81,23 +81,8 @@ public sealed partial class PermissionDialog : UserControl
            | (OthersWriteCb.IsChecked == true ? 0x002 : 0)
            | (OthersExecCb.IsChecked == true ? 0x001 : 0);
 
-    /// <summary>9 位权限 → "rwxr-xr-x" 符号串 (rwx 顺序, 无位补 '-')。</summary>
-    private static string Symbolic(int mode)
-    {
-        var sb = new StringBuilder(9);
-        (int bit, char c)[] specs =
-        {
-            (0x100, 'r'), (0x080, 'w'), (0x040, 'x'),
-            (0x020, 'r'), (0x010, 'w'), (0x008, 'x'),
-            (0x004, 'r'), (0x002, 'w'), (0x001, 'x'),
-        };
-        foreach (var (bit, c) in specs)
-        {
-            sb.Append((mode & bit) != 0 ? c : '-');
-        }
-
-        return sb.ToString();
-    }
+    /// <summary>9 位权限 → "rwxr-xr-x" 符号串 (逻辑在 Models.PermissionText 纯函数, 可单测)。</summary>
+    private static string Symbolic(int mode) => Models.PermissionText.Symbolic(mode);
 
     private void UpdateValueText()
     {

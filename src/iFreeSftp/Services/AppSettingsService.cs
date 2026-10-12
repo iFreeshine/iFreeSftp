@@ -5,7 +5,8 @@ namespace iFreeSftp.Services;
 
 /// <summary>
 /// 应用设置存储：主题与语言，持久化为 %LOCALAPPDATA%\iFreeSftp\settings.json。
-/// 修改即落盘（无显式保存语义，区别于主机存档的显式保存）。
+/// 修改后经 500ms 防抖合并落盘（Slider 拖动等高频改动只写末次）；应用退出前
+/// 经 <see cref="FlushNow"/> 立即落盘，防最后 500ms 内改动丢失。
 /// Theme/Language 为空表示"用户未配置过"，启动时分别按系统主题/默认语言处理。
 /// </summary>
 public static class AppSettingsService
@@ -19,6 +20,21 @@ public static class AppSettingsService
         WriteIndented = true,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
+
+    /// <summary>防抖写盘定时器：每次改动重置 500ms 到期，连续改动只触发一次落盘。</summary>
+    private static readonly System.Threading.Timer _debounceTimer;
+
+    /// <summary>防抖挂起标志：1 = 有未落盘改动（Interlocked 置零防 Timer 与
+    /// 退出 FlushNow 并发时双写/漏写）。</summary>
+    private static int _savePending;
+
+    /// <summary>写盘互斥：Timer 回调线程与 UI 线程 FlushNow 可能并发到达。</summary>
+    private static readonly object _writeLock = new();
+
+    static AppSettingsService()
+    {
+        _debounceTimer = new System.Threading.Timer(_ => FlushNow());
+    }
 
     /// <summary>主题设置："Dark" | "Light"，空 = 未配置（跟随系统）。</summary>
     public static string Theme { get; private set; } = string.Empty;
@@ -66,6 +82,14 @@ public static class AppSettingsService
     /// <summary>连接-保活间隔秒数，默认 30（参考 SftpSessionService 原默认）,
     /// 挡位 15/30/45/60。</summary>
     public static int KeepAliveIntervalSeconds { get; private set; } = 30;
+
+    /// <summary>关于-有新版本时提醒（标题栏徽标），默认开启。关闭仅隐藏自动提醒,
+    /// 「检查更新」按钮仍可用。</summary>
+    public static bool UpdateCheckEnabled { get; private set; } = true;
+
+    /// <summary>任一设置变更后触发 (跨面板联动, 如更新提醒开关 → 标题徽标重算;
+    /// 订阅方需自行 marshal 到 UI 线程并保证处理幂等)。</summary>
+    public static event Action? SettingsChanged;
 
     /// <summary>启动时从盘载入；文件缺失或损坏时保持默认（跟随系统/默认语言）。</summary>
     public static void Load()
@@ -154,6 +178,12 @@ public static class AppSettingsService
             if (doc.TryGetProperty("keepAliveInterval", out var keepAliveInterval) && keepAliveInterval.TryGetInt32(out var kv))
             {
                 KeepAliveIntervalSeconds = Math.Clamp(kv, 15, 60);
+            }
+
+            if (doc.TryGetProperty("updateCheckEnabled", out var updateCheck)
+                && updateCheck.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                UpdateCheckEnabled = updateCheck.GetBoolean();
             }
         }
         catch
@@ -253,7 +283,43 @@ public static class AppSettingsService
         Save();
     }
 
+    /// <summary>记录更新提醒开关并落盘 (触发 SettingsChanged 供标题徽标即时联动)。</summary>
+    public static void SetUpdateCheckEnabled(bool enabled)
+    {
+        UpdateCheckEnabled = enabled;
+        Save();
+        SettingsChanged?.Invoke();
+    }
+
     private static void Save()
+    {
+        Interlocked.Exchange(ref _savePending, 1);
+        _debounceTimer.Change(500, Timeout.Infinite); // 重置到期: 连续改动只写末次
+    }
+
+    /// <summary>立即落盘挂起的设置改动（应用退出前调用，防最后 500ms 内改动丢失；
+    /// 无挂起改动时空操作）。</summary>
+    public static void FlushNow()
+    {
+        if (Interlocked.Exchange(ref _savePending, 0) != 1)
+        {
+            return;
+        }
+
+        lock (_writeLock)
+        {
+            try
+            {
+                WriteToDisk();
+            }
+            catch
+            {
+                // 写盘失败 (磁盘满/权限): 静默不打断退出流程, 下次改动会重试
+            }
+        }
+    }
+
+    private static void WriteToDisk()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
         File.WriteAllText(StorePath, JsonSerializer.Serialize(
@@ -272,6 +338,7 @@ public static class AppSettingsService
                 remoteDeleteMode = RemoteDeleteMode,
                 keepAliveEnabled = KeepAliveEnabled,
                 keepAliveInterval = KeepAliveIntervalSeconds,
+                updateCheckEnabled = UpdateCheckEnabled,
             }, JsonOptions));
     }
 }

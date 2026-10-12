@@ -1,0 +1,23 @@
+# 开源仓库 CI：push / PR 时 Debug (stub) 编译验证
+# 发布版 exe 不走 CI：本机 build.ps1 编译后手动上传 GitHub Release
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build (Debug, stub core)
+        shell: pwsh
+        run: .\build.ps1 build

@@ -218,9 +218,6 @@ public sealed partial class FolderContainer : UserControl
     {
         var session = new SftpSessionService
         {
-            TrustedFingerprint = string.IsNullOrWhiteSpace(host.HostKeyFingerprint)
-                ? null
-                : host.HostKeyFingerprint,
             ConfirmHostKey = fp =>
             {
                 TerminalLogService.Log(LocalizationService.GetString("LogWaitFingerprint"));
@@ -232,6 +229,9 @@ public sealed partial class FolderContainer : UserControl
                 return HostKeyConfirmDialog.ShowChangeFromWorkerAsync(this, host.Host, stored, presented);
             },
         };
+        session.SetTrustedFingerprint(string.IsNullOrWhiteSpace(host.HostKeyFingerprint)
+            ? null
+            : host.HostKeyFingerprint);
         TerminalLogService.SetBusy(true);
         TerminalLogService.Log(string.Format(
             LocalizationService.GetString("LogConnecting"), host.Host, host.Port));

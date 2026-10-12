@@ -2,14 +2,12 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A dual-pane, multi-tab SFTP client for Windows — fast, secure, and completely free. Built with WinUI 3.
+A dual-pane, multi-tab SFTP client for Windows — fast, secure, free forever, no unlocks, no restrictions. The supporter badge is a purely voluntary honor mark. Built with WinUI 3.
 
-![Version](https://img.shields.io/badge/version-0.8.0-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.8.1-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
 
 Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSftp/releases> · Get a registration code <https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115>
 
-> **Free forever**: every feature is free for all users, always. The supporter badge is a purely voluntary honor mark — registration never unlocks or restricts anything.
->
 > **License**: released under the [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html). Building from this repository works out of the box.
 
 ---

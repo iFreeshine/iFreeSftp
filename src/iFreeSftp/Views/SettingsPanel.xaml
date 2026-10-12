@@ -778,6 +778,40 @@
                                                 Click="AppGitHubBtn_Click" />
                                         </Grid>
                                     </Border>
+                                    <!-- 更新卡: 版本探测提醒开关 + 手动检查 (结果反馈在描述行, 不弹窗) -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="UpdateCheckLabel" FontSize="13" />
+                                                <TextBlock
+                                                    x:Name="UpdateCheckResult"
+                                                    Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                                <Button
+                                                    x:Name="UpdateCheckBtn"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center"
+                                                    Click="UpdateCheckBtn_Click" />
+                                                <ToggleSwitch
+                                                    x:Name="UpdateCheckToggle"
+                                                    Width="46"
+                                                    MinWidth="0"
+                                                    Padding="0"
+                                                    Margin="0,0,-2,0"
+                                                    VerticalAlignment="Center"
+                                                    HorizontalAlignment="Right"
+                                                    Header="{x:Null}"
+                                                    OnContent="{x:Null}"
+                                                    OffContent="{x:Null}"
+                                                    Toggled="UpdateCheckToggle_Toggled" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
                                     <!-- 许可证卡: AGPL-3.0 主体 + 官方版闭源核心组件说明 -->
                                     <Border Style="{StaticResource SettingsCardStyle}">
                                         <StackPanel VerticalAlignment="Center" Spacing="2">

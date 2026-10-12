@@ -1,4 +1,34 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
 namespace iFreeSftp.Models;
+
+/// <summary>登录方式（密码 / 私钥文件）。</summary>
+public enum AuthMode
+{
+    /// <summary>密码登录（默认）。</summary>
+    Password,
+
+    /// <summary>私钥文件登录。</summary>
+    KeyFile,
+}
+
+/// <summary>
+/// AuthMode 的 JSON 转换：读写均为 "Password"/"KeyFile" 字符串（与旧版存档格式
+/// 一致，老版本程序仍可读取新存档）；未知值/非字符串回退 Password，
+/// 防止单条坏值让整个 hosts.json 反序列化失败。
+/// </summary>
+public sealed class AuthModeJsonConverter : JsonConverter<AuthMode>
+{
+    public override AuthMode Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        => reader.TokenType == JsonTokenType.String
+            && Enum.TryParse(reader.GetString(), out AuthMode mode)
+            ? mode
+            : AuthMode.Password;
+
+    public override void Write(Utf8JsonWriter writer, AuthMode value, JsonSerializerOptions options)
+        => writer.WriteStringValue(value.ToString());
+}
 
 /// <summary>
 /// 主机配置：一个 SSH 主机的完整连接与同步/传输设置。
@@ -15,8 +45,9 @@ public sealed class HostProfile
     /// <summary>端口，默认 22。</summary>
     public int Port { get; set; } = 22;
 
-    /// <summary>登录方式："Password"（密码）或 "KeyFile"（密钥文件）。</summary>
-    public string AuthMode { get; set; } = "Password";
+    /// <summary>登录方式（默认密码）。JSON 读写为字符串（见 <see cref="AuthModeJsonConverter"/>）。</summary>
+    [JsonConverter(typeof(AuthModeJsonConverter))]
+    public AuthMode AuthMode { get; set; } = AuthMode.Password;
 
     /// <summary>私钥文件路径（AuthMode = KeyFile 时生效）。</summary>
     public string KeyFilePath { get; set; } = string.Empty;
@@ -25,8 +56,8 @@ public sealed class HostProfile
     public string Username { get; set; } = string.Empty;
 
     /// <summary>
-    /// 登录密码。明文存放在本机私有配置文件中（与其他 SSH 客户端的简化做法一致），
-    /// 后续可替换为 DPAPI 加密存储。
+    /// 登录密码。内存中为明文（运行时需要）；持久化时以 DPAPI（当前用户）加密落盘，
+    /// 配置文件中不出现明文（见 HostStoreService）。
     /// </summary>
     public string Password { get; set; } = string.Empty;
 
