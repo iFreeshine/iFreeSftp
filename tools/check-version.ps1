@@ -6,6 +6,7 @@
 #   4. website\index.html + website\zh\index.html      GitHub 下载链接与版本文案
 #   5. website\changelog.html + website\zh\changelog.html  "v x.y.z" 条目标题
 #   6. web2\changelog.html + web2\zh-changelog.html    "v x.y.z" 条目标题 (web2 扁平站日志页)
+# website\ / web2\ 文件缺失时对应项自动 SKIP (可选站点目录, 不阻塞发布); 1-3 项为仓库内必备文件, 缺失仍 FAIL。
 # 任一不一致即 FAIL (退出码 1, 阻塞发布); 全部一致输出 PASS。
 # 用法: .\tools\check-version.ps1  (无参数)
 
@@ -48,27 +49,43 @@ foreach ($ChangelogFile in 'CHANGELOG.md', 'CHANGELOG.zh-CN.md') {
     Assert-Match "$ChangelogFile 存在 [$Version] 节" $hasSection '缺少对应发版节'
 }
 
-# 4. 官网首页下载链接 + 版本文案
+# 4. 官网首页下载链接 + 版本文案 (website\ 缺失时 SKIP, 不阻塞发布)
 $Url = "releases/download/v$Version/iFreeSftp-v$Version-win-x64.zip"
 $Wi = Join-Path $RepoRoot 'website\index.html'
 $Wzh = Join-Path $RepoRoot 'website\zh\index.html'
-# -SimpleMatch 按字面匹配, 直接传原始 URL (勿再 regex::Escape, 否则 \. 反而失配)
-Assert-Match '官网 EN 下载链接' ($null -ne (Select-String -Path $Wi -Pattern $Url -SimpleMatch)) "缺少 $Url"
-Assert-Match '官网 EN 版本文案' ($null -ne (Select-String -Path $Wi -Pattern "Version v$Version")) "缺少 Version v$Version"
-Assert-Match '官网 ZH 下载链接' ($null -ne (Select-String -Path $Wzh -Pattern $Url -SimpleMatch)) "缺少 $Url"
-Assert-Match '官网 ZH 版本文案' ($null -ne (Select-String -Path $Wzh -Pattern "版本 v$Version")) "缺少 版本 v$Version"
+if ((Test-Path $Wi) -and (Test-Path $Wzh)) {
+    # -SimpleMatch 按字面匹配, 直接传原始 URL (勿再 regex::Escape, 否则 \. 反而失配)
+    Assert-Match '官网 EN 下载链接' ($null -ne (Select-String -Path $Wi -Pattern $Url -SimpleMatch)) "缺少 $Url"
+    Assert-Match '官网 EN 版本文案' ($null -ne (Select-String -Path $Wi -Pattern "Version v$Version")) "缺少 Version v$Version"
+    Assert-Match '官网 ZH 下载链接' ($null -ne (Select-String -Path $Wzh -Pattern $Url -SimpleMatch)) "缺少 $Url"
+    Assert-Match '官网 ZH 版本文案' ($null -ne (Select-String -Path $Wzh -Pattern "版本 v$Version")) "缺少 版本 v$Version"
+}
+else {
+    Write-Host '  SKIP  官网首页 4 项  <- website\ 未入库' -ForegroundColor Yellow
+}
 
-# 5. 官网 changelog 条目
+# 5. 官网 changelog 条目 (website\ 缺失时 SKIP)
 $Wc = Join-Path $RepoRoot 'website\changelog.html'
 $Wczh = Join-Path $RepoRoot 'website\zh\changelog.html'
-Assert-Match '官网 EN changelog 条目' ($null -ne (Select-String -Path $Wc -Pattern ">v$Version</h4>")) "缺少 >v$Version</h4>"
-Assert-Match '官网 ZH changelog 条目' ($null -ne (Select-String -Path $Wczh -Pattern ">v$Version</h4>")) "缺少 >v$Version</h4>"
+if ((Test-Path $Wc) -and (Test-Path $Wczh)) {
+    Assert-Match '官网 EN changelog 条目' ($null -ne (Select-String -Path $Wc -Pattern ">v$Version</h4>")) "缺少 >v$Version</h4>"
+    Assert-Match '官网 ZH changelog 条目' ($null -ne (Select-String -Path $Wczh -Pattern ">v$Version</h4>")) "缺少 >v$Version</h4>"
+}
+else {
+    Write-Host '  SKIP  官网 changelog 2 项  <- website\ 未入库' -ForegroundColor Yellow
+}
 
-# 6. web2 扁平站 changelog 条目 (未上线, 仅校验日志页发版标题)
-$Wc2 = Join-Path $RepoRoot 'web2\changelog.html'
-$Wc2zh = Join-Path $RepoRoot 'web2\zh-changelog.html'
-Assert-Match 'web2 EN changelog 条目' ($null -ne (Select-String -Path $Wc2 -Pattern ">v$Version</h4>")) "缺少 >v$Version</h4>"
-Assert-Match 'web2 ZH changelog 条目' ($null -ne (Select-String -Path $Wc2zh -Pattern ">v$Version</h4>")) "缺少 >v$Version</h4>"
+# 6. web2 扁平站 changelog 条目 (web2\ 已 gitignore, 干净克隆上没有 -> SKIP, 不阻塞发布)
+foreach ($pair in @(
+        @{ Path = 'web2\changelog.html';    Name = 'web2 EN changelog 条目' },
+        @{ Path = 'web2\zh-changelog.html'; Name = 'web2 ZH changelog 条目' })) {
+    $full = Join-Path $RepoRoot $pair.Path
+    if (-not (Test-Path $full)) {
+        Write-Host "  SKIP  $($pair.Name)  <- $($pair.Path) 未入库" -ForegroundColor Yellow
+        continue
+    }
+    Assert-Match $pair.Name ($null -ne (Select-String -Path $full -Pattern ">v$Version</h4>")) "缺少 >v$Version</h4>"
+}
 
 # --- 汇总 ---
 Write-Host ''

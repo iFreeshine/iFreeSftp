@@ -6,7 +6,18 @@ All notable, user-visible changes will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`).
 
-## [Unreleased]
+## [0.8.2] - 2026-10-14
+
+Session import debut with import-flow fixes.
+
+### Added
+- Session import: a one-click import button in the host panel opens a consent-first wizard that scans local configuration of WinSCP (INI file and registry), FileZilla Site Manager, PuTTY sessions, OpenSSH `~/.ssh/config`, and iFreeSftp's own JSON archive. The preview table marks duplicates and missing key files, lets you pick what to import, and reports the result. Passwords and post-login commands are never imported — only connection metadata (name, host, port, username, auth method, key path). Each scanned file is limited to 8 MB and each scan to 5,000 sessions; scan results are discarded when the dialog closes. See the updated privacy policy.
+
+### Fixed
+- Import wizard now reads only the sources you checked on the consent page, as promised — unchecked sources are not probed at all (no file access, no registry reads).
+- PuTTY import: a session-level UserName value now takes precedence over the `user@host` prefix parsed from HostName.
+- Import preview: the same host found in multiple sources is now deduplicated within the scan and marked "Duplicate in this scan"; only the first occurrence is importable.
+- Host panel: importing no longer leaves the working set falsely marked dirty after saving.
 
 ## [0.8.1] - 2026-10-12
 
@@ -53,6 +64,7 @@ First public release.
 - Language dictionaries moved to an external locales folder; user-created language files are discovered automatically
 - Synchronized browsing, file comparison, rubber-band selection, cross-pane drag-and-drop transfer
 
-[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/iFreeshine/iFreeSftp/releases/tag/v0.8.0

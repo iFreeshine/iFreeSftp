@@ -2,12 +2,14 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A dual-pane, multi-tab SFTP client for Windows — fast, secure, free forever, no unlocks, no restrictions. The supporter badge is a purely voluntary honor mark. Built with WinUI 3.
+A dual-pane, multi-tab SFTP client for Windows — fast, secure, and completely free. Built with WinUI 3.
 
-![Version](https://img.shields.io/badge/version-0.8.1-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.8.2-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
 
 Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSftp/releases> · Get a registration code <https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115>
 
+> **Free forever**: every feature is free for all users, always. The supporter badge is a purely voluntary honor mark — registration never unlocks or restricts anything.
+>
 > **License**: released under the [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html). Building from this repository works out of the box.
 
 ---
@@ -16,6 +18,7 @@ Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSft
 
 - **Dual panes, IDE-style multi-tab** — both folder windows host independent tabs (local or remote), so you can work on several hosts at once without juggling windows
 - **Server-side direct transfer** — same-host remote→remote copies are executed by the server itself with a single `cp`: zero traffic through your machine, and large directory trees arrive in one shot instead of file-by-file round-trips
+- **One-click host import** — switching from WinSCP, FileZilla, PuTTY or OpenSSH config? Your hosts come with you: consent-first local scan, duplicate-aware preview, tick what to import; only connection metadata moves, passwords are never read
 - **Secure by default** — host fingerprints are confirmed on first connect (SHA256) and pinned afterwards; a changed server key is rejected outright to stop man-in-the-middle attacks; credentials and registration data are stored DPAPI-encrypted
 - **Built-in editor with remote edit & save-back** — download a temp copy, edit, save, auto-upload; mtime conflict detection warns you when the file changed underneath you
 - **Real file-manager ergonomics** — drag & drop in all 4 directions, rubber-band multi-select, sync-browse file comparison, upload queue with per-file progress and retry
@@ -92,6 +95,7 @@ build.ps1 / build.cmd             # Build scripts
 | Main window | **Dual panes + multi-tab**: each side hosts independent tabs (IDE-style tab strip); per-tab local browsing or remote connection; upload queue, host command/log panel |
 | Connection | Real SSH.NET connections, password or private-key auth, keep-alive |
 | Host manager | Host cards: add/edit/duplicate/delete, drag to reorder, context menu, click to connect, active highlight |
+| Session import | One-click import from WinSCP (INI/registry), FileZilla Site Manager, PuTTY, OpenSSH `~/.ssh/config`, and iFreeSftp's own archive; consent-first wizard with preview and dedup; passwords and login commands are never imported — only connection metadata |
 | Connection security | First-connect host-fingerprint (SHA256) confirmation, remembered afterwards; changed server key is rejected outright (MITM protection) |
 | Timeouts & retries | Connect timeout, per-operation timeout (errors surfaced in status bar and log panel), max retries, retry delay, keep-alive interval |
 | Tab open behavior | Ask whether to open a host in the current tab or a new tab (with "always" option); connection is established first, tabs only move on success |

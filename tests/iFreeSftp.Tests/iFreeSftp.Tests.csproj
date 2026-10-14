@@ -28,6 +28,7 @@
     <Compile Include="..\..\src\iFreeSftp\Services\Sm3.cs" Link="Linked\Services\Sm3.cs" />
     <Compile Include="..\..\src\iFreeSftp\Services\UrlGuard.cs" Link="Linked\Services\UrlGuard.cs" />
     <Compile Include="..\..\src\iFreeSftp\Services\HostStoreService.cs" Link="Linked\Services\HostStoreService.cs" />
+    <Compile Include="..\..\src\iFreeSftp\Services\HostImportParser.cs" Link="Linked\Services\HostImportParser.cs" />
   </ItemGroup>
 
 </Project>

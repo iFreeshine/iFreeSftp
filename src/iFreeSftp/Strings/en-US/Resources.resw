@@ -947,4 +947,113 @@ Update and trust only if you are aware of this change; otherwise reject to preve
   <data name="LogDeleteFallback" xml:space="preserve">
     <value>Server-side delete failed, fell back to SFTP recursive delete</value>
   </data>
+  <!-- —— Session import wizard (0.8.2) —— -->
+  <data name="ImportDialogTitle" xml:space="preserve">
+    <value>Import Sessions</value>
+  </data>
+  <data name="ImportPrivacyNote" xml:space="preserve">
+    <value>Only connection metadata (name, host, port, username, auth method, key path) is read locally from the sources you select. Passwords and post-login commands are never imported. Scan results are shown only in this dialog and discarded on close. Files are limited to 8 MB and up to 5,000 sessions per scan.</value>
+  </data>
+  <data name="ImportSourcesHeader" xml:space="preserve">
+    <value>Choose sources to scan</value>
+  </data>
+  <data name="ImportConsent" xml:space="preserve">
+    <value>I understand and agree to read the selected sources locally only</value>
+  </data>
+  <data name="ImportScan" xml:space="preserve">
+    <value>Start Scan</value>
+  </data>
+  <data name="ImportScanning" xml:space="preserve">
+    <value>Scanning…</value>
+  </data>
+  <data name="ImportBack" xml:space="preserve">
+    <value>Back</value>
+  </data>
+  <data name="ImportDone" xml:space="preserve">
+    <value>Done</value>
+  </data>
+  <data name="ImportImportN" xml:space="preserve">
+    <value>Import ({0})</value>
+  </data>
+  <data name="ImportFoundSummary" xml:space="preserve">
+    <value>{0} sessions found, {1} of them already exist (cannot be imported twice).</value>
+  </data>
+  <data name="ImportColName" xml:space="preserve">
+    <value>Name</value>
+  </data>
+  <data name="ImportColHost" xml:space="preserve">
+    <value>Host</value>
+  </data>
+  <data name="ImportColPort" xml:space="preserve">
+    <value>Port</value>
+  </data>
+  <data name="ImportColUser" xml:space="preserve">
+    <value>Username</value>
+  </data>
+  <data name="ImportColAuth" xml:space="preserve">
+    <value>Auth</value>
+  </data>
+  <data name="ImportColStatus" xml:space="preserve">
+    <value>Status</value>
+  </data>
+  <data name="ImportStatusNew" xml:space="preserve">
+    <value>New</value>
+  </data>
+  <data name="ImportStatusExisting" xml:space="preserve">
+    <value>Already exists</value>
+  </data>
+  <data name="ImportStatusDuplicate" xml:space="preserve">
+    <value>Duplicate in this scan</value>
+  </data>
+  <data name="ImportStatusKeyNotFound" xml:space="preserve">
+    <value>Key file not found</value>
+  </data>
+  <data name="ImportStatusUncPath" xml:space="preserve">
+    <value>UNC key path, fell back to password</value>
+  </data>
+  <data name="ImportResultSuccess" xml:space="preserve">
+    <value>Imported {0} sessions</value>
+  </data>
+  <data name="ImportResultNone" xml:space="preserve">
+    <value>No new sessions found to import</value>
+  </data>
+  <data name="ImportResultTruncated" xml:space="preserve">
+    <value>Exceeded the 5,000-session limit, {0} truncated.</value>
+  </data>
+  <data name="ImportErrFileTooLarge" xml:space="preserve">
+    <value>File exceeds 8 MB, skipped</value>
+  </data>
+  <data name="ImportErrFileReadFailed" xml:space="preserve">
+    <value>Failed to read file</value>
+  </data>
+  <data name="ImportErrParseFailed" xml:space="preserve">
+    <value>Failed to parse</value>
+  </data>
+  <data name="ImportErrRegistryReadFailed" xml:space="preserve">
+    <value>Failed to read registry</value>
+  </data>
+  <data name="ImportSourceWinScpIni" xml:space="preserve">
+    <value>WinSCP (INI file)</value>
+  </data>
+  <data name="ImportSourceWinScpRegistry" xml:space="preserve">
+    <value>WinSCP (registry)</value>
+  </data>
+  <data name="ImportSourceFileZilla" xml:space="preserve">
+    <value>FileZilla Site Manager</value>
+  </data>
+  <data name="ImportSourcePuTTY" xml:space="preserve">
+    <value>PuTTY sessions</value>
+  </data>
+  <data name="ImportSourceOpenSsh" xml:space="preserve">
+    <value>OpenSSH (~/.ssh/config)</value>
+  </data>
+  <data name="ImportSourceOwnStore" xml:space="preserve">
+    <value>iFreeSftp archive (JSON)</value>
+  </data>
+  <data name="ImportHosts" xml:space="preserve">
+    <value>Import hosts</value>
+  </data>
+  <data name="LogImportDone" xml:space="preserve">
+    <value>Imported {0} hosts from local sources</value>
+  </data>
 </root>

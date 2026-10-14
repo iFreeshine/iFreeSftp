@@ -457,16 +457,16 @@
     <value>单次 SFTP 请求等待响应的上限（秒），超时按错误处理不再挂起</value>
   </data>
   <data name="KeepAliveLabel" xml:space="preserve">
-    <value>保活连接</value>
+    <value>keep-alive 连接</value>
   </data>
   <data name="KeepAliveDesc" xml:space="preserve">
     <value>周期发送心跳包，防止长连接被路由器或防火墙断开</value>
   </data>
   <data name="KeepAliveIntervalLabel" xml:space="preserve">
-    <value>保活间隔</value>
+    <value>keep-alive 间隔</value>
   </data>
   <data name="KeepAliveIntervalDesc" xml:space="preserve">
-    <value>心跳包发送周期（秒），需开启保活连接</value>
+    <value>心跳包发送周期（秒），需开启 keep-alive 连接</value>
   </data>
   <data name="EditorModeDesc" xml:space="preserve">
     <value>选择打开文件使用的编辑器</value>
@@ -946,5 +946,114 @@
   </data>
   <data name="LogDeleteFallback" xml:space="preserve">
     <value>服务端命令删除失败，已回退 SFTP 递归删除</value>
+  </data>
+  <!-- —— 会话导入向导 (0.8.2) —— -->
+  <data name="ImportDialogTitle" xml:space="preserve">
+    <value>导入会话</value>
+  </data>
+  <data name="ImportPrivacyNote" xml:space="preserve">
+    <value>仅在本机读取您所选来源中的连接元数据（名称、主机、端口、用户名、认证方式、密钥路径）；口令与登录后命令一律不导入。扫描结果只在本弹窗内展示，关闭即丢弃。单文件不超过 8MB，单次最多 5000 条。</value>
+  </data>
+  <data name="ImportSourcesHeader" xml:space="preserve">
+    <value>选择要扫描的来源</value>
+  </data>
+  <data name="ImportConsent" xml:space="preserve">
+    <value>我已知晓并同意按上述方式仅在本机读取所选来源</value>
+  </data>
+  <data name="ImportScan" xml:space="preserve">
+    <value>开始扫描</value>
+  </data>
+  <data name="ImportScanning" xml:space="preserve">
+    <value>正在扫描…</value>
+  </data>
+  <data name="ImportBack" xml:space="preserve">
+    <value>返回</value>
+  </data>
+  <data name="ImportDone" xml:space="preserve">
+    <value>完成</value>
+  </data>
+  <data name="ImportImportN" xml:space="preserve">
+    <value>导入 ({0})</value>
+  </data>
+  <data name="ImportFoundSummary" xml:space="preserve">
+    <value>共找到 {0} 条会话，其中 {1} 条已存在（不可重复导入）。</value>
+  </data>
+  <data name="ImportColName" xml:space="preserve">
+    <value>名称</value>
+  </data>
+  <data name="ImportColHost" xml:space="preserve">
+    <value>主机</value>
+  </data>
+  <data name="ImportColPort" xml:space="preserve">
+    <value>端口</value>
+  </data>
+  <data name="ImportColUser" xml:space="preserve">
+    <value>用户名</value>
+  </data>
+  <data name="ImportColAuth" xml:space="preserve">
+    <value>认证</value>
+  </data>
+  <data name="ImportColStatus" xml:space="preserve">
+    <value>状态</value>
+  </data>
+  <data name="ImportStatusNew" xml:space="preserve">
+    <value>新条目</value>
+  </data>
+  <data name="ImportStatusExisting" xml:space="preserve">
+    <value>已存在</value>
+  </data>
+  <data name="ImportStatusDuplicate" xml:space="preserve">
+    <value>本次扫描中重复</value>
+  </data>
+  <data name="ImportStatusKeyNotFound" xml:space="preserve">
+    <value>密钥文件不存在</value>
+  </data>
+  <data name="ImportStatusUncPath" xml:space="preserve">
+    <value>UNC 密钥路径，已回退密码</value>
+  </data>
+  <data name="ImportResultSuccess" xml:space="preserve">
+    <value>已导入 {0} 条会话</value>
+  </data>
+  <data name="ImportResultNone" xml:space="preserve">
+    <value>未找到可导入的新会话</value>
+  </data>
+  <data name="ImportResultTruncated" xml:space="preserve">
+    <value>会话数量超过 5000 条上限，已截断 {0} 条。</value>
+  </data>
+  <data name="ImportErrFileTooLarge" xml:space="preserve">
+    <value>文件超过 8MB，已跳过</value>
+  </data>
+  <data name="ImportErrFileReadFailed" xml:space="preserve">
+    <value>文件读取失败</value>
+  </data>
+  <data name="ImportErrParseFailed" xml:space="preserve">
+    <value>解析失败</value>
+  </data>
+  <data name="ImportErrRegistryReadFailed" xml:space="preserve">
+    <value>注册表读取失败</value>
+  </data>
+  <data name="ImportSourceWinScpIni" xml:space="preserve">
+    <value>WinSCP (INI 文件)</value>
+  </data>
+  <data name="ImportSourceWinScpRegistry" xml:space="preserve">
+    <value>WinSCP (注册表)</value>
+  </data>
+  <data name="ImportSourceFileZilla" xml:space="preserve">
+    <value>FileZilla 站点管理器</value>
+  </data>
+  <data name="ImportSourcePuTTY" xml:space="preserve">
+    <value>PuTTY 会话</value>
+  </data>
+  <data name="ImportSourceOpenSsh" xml:space="preserve">
+    <value>OpenSSH (~/.ssh/config)</value>
+  </data>
+  <data name="ImportSourceOwnStore" xml:space="preserve">
+    <value>iFreeSftp 存档 (JSON)</value>
+  </data>
+  <data name="ImportHosts" xml:space="preserve">
+    <value>导入主机</value>
+  </data>
+  <data name="LogImportDone" xml:space="preserve">
+    <value>已从本机来源导入 {0} 条主机</value>
   </data>
 </root>

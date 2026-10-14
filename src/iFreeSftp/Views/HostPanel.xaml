@@ -6,6 +6,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:controls="using:iFreeSftp.Controls"
+    xmlns:local="using:iFreeSftp.Views"
     mc:Ignorable="d">
 
     <UserControl.Resources>
@@ -224,25 +225,46 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
-                            <Button
-                                x:Name="AddBtn"
+                            <StackPanel
                                 Grid.Row="0"
-                                Padding="14,8"
                                 HorizontalAlignment="Center"
-                                AutomationProperties.Name="AddHostButton"
-                                Background="#0078D4"
-                                Foreground="White"
-                                BorderThickness="0"
-                                Click="AddBtn_Click">
-                                <Button.Resources>
-                                    <!-- 与 Header 主机按钮同款方向: 悬停变暗 #106EBE, 按下更深 #005A9E -->
-                                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
-                                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
-                                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
-                                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
-                                </Button.Resources>
-                                <FontIcon FontSize="16" Glyph="&#xE710;" />
-                            </Button>
+                                Orientation="Horizontal"
+                                Spacing="8">
+                                <Button
+                                    x:Name="AddBtn"
+                                    Padding="14,8"
+                                    AutomationProperties.Name="AddHostButton"
+                                    Background="#0078D4"
+                                    Foreground="White"
+                                    BorderThickness="0"
+                                    Click="AddBtn_Click">
+                                    <Button.Resources>
+                                        <!-- 与 Header 主机按钮同款方向: 悬停变暗 #106EBE, 按下更深 #005A9E -->
+                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                    </Button.Resources>
+                                    <FontIcon FontSize="16" Glyph="&#xE710;" />
+                                </Button>
+                                <!-- 导入按钮: 打开会话导入向导 (WinSCP/FileZilla/PuTTY/OpenSSH/自有存档) -->
+                                <Button
+                                    x:Name="ImportBtn"
+                                    Padding="14,8"
+                                    AutomationProperties.Name="ImportHostsButton"
+                                    Background="#0078D4"
+                                    Foreground="White"
+                                    BorderThickness="0"
+                                    Click="ImportBtn_Click">
+                                    <Button.Resources>
+                                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
+                                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                        <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                    </Button.Resources>
+                                    <FontIcon FontSize="16" Glyph="&#xE896;" />
+                                </Button>
+                            </StackPanel>
                             <ListView
                                 x:Name="HostList"
                                 Grid.Row="1"
@@ -715,5 +737,11 @@
                 </Grid>
             </Grid>
         </Border>
+
+        <!-- 导入向导弹窗 (导入钮触发): 遮罩+卡片覆盖面板, 默认隐藏 -->
+        <local:ImportDialog
+            x:Name="ImportOverlay"
+            ImportRequested="ImportOverlay_ImportRequested"
+            Visibility="Collapsed" />
     </Grid>
 </UserControl>

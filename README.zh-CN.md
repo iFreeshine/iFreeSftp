@@ -2,12 +2,14 @@
 
 [English](README.md) | 简体中文
 
-基于 WinUI 3 的桌面 SFTP 客户端——双窗格、多标签，快速、安全；永久免费，不解锁、不限制任何功能，赞助勋章纯属自愿。
+基于 WinUI 3 的桌面 SFTP 客户端——双窗格、多标签，快速、安全、完全免费。
 
-![Version](https://img.shields.io/badge/version-0.8.1-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.8.2-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
 
 官网 <https://ifrees.top> · 发布页 <https://github.com/iFreeshine/iFreeSftp/releases> · 赞助 <https://afdian.com/a/ifree>
 
+> **免费承诺**：全部功能对所有用户永久免费开放。注册勋章纯属自愿赞助，不解锁、不限制任何功能。
+>
 > **许可证**：本应用以 [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) 许可证开源发布，克隆仓库即可完整编译。
 
 ---
@@ -16,11 +18,12 @@
 
 - **左右双窗格 + IDE 式多标签**——两侧各自独立多开 tab（本地或远程），多主机并行操作不必来回切窗口
 - **服务端直达传输**——同主机远程→远程复制由服务器一条 `cp` 直接完成：客户端零流量，大目录整树一次到位，没有逐文件往返
+- **主机一键导入**——换工具？主机一键带走：从 WinSCP、FileZilla、PuTTY、OpenSSH config 先授权后扫描，预览去重、勾选即入；只搬连接信息，密码绝不读取
 - **默认安全**——首次连接确认主机指纹（SHA256）并记住，服务器密钥变化直接拒绝（防中间人）；凭据与注册数据 DPAPI 加密存储
 - **内置编辑器 + 远程编辑回传**——下载临时副本、编辑、保存自动上传；远端文件被他人改过会弹 mtime 冲突确认
 - **真正的文件管理器手感**——四方向拖拽传输、橡皮筋框选、同步浏览文件比对、带逐文件进度与失败重试的上传队列
 - **服务端工具随取随用**——九宫格 chmod 实时拉取、SHA-256 / SHA-512 / SM3 校验码服务器端即算、主机命令窗完整会话日志
-- **连接细节讲究**——连接/操作超时、重试与延迟、keep-alive 保活；报错同步显示在状态栏与命令行面板，绝不无限挂起
+- **连接细节讲究**——连接/操作超时、重试与延迟、keep-alive；报错同步显示在状态栏与命令行面板，绝不无限挂起
 - **自包含单文件 exe**——无需安装任何运行时；深浅主题、中英文运行时切换
 
 ## 与同类软件对比
@@ -92,8 +95,9 @@ build.ps1 / build.cmd             # 构建脚本
 | 模块 | 功能 |
 |---|---|
 | 主界面 | **左右双窗口 + 多标签页**：左右两个文件夹窗口各自独立多开 tab（IDE 式标签条），每个 tab 都可浏览本地或连接远程；上传队列、主机命令窗（连接日志输出） |
-| 连接 | SSH.NET 真实连接，密码或私钥文件认证；支持 keep-alive 保活 |
+| 连接 | SSH.NET 真实连接，密码或私钥文件认证；支持 keep-alive |
 | 主机管理 | 主机卡片面板：新增/编辑/复制/删除、拖拽排序、右键菜单、单击卡片即连接、hover 编辑钮 |
+| 会话导入 | 一键导入 WinSCP（INI/注册表）、FileZilla 站点管理器、PuTTY、OpenSSH `~/.ssh/config` 与 iFreeSftp 自有存档；先同意后扫描、预览判重；口令与登录后命令绝不导入——只导连接元数据 |
 | 连接安全 | 首次连接弹窗确认主机指纹（SHA256），确认后记住并自动校验；服务器密钥变化直接拒绝，防中间人 |
 | 连接参数 | 连接超时、操作超时（0=禁用；报错同步显示在状态栏与命令行面板）、最大重试次数、登录重试延迟、keep-alive 开关与间隔 |
 | 连接打开方式 | 点击主机连接时询问在右窗口当前 tab 还是新 tab 打开（可"总是"）；**先连接、成功才落位** |

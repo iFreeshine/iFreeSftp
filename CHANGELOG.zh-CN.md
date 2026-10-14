@@ -6,7 +6,18 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本（`主.次.修订`）。
 
-## [Unreleased]
+## [0.8.2] - 2026-10-14
+
+会话导入首发与导入流程修复。
+
+### 新增
+- 会话导入：主机面板新增一键导入按钮，可从本机 WinSCP（INI 文件与注册表）、FileZilla 站点管理器、PuTTY 会话、OpenSSH `~/.ssh/config` 及 iFreeSftp 自有 JSON 存档读取连接配置。预览表标注重复项与缺失的密钥文件，勾选后导入，报告结果。口令与登录后命令绝不导入——只导连接元数据（名称、主机、端口、用户名、认证方式、密钥路径）。单文件不超过 8MB，单次扫描最多 5000 条；弹窗关闭即丢弃扫描结果。隐私政策已同步更新。
+
+### 修复
+- 导入向导现在只读取同意页勾选的来源，与公示承诺一致——未勾选的来源完全不探测（不碰文件、不读注册表）。
+- PuTTY 导入：会话级 UserName 键优先于从 HostName 拆出的 `user@host` 前缀。
+- 导入预览：同一主机出现在多个来源时按扫描内判重，重复项标注"本次扫描中重复"，仅第一条可导入。
+- 主机面板：导入落盘后不再把工作集误标为脏（避免触发多余保存路径）。
 
 ## [0.8.1] - 2026-10-12
 
@@ -53,6 +64,7 @@
 - 语言词典外置 locales 目录，用户可自建语言文件并自动被发现
 - 同步浏览、文件比对、橡皮筋框选、跨窗格拖拽传输
 
-[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/iFreeshine/iFreeSftp/releases/tag/v0.8.0

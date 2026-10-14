@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Linq;
@@ -212,6 +213,13 @@ public sealed partial class HostPanel : UserControl
         _escAccelerator.Invoked += (_, args) =>
         {
             args.Handled = true;
+            if (ImportOverlay.Visibility == Visibility.Visible)
+            {
+                // 焦点不在导入弹窗内时 ESC 会冒泡到这里: 先关导入弹窗而不是整个面板
+                ImportOverlay.Close();
+                return;
+            }
+
             RequestClose();
         };
         // 代码挂接: 面板隐藏时移除, 避免隐藏元素的快捷键行为不确定。
@@ -392,6 +400,29 @@ public sealed partial class HostPanel : UserControl
         _dirty = true;
         UpdateEmptyHint();
         HostList.SelectedIndex = _list.Count - 1;
+    }
+
+    private void ImportBtn_Click(object sender, RoutedEventArgs e)
+        => ImportOverlay.OpenFor(HostStoreService.Hosts);
+
+    /// <summary>
+    /// 导入向导回调: 逐条转 HostProfile 追加到工作集与卡片列表, 立即落盘 (与复制菜单同款
+    /// 导入即存语义)。日志只记条数, 不落任何会话内容。
+    /// </summary>
+    private void ImportOverlay_ImportRequested(List<ImportedSession> sessions)
+    {
+        foreach (var session in sessions)
+        {
+            var host = HostImportParser.ToHostProfile(session);
+            HostStoreService.Hosts.Add(host);
+            _list.Add(host);
+        }
+
+        UpdateEmptyHint();
+        HostStoreService.Save();
+        _dirty = false; // N4 修复：Save 之后工作集与磁盘一致，不能再标脏（否则误触发其他保存路径）
+        TerminalLogService.Log(string.Format(
+            LocalizationService.GetString("LogImportDone"), sessions.Count));
     }
 
     /// <summary>右键菜单文案：Tag 存 resw 键，Loading 时设本地化文本（模板实例无法按名查找）。</summary>
@@ -1078,6 +1109,10 @@ public sealed partial class HostPanel : UserControl
         SaveBtn.Content = LocalizationService.GetString("Save");
         CloseBtn.Content = LocalizationService.GetString("Close");
         EmptyHint.Text = LocalizationService.GetString("EmptyHostList");
+        var importText = LocalizationService.GetString("ImportHosts");
+        ToolTipService.SetToolTip(ImportBtn, MakeAccentTip(importText));
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ImportBtn, importText);
+        ImportOverlay.ApplyResources();
     }
 
     private static ToolTip MakeAccentTip(string text) => new()
