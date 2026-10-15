@@ -672,36 +672,37 @@
                                                     x:Name="RegCodeHint"
                                                     Style="{StaticResource SettingsDescStyle}" />
                                             </StackPanel>
-                                            <StackPanel
-                                                Grid.Column="1"
-                                                Orientation="Horizontal"
-                                                Spacing="8"
-                                                VerticalAlignment="Center">
-                                                <TextBox
-                                                    x:Name="RegCodeBox"
-                                                    Width="250"
-                                                    FontSize="13"
-                                                    VerticalContentAlignment="Center" />
-                                                <Button
-                                                    x:Name="RegActivateBtn"
-                                                    Padding="12,5"
-                                                    FontSize="13"
-                                                    VerticalAlignment="Center"
-                                                    Click="RegActivateBtn_Click" />
-                                                <Button
-                                                    x:Name="RegBuyCnBtn"
-                                                    Padding="12,5"
-                                                    FontSize="13"
-                                                    VerticalAlignment="Center"
-                                                    Visibility="Collapsed"
-                                                    Click="RegBuyCnBtn_Click" />
-                                                <Button
-                                                    x:Name="RegBuyIntlBtn"
-                                                    Padding="12,5"
-                                                    FontSize="13"
-                                                    VerticalAlignment="Center"
-                                                    Visibility="Collapsed"
-                                                    Click="RegBuyIntlBtn_Click" />
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="8">
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <TextBox
+                                                        x:Name="RegCodeBox"
+                                                        Width="250"
+                                                        FontSize="13"
+                                                        VerticalContentAlignment="Center" />
+                                                    <Button
+                                                        x:Name="RegActivateBtn"
+                                                        Padding="12,5"
+                                                        FontSize="13"
+                                                        VerticalAlignment="Center"
+                                                        Click="RegActivateBtn_Click" />
+                                                </StackPanel>
+                                                <!-- 购买按钮独立一行, 避免与输入框/激活按钮拥挤 -->
+                                                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                                    <Button
+                                                        x:Name="RegBuyCnBtn"
+                                                        Padding="12,5"
+                                                        FontSize="13"
+                                                        VerticalAlignment="Center"
+                                                        Visibility="Collapsed"
+                                                        Click="RegBuyCnBtn_Click" />
+                                                    <Button
+                                                        x:Name="RegBuyIntlBtn"
+                                                        Padding="12,5"
+                                                        FontSize="13"
+                                                        VerticalAlignment="Center"
+                                                        Visibility="Collapsed"
+                                                        Click="RegBuyIntlBtn_Click" />
+                                                </StackPanel>
                                             </StackPanel>
                                         </Grid>
                                     </Border>

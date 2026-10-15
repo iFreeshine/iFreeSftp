@@ -85,23 +85,23 @@
             <Button
                 x:Name="UpdateBadgeBtn"
                 Height="33"
-                Padding="10,0"
+                Padding="8,0"
                 Margin="0,0,4,0"
-                Background="#0078D4"
-                Foreground="White"
+                Background="Transparent"
+                Foreground="#0078D4"
                 BorderThickness="0"
                 Visibility="Collapsed"
                 Click="UpdateBadgeBtn_Click">
                 <Button.Resources>
-                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#106EBE" />
-                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#005A9E" />
-                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
-                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="#106EBE" />
+                    <SolidColorBrush x:Key="ButtonForegroundPressed" Color="#005A9E" />
                 </Button.Resources>
-                <StackPanel Orientation="Horizontal" Spacing="6">
+                <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
                     <!-- E896 = Download (向下箭头到横线) -->
                     <FontIcon FontSize="12" Glyph="&#xE896;" />
-                    <TextBlock x:Name="UpdateBadgeText" FontSize="12" Text="" />
+                    <TextBlock x:Name="UpdateBadgeText" FontSize="12" Text="" VerticalAlignment="Center" />
                 </StackPanel>
             </Button>
             <!--
