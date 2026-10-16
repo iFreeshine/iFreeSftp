@@ -59,7 +59,7 @@ Unzip anywhere and run `iFreeSftp.exe`. Or build from source (below).
 
 ![Main window](docs/screenshots/app-main-dark.png)
 
-![Light theme](docs/screenshots/app-main-light.png)
+![Light theme](docs/screenshots/app-2.png)
 
 ![Settings](docs/screenshots/app-settings.png)
 
