@@ -38,6 +38,13 @@ public sealed partial class MainContainer : Page
         // 任一窗格的 + 按钮/选择主机按钮请求打开选择器 → Header (带来源窗格)。
         LeftPane.OpenPickerRequested += pane => OpenPickerRequested?.Invoke(pane);
         RightPane.OpenPickerRequested += pane => OpenPickerRequested?.Invoke(pane);
+
+        // Mica 半透明背景: 设置开关控制打底/边框层 (ShellBorder) 透明化,
+        // 与 Header.RootGrid 同步让系统材质透出; 主题切换时重赋纯色画刷。
+        // SettingsChanged 可从任意线程触发, marshal 回 UI 线程再动控件。
+        ThemeService.ThemeChanged += _ => ApplyMicaBackground();
+        AppSettingsService.SettingsChanged += () => DispatcherQueue.TryEnqueue(ApplyMicaBackground);
+        ApplyMicaBackground();
     }
 
     /// <summary>请求打开"打开内容"选择器 (任一窗格触发, Header 订阅): 来源窗格 Left/Right。</summary>
@@ -66,6 +73,23 @@ public sealed partial class MainContainer : Page
     {
         LeftPane.ApplyResources();
         RightPane.ApplyResources();
+    }
+
+    /// <summary>
+    /// 按设置切换打底/边框层背景: Mica 开启时置透明让系统材质从边框与间隙透出,
+    /// 关闭时用主题纯色 (直配色值而非 ThemeDictionaries 解析——主题字典画刷切主题后
+    /// 不重新解析, 见 SettingsPanel.SetCategoryState 实测注释)。
+    /// 四个内容容器 (FolderAreaBrush) 保留纯色, 保证文件区可读性。
+    /// </summary>
+    private void ApplyMicaBackground()
+    {
+        var brush = AppSettingsService.MicaEnabled
+            ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent)
+            : new Microsoft.UI.Xaml.Media.SolidColorBrush(ThemeService.IsDark
+                ? Windows.UI.Color.FromArgb(255, 0x26, 0x30, 0x3D) // Dark HeaderAreaBrush
+                : Windows.UI.Color.FromArgb(255, 0xE9, 0xE9, 0xE9)); // Light HeaderAreaBrush
+        ShellBorder.Background = brush;
+        ShellBorder.BorderBrush = brush;
     }
 
     /// <summary>拖动竖分隔条，按水平位移调整左右列宽（上下两排同步）。</summary>

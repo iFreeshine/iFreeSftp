@@ -17,6 +17,7 @@
         拖拽调节左右列宽与下排行高。
     -->
     <Border
+        x:Name="ShellBorder"
         Background="{ThemeResource HeaderAreaBrush}"
         BorderBrush="{ThemeResource HeaderAreaBrush}"
         BorderThickness="5,0,5,5">

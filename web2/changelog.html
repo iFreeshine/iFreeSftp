@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Changelog - iFreeSftp</title>
+    <link rel="icon" type="image/png" href="logo.png">
+<meta name="description" content="iFreeSftp changelog: version history and feature iterations, including new features and improvements.">
+<link rel="stylesheet" href="tailwind.css">
+<script>
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('details[open]').forEach((d) => {
+    if (!d.contains(e.target)) d.removeAttribute('open');
+  });
+});
+</script>
+<style> html { scroll-behavior: smooth; } </style>
+</head>
+<body class="bg-ink font-sans text-body antialiased">
+
+<!-- ===== Header ===== -->
+<header class="sticky top-0 z-50 bg-ink">
+  <div class="mx-auto flex h-16 max-w-6xl items-center px-4">
+    <a href="index.html" class="flex items-center gap-2.5">
+      <img src="logo.png" alt="iFreeSftp" class="h-9 w-9">
+      <span class="text-xl font-semibold text-body">iFreeSftp</span>
+    </a>
+    <nav class="ml-auto hidden items-center gap-1 text-sm md:flex">
+      <a href="changelog.html" class="px-3 py-2.5 text-body hover:text-white">Changelog</a>
+      <a href="zh-changelog.html" class="px-3 hidden text-body hover:text-white sm:block" title="中文">中文</a>
+    </nav>
+    <div class="ml-auto flex items-center gap-3 text-sm md:ml-0">
+      <details class="group relative md:hidden">
+        <summary class="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-lg text-body transition-colors hover:bg-edge hover:text-white [&::-webkit-details-marker]:hidden">
+          <svg class="h-5 w-5 group-open:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          <svg class="hidden h-5 w-5 group-open:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </summary>
+        <nav class="absolute right-0 top-12 z-50 w-44 rounded-lg bg-panel py-2 shadow-xl">
+          <a href="changelog.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">Changelog</a>
+          <a href="license.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">License</a>
+          <a href="zh-changelog.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">中文</a>
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>
+
+<!-- ===== Page head ===== -->
+<section class="relative overflow-hidden bg-ink py-10 text-center sm:py-16">
+  <div class="pointer-events-none absolute inset-0" aria-hidden="true">
+    <img src="app-main-light.png" alt="" class="h-full w-full object-cover object-top opacity-30">
+    <div class="absolute inset-0 bg-gradient-to-b from-ink/30 via-ink/40 to-ink"></div>
+  </div>
+  <div class="relative">
+    <h1 class="text-2xl font-bold text-white sm:text-3xl">Changelog</h1>
+    <p class="mt-3 text-body">Version history and feature iterations of iFreeSftp</p>
+  </div>
+</section>
+
+<!-- ===== Content ===== -->
+<section class="bg-ink py-10 sm:py-16">
+  <div class="mx-auto max-w-3xl px-4">
+
+    <div class="relative border-l-2 border-edge pl-8">
+      <span class="absolute -left-2 top-1 h-4 w-4 rounded-full border-4 border-ink bg-primary"></span>
+      <div class="flex items-center gap-3">
+        <h4 class="text-lg font-bold text-white">v0.8.3</h4>
+        <span class="rounded bg-badge/20 px-2 py-0.5 text-xs text-badge">Current</span>
+      </div>
+      <ul class="mt-4 space-y-2.5 text-sm leading-relaxed text-faint">
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Mica background toggle in Settings → Appearance — the Windows 11 Mica material shows through the title bar, window border and container gaps; file areas stay solid for readability</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>Import wizard: wider confirmation table, precise column alignment, subtle header/row separator lines</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>Import button now uses the official Import glyph</li>
+      </ul>
+    </div>
+
+    <div class="relative border-l-2 border-edge pl-8">
+      <span class="absolute -left-2 top-1 h-4 w-4 rounded-full border-4 border-ink bg-primary"></span>
+      <div class="flex items-center gap-3">
+        <h4 class="text-lg font-bold text-white">v0.8.2</h4>
+      </div>
+      <ul class="mt-4 space-y-2.5 text-sm leading-relaxed text-faint">
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Session import — one-click migration from WinSCP, FileZilla, PuTTY, OpenSSH config and iFreeSftp archives; passwords and post-login commands are never imported</li>
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Consent-first wizard with a preview table that marks duplicates and missing key files — pick what to import, get a per-item result report</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>Unchecked sources are never probed at all — no file access, no registry reads</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>PuTTY UserName key takes precedence; the same host found in multiple sources is deduplicated within one scan</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>Importing no longer leaves the working set falsely marked dirty after saving</li>
+      </ul>
+    </div>
+
+    <div class="relative border-l-2 border-edge pl-8">
+      <span class="absolute -left-2 top-1 h-4 w-4 rounded-full border-4 border-ink bg-primary"></span>
+      <div class="flex items-center gap-3">
+        <h4 class="text-lg font-bold text-white">v0.8.1</h4>
+      </div>
+      <ul class="mt-4 space-y-2.5 text-sm leading-relaxed text-faint">
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Update checks — "new version" badge in the title bar, manual check in Settings; publishing a release needs just one Worker variable</li>
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Host passwords encrypted at rest (DPAPI, per-user) — plaintext archives from older versions upgrade automatically</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>Fingerprint confirmation now covers test-connection too; connections without a fingerprint callback fail closed</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>Remote config (announcements, badge, purchase links) applies on restart instead of waiting out the 24h cache</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>Transfer-queue pause is now zero-CPU (signal gate); 44-case unit-test suite; icon cache memory capped</li>
+      </ul>
+    </div>
+
+    <div class="relative border-l-2 border-edge pl-8">
+      <span class="absolute -left-2 top-1 h-4 w-4 rounded-full border-4 border-ink bg-primary"></span>
+      <div class="flex items-center gap-3">
+        <h4 class="text-lg font-bold text-white">v0.8.0</h4>
+      </div>
+      <ul class="mt-4 space-y-2.5 text-sm leading-relaxed text-faint">
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Server-side command channel: same-host remote→remote cp, instant rm -rf of huge trees, automatic SFTP fallback</li>
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Checksums: SHA-256 / SHA-512 / SM3, server-side first for instant large-file hashing</li>
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Built-in AvalonEdit editor: remote text editing, upload on save, conflict detection</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>Language dictionaries externalized to a locales folder — user-created languages are discovered automatically</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>Synced browsing, file comparison, rubber-band selection, cross-pane drag &amp; drop</li>
+      </ul>
+    </div>
+
+    <p class="mt-12 text-sm text-faint">For earlier releases and all installer downloads, see the <a class="text-link hover:underline" href="https://github.com/iFreeshine/iFreeSftp/releases" target="_blank" rel="noopener">releases page</a>.</p>
+
+    <p class="mt-12 text-center text-sm text-faint">Copyright © 2026 <a class="text-link hover:underline" href="https://ifrees.top">ifrees.top</a></p>
+  </div>
+</section>
+
+<!-- ===== Footer ===== -->
+<footer class="border-t border-edge bg-ink py-10 text-center text-sm text-faint">
+  <div class="mx-auto max-w-6xl px-4">
+    <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
+      <a href="license.html" class="hover:text-body">License</a>
+      <!-- TODO: replace with the real Ko-fi creator page URL before launch -->
+      <a href="https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115" target="_blank" rel="noopener" class="hover:text-body">Support us (Ko-fi)</a>
+    </div>
+    <p class="mt-4">Copyright © 2026 ifrees.top · Open source under the GNU AGPL-3.0 license</p>
+  </div>
+</footer>
+
+</body>
+</html>

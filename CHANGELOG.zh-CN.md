@@ -6,6 +6,17 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本（`主.次.修订`）。
 
+## [0.8.3] - 2026-10-16
+
+Mica 材质与导入向导打磨。
+
+### 新增
+- Mica 半透明背景：设置 → 外观可开启 Windows 11 Mica 材质——标题栏、窗口边框与容器间隙变为半透明并透出系统背景，文件区保持纯色保证可读性。默认关闭；设置持久化，并随深浅主题切换自适应。
+
+### 修复
+- 导入向导：确认页表格加宽，各列与表头精确对齐，并加入淡淡的表头/行分隔线，表格更易扫读。
+- 主机面板：导入按钮改用系统官方 Import 语义图标（原为下载样式图标）。
+
 ## [0.8.2] - 2026-10-14
 
 会话导入首发与导入流程修复。
@@ -64,7 +75,8 @@
 - 语言词典外置 locales 目录，用户可自建语言文件并自动被发现
 - 同步浏览、文件比对、橡皮筋框选、跨窗格拖拽传输
 
-[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/iFreeshine/iFreeSftp/releases/tag/v0.8.0

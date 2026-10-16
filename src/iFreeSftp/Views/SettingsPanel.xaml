@@ -260,6 +260,32 @@
                                                 SelectionChanged="LangOptions_SelectionChanged" />
                                         </Grid>
                                     </Border>
+                                    <!-- Mica 半透明背景: 开启后窗口骨架层透明，系统 Mica 材质透出 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="MicaLabel" FontSize="13" />
+                                                <TextBlock x:Name="MicaDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ToggleSwitch
+                                                x:Name="MicaToggle"
+                                                Grid.Column="1"
+                                                Width="46"
+                                                MinWidth="0"
+                                                Padding="0"
+                                                Margin="0,0,-2,0"
+                                                VerticalAlignment="Center"
+                                                HorizontalAlignment="Right"
+                                                Header="{x:Null}"
+                                                OnContent="{x:Null}"
+                                                OffContent="{x:Null}"
+                                                Toggled="MicaToggle_Toggled" />
+                                        </Grid>
+                                    </Border>
                                 </StackPanel>
 
                                 <!-- 连接页: 全局连接默认值 (超时/重试/重试延迟/打开方式/操作超时) -->

@@ -438,6 +438,9 @@
   <data name="ThemeDesc" xml:space="preserve">
     <value>界面配色跟随系统，或手动指定深浅</value>
   </data>
+  <data name="MicaDesc" xml:space="preserve">
+    <value>让系统 Mica 材质透过窗口背景（Windows 11），关闭时使用纯色背景</value>
+  </data>
   <data name="LanguageDesc" xml:space="preserve">
     <value>界面显示语言</value>
   </data>
@@ -766,6 +769,9 @@
   </data>
   <data name="ThemeLabel" xml:space="preserve">
     <value>主题</value>
+  </data>
+  <data name="MicaLabel" xml:space="preserve">
+    <value>Mica 半透明背景</value>
   </data>
   <data name="CategoryAppearance" xml:space="preserve">
     <value>外观</value>

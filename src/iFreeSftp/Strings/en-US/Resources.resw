@@ -438,6 +438,9 @@ This cannot be undone.</value>
   <data name="ThemeDesc" xml:space="preserve">
     <value>Follow the system theme, or pick dark or light manually</value>
   </data>
+  <data name="MicaDesc" xml:space="preserve">
+    <value>Let the system Mica material show through the window background (Windows 11). Off = solid background</value>
+  </data>
   <data name="LanguageDesc" xml:space="preserve">
     <value>Language used across the app</value>
   </data>
@@ -766,6 +769,9 @@ Update and trust only if you are aware of this change; otherwise reject to preve
   </data>
   <data name="ThemeLabel" xml:space="preserve">
     <value>Theme</value>
+  </data>
+  <data name="MicaLabel" xml:space="preserve">
+    <value>Mica transparency</value>
   </data>
   <data name="CategoryAppearance" xml:space="preserve">
     <value>Appearance</value>

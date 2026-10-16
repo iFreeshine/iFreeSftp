@@ -262,7 +262,8 @@
                                         <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
                                         <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
                                     </Button.Resources>
-                                    <FontIcon FontSize="16" Glyph="&#xE896;" />
+                                    <!-- E8B5 = 系统官方 Import 语义图标 (箭头入托盘), E896 是 Download 易误解 -->
+                                    <FontIcon FontSize="16" Glyph="&#xE8B5;" />
                                 </Button>
                             </StackPanel>
                             <ListView

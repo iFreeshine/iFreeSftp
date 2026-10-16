@@ -20,10 +20,10 @@
         <Border x:Name="Mask" Background="#80000000" Tapped="Mask_Tapped" />
 
         <!-- 卡片: 不透明底 (DialogTitleBarBrush, 外壳与标题栏同色一体) + 标题栏拖拽;
-             宽 680: 预览表 7 列 (选择/名称/主机/端口/用户名/认证/状态) 需要横向空间 -->
+             宽 780: 预览表 7 列 (选择/名称/主机/端口/用户名/认证/状态) 需要横向空间 -->
         <Border
             x:Name="Card"
-            Width="680"
+            Width="780"
             HorizontalAlignment="Center"
             VerticalAlignment="Center"
             Background="{ThemeResource DialogTitleBarBrush}"
@@ -138,7 +138,11 @@
                                 x:Name="SummaryText"
                                 FontSize="12"
                                 TextWrapping="Wrap" />
-                            <Grid ColumnSpacing="8">
+                            <Grid
+                                ColumnSpacing="8"
+                                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                                BorderThickness="0,0,0,1"
+                                Padding="0,0,0,4">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="32" />
                                     <ColumnDefinition Width="*" />
@@ -188,12 +192,22 @@
                                     <Style TargetType="ListViewItem">
                                         <Setter Property="MinHeight" Value="0" />
                                         <Setter Property="Padding" Value="0" />
+                                        <!-- 内容拉伸到行全宽, 保证数据列与列头严格对齐 -->
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                                     </Style>
                                 </ListView.ItemContainerStyle>
                                 <ListView.ItemTemplate>
                                     <DataTemplate x:DataType="views:ImportRow">
-                                        <!-- 列定义必须与上方列头 Grid 一致 -->
+                                        <!-- 列定义必须与上方列头 Grid 一致;
+                                             行底线 = 表头同色 DividerStroke 再提高透明度
+                                             (Opacity 0.5, ≈8% 反差), 比表头线淡一档 -->
                                         <Grid ColumnSpacing="8">
+                                            <Grid.BorderBrush>
+                                                <SolidColorBrush
+                                                    Color="{ThemeResource DividerStrokeColorDefault}"
+                                                    Opacity="0.5" />
+                                            </Grid.BorderBrush>
+                                            <Grid.BorderThickness>0,0,0,1</Grid.BorderThickness>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="32" />
                                                 <ColumnDefinition Width="*" />

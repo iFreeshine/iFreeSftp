@@ -87,6 +87,26 @@ public static class AppSettingsService
     /// 「检查更新」按钮仍可用。</summary>
     public static bool UpdateCheckEnabled { get; private set; } = true;
 
+    /// <summary>外观-Mica 半透明背景开关，默认关闭。开启后窗口骨架层透明,
+    /// 让系统 Mica 材质从标题栏/边框/间隙透出（仅 Windows 11 有效）。</summary>
+    public static bool MicaEnabled { get; private set; } = false;
+
+    /// <summary>传输-断点续传开关，默认**关闭**（保守默认，见全局规范 4.4）。
+    /// 开启后: 目标已存在且严格小于源时才从断点追加。相等/更大一律全量重传——
+    /// "远端存在同名的较小旧文件"时追加会把旧内容缝进新文件产生损坏, 该风险
+    /// 无法从大小可靠区分, 故需用户显式知情开启（适合大文件经不稳定链路传输）。</summary>
+    public static bool ResumeEnabled { get; private set; } = false;
+
+    /// <summary>传输-tar 打包加速开关，默认开启。目录传输（本地→远程 / 远程→本地）
+    /// 文件数达到 <see cref="TarAccelMinFiles"/> 时走"单流打包"替代逐文件 SFTP
+    /// 往返; 任一环节不可用（无 tar / Windows 服务器 / 空间不足 / 命令失败）
+    /// 自动回退逐文件传输, 不改变结果语义。</summary>
+    public static bool TarAccelEnabled { get; private set; } = true;
+
+    /// <summary>传输-tar 加速生效的最小文件数（10-10000），默认 50。低于该阈值
+    /// 逐文件传输的往返开销可忽略, 不值得打包的额外磁盘与命令开销。</summary>
+    public static int TarAccelMinFiles { get; private set; } = 50;
+
     /// <summary>任一设置变更后触发 (跨面板联动, 如更新提醒开关 → 标题徽标重算;
     /// 订阅方需自行 marshal 到 UI 线程并保证处理幂等)。</summary>
     public static event Action? SettingsChanged;
@@ -184,6 +204,29 @@ public static class AppSettingsService
                 && updateCheck.ValueKind is JsonValueKind.True or JsonValueKind.False)
             {
                 UpdateCheckEnabled = updateCheck.GetBoolean();
+            }
+
+            if (doc.TryGetProperty("micaEnabled", out var mica)
+                && mica.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                MicaEnabled = mica.GetBoolean();
+            }
+
+            if (doc.TryGetProperty("resumeEnabled", out var resume)
+                && resume.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                ResumeEnabled = resume.GetBoolean();
+            }
+
+            if (doc.TryGetProperty("tarAccelEnabled", out var tarAccel)
+                && tarAccel.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                TarAccelEnabled = tarAccel.GetBoolean();
+            }
+
+            if (doc.TryGetProperty("tarAccelMinFiles", out var tarMin) && tarMin.TryGetInt32(out var tm))
+            {
+                TarAccelMinFiles = Math.Clamp(tm, 10, 10000);
             }
         }
         catch
@@ -291,6 +334,35 @@ public static class AppSettingsService
         SettingsChanged?.Invoke();
     }
 
+    /// <summary>记录 Mica 半透明背景开关并落盘 (触发 SettingsChanged 供窗口骨架层即时联动)。</summary>
+    public static void SetMicaEnabled(bool enabled)
+    {
+        MicaEnabled = enabled;
+        Save();
+        SettingsChanged?.Invoke();
+    }
+
+    /// <summary>记录断点续传开关并落盘。</summary>
+    public static void SetResumeEnabled(bool enabled)
+    {
+        ResumeEnabled = enabled;
+        Save();
+    }
+
+    /// <summary>记录 tar 打包加速开关并落盘。</summary>
+    public static void SetTarAccelEnabled(bool enabled)
+    {
+        TarAccelEnabled = enabled;
+        Save();
+    }
+
+    /// <summary>记录 tar 加速最小文件数（10-10000）并落盘。</summary>
+    public static void SetTarAccelMinFiles(int count)
+    {
+        TarAccelMinFiles = Math.Clamp(count, 10, 10000);
+        Save();
+    }
+
     private static void Save()
     {
         Interlocked.Exchange(ref _savePending, 1);
@@ -339,6 +411,10 @@ public static class AppSettingsService
                 keepAliveEnabled = KeepAliveEnabled,
                 keepAliveInterval = KeepAliveIntervalSeconds,
                 updateCheckEnabled = UpdateCheckEnabled,
+                micaEnabled = MicaEnabled,
+                resumeEnabled = ResumeEnabled,
+                tarAccelEnabled = TarAccelEnabled,
+                tarAccelMinFiles = TarAccelMinFiles,
             }, JsonOptions));
     }
 }

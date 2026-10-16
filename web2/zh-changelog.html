@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>更新日志 - iFreeSftp</title>
+    <link rel="icon" type="image/png" href="logo.png">
+<meta name="description" content="iFreeSftp 更新日志：版本演进与功能迭代记录，包含新增功能与改进项。">
+<link rel="stylesheet" href="tailwind.css">
+<script>
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('details[open]').forEach((d) => {
+    if (!d.contains(e.target)) d.removeAttribute('open');
+  });
+});
+</script>
+<style> html { scroll-behavior: smooth; } </style>
+</head>
+<body class="bg-ink font-sans text-body antialiased">
+
+<!-- ===== 顶部导航 ===== -->
+<header class="sticky top-0 z-50 bg-ink">
+  <div class="mx-auto flex h-16 max-w-6xl items-center px-4">
+    <a href="zh-index.html" class="flex items-center gap-2.5">
+      <img src="logo.png" alt="iFreeSftp" class="h-9 w-9">
+      <span class="text-xl font-semibold text-body">iFreeSftp</span>
+    </a>
+    <nav class="ml-auto hidden items-center gap-1 text-sm md:flex">
+      <a href="zh-changelog.html" class="px-3 py-2.5 text-body hover:text-white">更新日志</a>
+      <a href="changelog.html" class="px-3 hidden text-body hover:text-white sm:block" title="English">English</a>
+    </nav>
+    <div class="ml-auto flex items-center gap-3 text-sm md:ml-0">
+      <details class="group relative md:hidden">
+        <summary class="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-lg text-body transition-colors hover:bg-edge hover:text-white [&::-webkit-details-marker]:hidden">
+          <svg class="h-5 w-5 group-open:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          <svg class="hidden h-5 w-5 group-open:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </summary>
+        <nav class="absolute right-0 top-12 z-50 w-44 rounded-lg bg-panel py-2 shadow-xl">
+          <a href="zh-changelog.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">更新日志</a>
+          <a href="zh-license.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">软件许可</a>
+          <a href="changelog.html" class="block px-4 py-2.5 text-sm text-body hover:bg-edge hover:text-white">English</a>
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>
+
+<!-- ===== 页头 ===== -->
+<section class="relative overflow-hidden bg-ink py-10 text-center sm:py-16">
+  <div class="pointer-events-none absolute inset-0" aria-hidden="true">
+    <img src="app-main-light.png" alt="" class="h-full w-full object-cover object-top opacity-30">
+    <div class="absolute inset-0 bg-gradient-to-b from-ink/30 via-ink/40 to-ink"></div>
+  </div>
+  <div class="relative">
+    <h1 class="text-2xl font-bold text-white sm:text-3xl">更新日志</h1>
+    <p class="mt-3 text-body">iFreeSftp 的版本演进与功能迭代</p>
+  </div>
+</section>
+
+<!-- ===== 内容 ===== -->
+<section class="bg-ink py-10 sm:py-16">
+  <div class="mx-auto max-w-3xl px-4">
+
+    <div class="relative border-l-2 border-edge pl-8">
+      <span class="absolute -left-2 top-1 h-4 w-4 rounded-full border-4 border-ink bg-primary"></span>
+      <div class="flex items-center gap-3">
+        <h4 class="text-lg font-bold text-white">v0.8.3</h4>
+        <span class="rounded bg-badge/20 px-2 py-0.5 text-xs text-badge">当前版本</span>
+      </div>
+      <ul class="mt-4 space-y-2.5 text-sm leading-relaxed text-faint">
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>Mica 半透明背景开关（设置 → 外观）——Windows 11 Mica 材质透过标题栏、窗口边框与容器间隙，文件区保持纯色保证可读性</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>导入向导：确认页表格加宽、列与表头精确对齐、加入淡淡的表头/行分隔线</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>导入按钮改用系统官方 Import 语义图标</li>
+      </ul>
+    </div>
+
+    <div class="relative border-l-2 border-edge pl-8">
+      <span class="absolute -left-2 top-1 h-4 w-4 rounded-full border-4 border-ink bg-primary"></span>
+      <div class="flex items-center gap-3">
+        <h4 class="text-lg font-bold text-white">v0.8.2</h4>
+      </div>
+      <ul class="mt-4 space-y-2.5 text-sm leading-relaxed text-faint">
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>会话导入——从 WinSCP、FileZilla、PuTTY、OpenSSH config 与自有存档一键迁移；口令与登录后命令绝不导入</li>
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>先同意后扫描的导入向导：预览表标注重复项与缺失密钥文件，勾选导入并逐条报告结果</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>未勾选的来源完全不探测——不碰文件、不读注册表</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>PuTTY 独立 UserName 键优先；同一主机多来源按扫描内判重</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Fixed</span>导入落盘后不再把工作集误标为脏</li>
+      </ul>
+    </div>
+
+    <div class="relative border-l-2 border-edge pl-8">
+      <span class="absolute -left-2 top-1 h-4 w-4 rounded-full border-4 border-ink bg-primary"></span>
+      <div class="flex items-center gap-3">
+        <h4 class="text-lg font-bold text-white">v0.8.1</h4>
+      </div>
+      <ul class="mt-4 space-y-2.5 text-sm leading-relaxed text-faint">
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>版本探测与更新提醒——标题栏"新版本"徽标、设置页手动检查，发新版只需改一个 Worker 变量</li>
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>主机密码加密存储（DPAPI 按用户落盘），旧版明文存档自动升级</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>指纹确认覆盖"测试连接"；无指纹回调的连接路径一律拒绝，杜绝绕过校验</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>远程配置（公告、勋章、购买链接）重启即生效，不再等 24h 缓存过期</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>传输队列暂停零 CPU 占用（信号门）；新增 44 用例单测；图标缓存内存封顶</li>
+      </ul>
+    </div>
+
+    <div class="relative border-l-2 border-edge pl-8">
+      <span class="absolute -left-2 top-1 h-4 w-4 rounded-full border-4 border-ink bg-primary"></span>
+      <div class="flex items-center gap-3">
+        <h4 class="text-lg font-bold text-white">v0.8.0</h4>
+      </div>
+      <ul class="mt-4 space-y-2.5 text-sm leading-relaxed text-faint">
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>服务端命令通道：远程→远程同机 cp 直达、海量文件 rm -rf 秒删，自动回退 SFTP 逐条方案</li>
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>文件校验码：SHA-256 / SHA-512 / SM3（国密），服务端命令优先秒算大文件</li>
+        <li><span class="mr-2 rounded bg-badge/20 px-1.5 py-0.5 text-xs text-badge">New</span>内置 AvalonEdit 编辑器：远程文本文件编辑、保存自动回传、冲突检测</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>语言词典外置 locales 目录，用户可自建语言文件并自动被发现</li>
+        <li><span class="mr-2 rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">Improved</span>同步浏览、文件比对、橡皮筋框选、跨窗格拖拽传输</li>
+      </ul>
+    </div>
+
+    <p class="mt-12 text-sm text-faint">更早的历史版本与全部安装包下载，请见 <a class="text-link hover:underline" href="https://github.com/iFreeshine/iFreeSftp/releases" target="_blank" rel="noopener">发布页</a>。</p>
+
+    <p class="mt-12 text-center text-sm text-faint">Copyright © 2026 <a class="text-link hover:underline" href="https://ifrees.top">ifrees.top</a></p>
+  </div>
+</section>
+
+<!-- ===== 页脚 ===== -->
+<footer class="border-t border-edge bg-ink py-10 text-center text-sm text-faint">
+  <div class="mx-auto max-w-6xl px-4">
+    <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
+      <a href="zh-license.html" class="hover:text-body">软件许可</a>
+      <!-- 上线前替换为爱发电创作者主页 URL -->
+      <a href="https://afdian.com/item/3a69f926c4ac11f1878052540025c377" target="_blank" rel="noopener" class="hover:text-body">赞助支持（爱发电）</a>
+    </div>
+    <p class="mt-4">Copyright © 2026 ifrees.top · 基于 GNU AGPL-3.0 许可证开源</p>
+  </div>
+</footer>
+
+</body>
+</html>

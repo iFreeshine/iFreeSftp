@@ -92,6 +92,12 @@ public sealed partial class Header : Window
         LocalizationService.CultureChanged += ApplyTitleBarResources;
         ApplyTitleBarResources();
 
+        // Mica 半透明背景: 设置开关控制窗口骨架层 (RootGrid) 透明化,
+        // 主题切换时重赋纯色画刷 (Mica 开启时保持透明让系统材质透出)。
+        ThemeService.ThemeChanged += _ => ApplyMicaBackground();
+        AppSettingsService.SettingsChanged += OnMicaSettingChanged;
+        ApplyMicaBackground();
+
         // 同步浏览状态机: 按钮状态随两侧文件夹快照重算 (StateChanged),
         // 不匹配时终端日志 + 弹窗 (MismatchDetected)。
         // 文件比对按钮同场驱动: 同步点亮才可选 (规则①), 勾选态随比对激活态。
@@ -110,6 +116,7 @@ public sealed partial class Header : Window
             FileCompareService.ActiveChanged -= UpdateSyncButton;
             RegistrationService.StateChanged -= OnUpdateBadgeSignal;
             AppSettingsService.SettingsChanged -= OnUpdateBadgeSignal;
+            AppSettingsService.SettingsChanged -= OnMicaSettingChanged;
             AppSettingsService.FlushNow(); // 防抖中的设置改动立即落盘, 退出不丢
         };
         UpdateUpdateBadge();
@@ -124,6 +131,37 @@ public sealed partial class Header : Window
         {
             main.OpenPickerRequested += pane => HostPickerOverlay.OpenFor(pane);
         }
+    }
+
+    /// <summary>
+    /// 按设置切换窗口骨架层背景: Mica 开启时置透明让系统材质从标题栏/边框/间隙透出,
+    /// 关闭时用主题纯色 (直配色值而非 ThemeDictionaries 解析——主题字典画刷切主题后
+    /// 不重新解析, 见 SettingsPanel.SetCategoryState 实测注释)。
+    /// RootFrame 默认样式自带不透明纯色 (AltHigh), 是 ShellBorder 之下的第二层遮挡,
+    /// Mica 开启时必须一并透明, 否则材质只透到 Frame 就被拦住。
+    /// </summary>
+    private void ApplyMicaBackground()
+    {
+        RootGrid.Background = AppSettingsService.MicaEnabled
+            ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors.Transparent)
+            : new Microsoft.UI.Xaml.Media.SolidColorBrush(ThemeService.IsDark
+                ? Windows.UI.Color.FromArgb(255, 0x26, 0x30, 0x3D) // Dark HeaderAreaBrush
+                : Windows.UI.Color.FromArgb(255, 0xE9, 0xE9, 0xE9)); // Light HeaderAreaBrush
+
+        if (AppSettingsService.MicaEnabled)
+        {
+            RootFrame.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors.Transparent);
+        }
+        else
+        {
+            RootFrame.ClearValue(Frame.BackgroundProperty); // 恢复默认样式背景
+        }
+    }
+
+    /// <summary>SettingsChanged 可从任意线程触发, marshal 回 UI 线程再动控件。</summary>
+    private void OnMicaSettingChanged()
+    {
+        DispatcherQueue.TryEnqueue(ApplyMicaBackground);
     }
 
     // —— 窗口尺寸: 首启默认值 + 记忆上次关闭尺寸 ——

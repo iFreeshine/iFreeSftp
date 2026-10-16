@@ -230,6 +230,7 @@ public sealed partial class SettingsPanel : UserControl
         KeepAliveToggle.IsOn = AppSettingsService.KeepAliveEnabled;
         KeepAliveIntervalSlider.Value = AppSettingsService.KeepAliveIntervalSeconds;
         UpdateCheckToggle.IsOn = AppSettingsService.UpdateCheckEnabled;
+        MicaToggle.IsOn = AppSettingsService.MicaEnabled;
         UpdateKeepAliveIntervalEnabled();
         UpdateDeleteModeHint();
         UpdateEditorPathCardState();
@@ -399,6 +400,17 @@ public sealed partial class SettingsPanel : UserControl
         }
 
         AppSettingsService.SetUpdateCheckEnabled(UpdateCheckToggle.IsOn);
+    }
+
+    /// <summary>Mica 开关即时落盘 (SettingsChanged 事件联动窗口骨架层透明化)。</summary>
+    private void MicaToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetMicaEnabled(MicaToggle.IsOn);
     }
 
     /// <summary>手动检查更新: 强制走网络刷新 (绕过 24h 节流), 结果显示在描述行, 不弹窗。</summary>
@@ -597,6 +609,8 @@ public sealed partial class SettingsPanel : UserControl
         TransferTitle.Text = LocalizationService.GetString("SettingsTransferTitle");
         ThemeDesc.Text = LocalizationService.GetString("ThemeDesc");
         LanguageDesc.Text = LocalizationService.GetString("LanguageDesc");
+        MicaLabel.Text = LocalizationService.GetString("MicaLabel");
+        MicaDesc.Text = LocalizationService.GetString("MicaDesc");
         TimeoutDesc.Text = LocalizationService.GetString("TimeoutDesc");
         MaxRetriesDesc.Text = LocalizationService.GetString("MaxRetriesDesc");
         RetryDelayDesc.Text = LocalizationService.GetString("RetryDelayDesc");
