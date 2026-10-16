@@ -61,7 +61,7 @@ locales\               # en-US / zh-CN 语言词典——可直接编辑翻译�
 
 ![主界面](docs/screenshots/app-main-dark.png)
 
-![浅色主题](docs/screenshots/app-main-light.png)
+![浅色主题](docs/screenshots/app-2.png)
 
 ![设置](docs/screenshots/app-settings.png)
 

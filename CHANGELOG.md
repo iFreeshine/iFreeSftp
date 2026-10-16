@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 Mica material and import wizard polish.
 
 ### Added
-- Mica background toggle: Settings → Appearance can enable the Windows 11 Mica material — the title bar, window border and container gaps turn translucent and show the system backdrop, while file areas stay solid for readability. Off by default; the setting persists and adapts to light/dark theme switches.
+- Mica background toggle: Settings → Appearance can enable the Windows 11 Mica material — the title bar, window border and container gaps turn translucent and show the system backdrop.
 
 ### Fixed
 - Import wizard: the confirmation table is wider, columns now align precisely with the header, and subtle header/row separator lines make the table easier to scan.
