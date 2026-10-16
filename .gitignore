@@ -25,3 +25,7 @@ tools/KeyGen.exe
 # Cloudflare Worker / 自托管激活配置 (含部署密钥与业务逻辑, 仅本机)
 tools/worker/
 tools/selfhost/
+
+# 官网两套站点 (Cloudflare Pages 从主仓部署, 与开源仓库无关, 永不进镜像)
+website/
+web2/
