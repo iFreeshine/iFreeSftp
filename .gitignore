@@ -13,3 +13,15 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 闭源核心 (DLL 落点 / 源码) —— 若误复制进镜像目录, git 直接忽略, 防误提交
+core/
+core-src/
+
+# 签名私钥 (泄露 = 任何人可伪造注册码, 绝不入库)
+tools/KeyGen/
+tools/KeyGen.exe
+
+# Cloudflare Worker / 自托管激活配置 (含部署密钥与业务逻辑, 仅本机)
+tools/worker/
+tools/selfhost/
