@@ -20,6 +20,12 @@ public sealed partial class IdeTabStrip : UserControl
     /// <summary>标签关闭请求。内部已把标签移出标签条, 使用方在此清理内容资源。</summary>
     public event Action<TabViewItem>? TabCloseRequested;
 
+    /// <summary>
+    /// 标签关闭前确认钩子：返回 false 则取消本次关闭（标签保持原位）。
+    /// 使用方（如 FolderContainer）据此拦截有活动传输任务的标签, 弹三选确认。
+    /// </summary>
+    public event Func<TabViewItem, Task<bool>>? TabCloseConfirming;
+
     // 标签画刷: 透明指示条 / 选中指示条 (强调蓝 #0078D4, 与 tooltip、主机按钮一致)。
     // 其余配色 (分隔线、常态、悬停、选中底色) 均为 XAML 主题资源, 随主题自动切换。
     private static readonly SolidColorBrush TransparentBrush = new(Colors.Transparent);
@@ -112,6 +118,8 @@ public sealed partial class IdeTabStrip : UserControl
             FontSize = TitleFontSize,
             Margin = new Thickness(8, 0, 0, 0), // 仅水平: 文字与图标的间距
             RenderTransform = new TranslateTransform { Y = TitleVerticalOffset }, // 垂直微调, 不影响布局
+            // tab 宽度不足 (多标签挤压) 时省略号截断, 全称经 tab tooltip 查看
+            TextTrimming = TextTrimming.CharacterEllipsis,
         };
         var header = new Grid
         {
@@ -132,6 +140,8 @@ public sealed partial class IdeTabStrip : UserControl
             Content = content,
             Tag = titleBlock, // 供 SetTabTitle 更新标题
         };
+        // hover 显示标题全称 (tab 被挤压省略号截断时看全文); 全局蓝色 tooltip 令牌
+        ToolTipService.SetToolTip(tab, App.MakeAccentTip(title));
 
         // 模板在元素入树后才应用: Loaded 时解析模板层下划线与关闭按钮,
         // 设定关闭图标字号与初始下划线颜色, 并订阅后续选中态变化。
@@ -157,13 +167,15 @@ public sealed partial class IdeTabStrip : UserControl
         return tab;
     }
 
-    /// <summary>更新标签标题。</summary>
+    /// <summary>更新标签标题 (同步刷新 hover tooltip 全称)。</summary>
     public void SetTabTitle(TabViewItem tab, string title)
     {
         if (tab.Tag is TextBlock titleBlock)
         {
             titleBlock.Text = title;
         }
+
+        ToolTipService.SetToolTip(tab, App.MakeAccentTip(title));
     }
 
     /// <summary>更新标签图标字形。</summary>
@@ -181,9 +193,20 @@ public sealed partial class IdeTabStrip : UserControl
     private void Tabs_AddTabButtonClick(TabView sender, object args)
         => NewTabRequested?.Invoke(this, EventArgs.Empty);
 
-    private void Tabs_TabCloseRequested(TabView sender, TabViewTabCloseRequestedEventArgs args)
+    private async void Tabs_TabCloseRequested(TabView sender, TabViewTabCloseRequestedEventArgs args)
     {
-        if (args.Item is TabViewItem tab && sender.TabItems.Remove(tab))
+        if (args.Item is not TabViewItem tab)
+        {
+            return;
+        }
+
+        // 关闭前确认钩子: 返回 false 则取消关闭, 标签保持原位不移出。
+        if (TabCloseConfirming is not null && !await TabCloseConfirming(tab))
+        {
+            return;
+        }
+
+        if (sender.TabItems.Remove(tab))
         {
             TabCloseRequested?.Invoke(tab);
         }

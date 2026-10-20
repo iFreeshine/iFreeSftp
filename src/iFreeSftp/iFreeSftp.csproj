@@ -23,7 +23,7 @@
     <!-- 构建产物也自包含: SDK 安装在用户目录而非系统级, 框架依赖模式会弹"安装 .NET Desktop Runtime"提示 -->
     <SelfContained Condition="'$(SelfContained)' == ''">true</SelfContained>
     <!-- 语义版本 (设置→关于 卡片显示, 官网/发布物共用): 从 0.8.0 起 -->
-    <Version>0.8.3</Version>
+    <Version>0.8.5</Version>
   </PropertyGroup>
 
   <ItemGroup>

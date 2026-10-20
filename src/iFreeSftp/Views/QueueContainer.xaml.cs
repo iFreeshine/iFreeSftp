@@ -18,7 +18,7 @@ namespace iFreeSftp.Views;
 /// 防闪烁刷新机制（两层）：
 /// ① 行内变化（状态/速度/时刻）经 TransferTask 的 INPC 由 {Binding} 直达所在行，
 ///   列表结构与其余行完全不动（传输中每 400ms 的速度刷新不再整表重绑）；
-/// ② 结构变化（入队/完成转出/失败转出/清空/重置）按变更类型对三个页签集合
+/// ② 结构变化（入队/完成转出/失败转出/移除/清除已完结/重置）按变更类型对三个页签集合
 ///   （ObservableCollection）做增量增删——ItemsSource 引用仅在页签切换时更换，
 ///   传输全程零整体替换。变更事件来自任意线程，先攒批再经 DispatcherQueue
 ///   一次调度逐条应用（入队风暴合并为一个 UI 调度周期）。
@@ -127,15 +127,17 @@ public sealed partial class QueueContainer : UserControl
 
     /// <summary>
     /// 队列右键弹出菜单前按状态刷新各菜单项可见性：传输中（未暂停）= 暂停；暂停中 =
-    /// 继续传输；停止在有等待中任务时可用（正在传输的让其传完）；删除所有在队列
-    /// 非空时可用；重置并重新请求所有仅在队列静止（无等待/传输中）且有完成或失败
-    /// 任务时可用（避免与运行中的批次并行重跑）。队列空时不弹出。
+    /// 继续传输；停止在仍有等待或传输中任务时可用（大文件单任务传输中也可见）；
+    /// 清除已完成在有完成/失败/已取消任务时可用；清除所有在队列非空时可用
+    /// （连排队/传输中一起清, 传输中行删除后 worker 在块边界自动取消退出）；
+    /// 重置并重新请求所有仅在队列静止（无等待/传输中）且有已完结任务时可用
+    /// （避免与运行中的批次并行重跑）。队列空时不弹出。
     /// (用 RightTapped 手动 ShowAt 而非 ContextFlyout——WinUI 3 的 FlyoutBase.Opening
     /// 事件参数为 object, 无法在打开前按状态取消)
     /// </summary>
     private void Root_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        var (total, waiting, transferring, done, failed) = TransferQueueService.GetSummary();
+        var (total, waiting, transferring, done, failed, cancelled) = TransferQueueService.GetSummary();
         if (total == 0)
         {
             return;
@@ -145,9 +147,10 @@ public sealed partial class QueueContainer : UserControl
         // 暂停/继续互斥: 暂停标志优先 (暂停中仍有任务在传完也显示"继续传输")
         PauseItem.Visibility = !paused && transferring > 0 ? Visibility.Visible : Visibility.Collapsed;
         ResumeItem.Visibility = paused ? Visibility.Visible : Visibility.Collapsed;
-        StopItem.Visibility = waiting > 0 ? Visibility.Visible : Visibility.Collapsed;
-        DeleteAllItem.Visibility = Visibility.Visible;
-        RetryAllItem.Visibility = waiting + transferring == 0 && done + failed > 0
+        StopItem.Visibility = waiting + transferring > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ClearDoneItem.Visibility = done + failed + cancelled > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ClearAllItem.Visibility = total > 0 ? Visibility.Visible : Visibility.Collapsed;
+        RetryAllItem.Visibility = waiting + transferring == 0 && done + failed + cancelled > 0
             ? Visibility.Visible
             : Visibility.Collapsed;
 
@@ -179,11 +182,66 @@ public sealed partial class QueueContainer : UserControl
         TerminalLogService.Log(LocalizationService.GetString("LogQueueStopped"));
     }
 
-    private void DeleteAllItem_Click(object sender, RoutedEventArgs e)
+    private void ClearDoneItem_Click(object sender, RoutedEventArgs e)
         => TransferQueueService.ClearAll();
+
+    private void ClearAllItem_Click(object sender, RoutedEventArgs e)
+        => TransferQueueService.RemoveAll();
 
     private void RetryAllItem_Click(object sender, RoutedEventArgs e)
         => _ = TransferQueueService.RerunAllAsync();
+
+    // —— 行右键菜单: 按行任务状态显隐 (取消/重试/移除) ——
+
+    /// <summary>行右键弹出菜单前按行任务状态刷新菜单项可见性：取消 = 等待/传输中；
+    /// 重试 = 失败/已取消；移除 = 已完结（完成/失败/已取消）。三项均不可用（校验中）
+    /// 不弹出。点击处理经 RowMenuFlyout.Target 取行任务（ShowAt 的目标元素）。</summary>
+    private void Row_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: TransferTask task } row)
+        {
+            return;
+        }
+
+        var status = task.Status;
+        var cancel = status is TransferStatus.Waiting or TransferStatus.Transferring;
+        var retry = status is TransferStatus.Failed or TransferStatus.Cancelled;
+        var remove = status is TransferStatus.Done or TransferStatus.Failed or TransferStatus.Cancelled;
+        RowCancelItem.Visibility = cancel ? Visibility.Visible : Visibility.Collapsed;
+        RowRetryItem.Visibility = retry ? Visibility.Visible : Visibility.Collapsed;
+        RowRemoveItem.Visibility = remove ? Visibility.Visible : Visibility.Collapsed;
+        if (!cancel && !retry && !remove)
+        {
+            return; // 校验中: 三项均不可用, 不弹菜单
+        }
+
+        RowMenuFlyout.ShowAt(row, e.GetPosition(row));
+        e.Handled = true;
+    }
+
+    private void RowCancelItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (RowMenuFlyout.Target is FrameworkElement { DataContext: TransferTask task })
+        {
+            TransferQueueService.CancelTask(task.Id);
+        }
+    }
+
+    private void RowRetryItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (RowMenuFlyout.Target is FrameworkElement { DataContext: TransferTask task })
+        {
+            _ = TransferQueueService.RerunOneAsync(task.Id);
+        }
+    }
+
+    private void RowRemoveItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (RowMenuFlyout.Target is FrameworkElement { DataContext: TransferTask task })
+        {
+            TransferQueueService.Remove(task.Id);
+        }
+    }
 
     private void OnCultureChanged()
     {
@@ -236,9 +294,10 @@ public sealed partial class QueueContainer : UserControl
 
     /// <summary>
     /// 应用一条结构变更（UI 线程）：入队=队列中尾部追加；完成/失败=队列中移除 +
-    /// 对应页签尾部追加（其余行容器原样复用, 不重建视图）；清空=三集合清空；
-    /// 重置=三集合按服务端快照全量重填（手动低频）。行内属性变化（状态/速度/
-    /// 时刻）不走此路径——INPC 直达所在行。
+    /// 对应页签尾部追加（其余行容器原样复用, 不重建视图）；移除=从三集合各删除
+    /// （行已在其中之一, 其余为空操作）；清空=三集合清空；重置=三集合按服务端
+    /// 快照全量重填（手动低频）。行内属性变化（状态/速度/时刻）不走此路径——
+    /// INPC 直达所在行。
     /// </summary>
     private void ApplyChange(QueueChangeKind kind, TransferTask? task)
     {
@@ -266,6 +325,16 @@ public sealed partial class QueueContainer : UserControl
                 {
                     _activeView.Remove(task);
                     _failedView.Add(task);
+                }
+
+                break;
+
+            case QueueChangeKind.Removed:
+                if (task is not null)
+                {
+                    _activeView.Remove(task);
+                    _failedView.Remove(task);
+                    _doneView.Remove(task);
                 }
 
                 break;
@@ -317,8 +386,12 @@ public sealed partial class QueueContainer : UserControl
         PauseItem.Text = LocalizationService.GetString("QMenuPause");
         ResumeItem.Text = LocalizationService.GetString("QMenuResume");
         StopItem.Text = LocalizationService.GetString("QMenuStop");
-        DeleteAllItem.Text = LocalizationService.GetString("QMenuDeleteAll");
+        ClearDoneItem.Text = LocalizationService.GetString("QMenuClearDone");
+        ClearAllItem.Text = LocalizationService.GetString("QMenuClearAll");
         RetryAllItem.Text = LocalizationService.GetString("QMenuRetryAll");
+        RowCancelItem.Text = LocalizationService.GetString("QMenuRowCancel");
+        RowRetryItem.Text = LocalizationService.GetString("QMenuRowRetry");
+        RowRemoveItem.Text = LocalizationService.GetString("QMenuRowRemove");
     }
 
     /// <summary>刷新三个状态页签的计数徽标（文字后跟实时数量: 队列/失败/成功）。
@@ -511,7 +584,8 @@ public sealed partial class QueueContainer : UserControl
 
     /// <summary>拖动分割线（col 为左侧列索引）: 在按下快照上叠加累计位移。
     /// 星|星 → 左加右减（星号总量不变, 分割线精确跟随鼠标）; 星|定 → 右侧定宽列
-    /// 让出/占用空间; 定宽侧 → 直接调像素。调整后同步应用到表头与已实例化行。</summary>
+    /// 让出/占用空间; 定|定 → 左加右减, 两侧定宽列均可调（速度列仅能经大小|速度
+    /// 分割线调宽——其右缘是隐藏原因列, 不可命中）。调整后同步应用到表头与已实例化行。</summary>
     private void DragColumn(int col, double dxTotal)
     {
         if (_dragStartVals is null || col >= _dragStartVals.Length)
@@ -537,6 +611,11 @@ public sealed partial class QueueContainer : UserControl
         else
         {
             cfgs[col].Val = Math.Clamp(start[col] + dxTotal, 50, 420);
+            // 定|定: 左加右减, 分割线跟随鼠标且两侧列宽均随拖拽变化
+            if (col + 1 < cfgs.Length && !cfgs[col + 1].Star)
+            {
+                cfgs[col + 1].Val = Math.Clamp(start[col + 1] - dxTotal, 50, 420);
+            }
         }
 
         ApplyAll();

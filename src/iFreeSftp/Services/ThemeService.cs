@@ -15,6 +15,17 @@ public static class ThemeService
     /// <summary>当前是否为暗色主题。</summary>
     public static bool IsDark { get; private set; } = true;
 
+    /// <summary>
+    /// 标题区域色（代码侧单一来源）：Mica 关闭时 Header / MainContainer 用它作纯色回退
+    /// (标题栏/边框/间隙底色)。取值与 App.xaml ThemeDictionaries 的 HeaderAreaBrush 同值,
+    /// 改色两处同步 (XAML 的 ThemeResource 无法引用 C# 色值, 且主题字典画刷切主题后
+    /// 不重新解析, 代码侧须按 IsDark 重建画刷——见 ApplyMicaBackground 系列注释)。
+    /// </summary>
+    public static Windows.UI.Color HeaderAreaColor()
+        => IsDark
+            ? Windows.UI.Color.FromArgb(255, 0x26, 0x30, 0x3D)
+            : Windows.UI.Color.FromArgb(255, 0xE9, 0xE9, 0xE9);
+
     /// <summary>主题切换后触发，参数为新的 IsDark 值。</summary>
     public static event Action<bool>? ThemeChanged;
 

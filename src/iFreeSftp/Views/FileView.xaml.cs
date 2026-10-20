@@ -103,6 +103,15 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     /// <summary>模式变化事件，用于更新所属 Tab 标题。</summary>
     public event Action<FileViewMode>? ModeChanged;
 
+    /// <summary>
+    /// 主机 tab 标题 ("名称 (IP)")。新建连接时先行落位 (连接成败均保留 tab),
+    /// 之后语言切换/模式变化一律优先显示本标题; null = 非主机 tab, 用通用标题。
+    /// </summary>
+    public string? HostTabTitle { get; set; }
+
+    /// <summary>连接失败落位: 错误信息显示到状态栏 (tab 保留, 供重试前查看原因)。</summary>
+    public void ShowConnectFailure(string message) => UpdateStatus(message);
+
     /// <summary>同步导航请求: 本侧进入/返回目录成功且路径相对基准根变化后发出,
     /// 参数为本侧新目录绝对路径; 由 FolderContainer 转发给对侧做镜像导航。</summary>
     public event Action<string>? SyncNavigationRequested;
@@ -187,6 +196,14 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
 
     /// <summary>对侧窗格的活动视图 ("传输到另一侧"目标); 无窗格/对侧无标签时为 null。</summary>
     public FileView? OppositeView => HostPane?.OppositePane?.ActiveView;
+
+    /// <summary>本 tab 日志池的 scope (每 tab 独立命令窗): 视图自身与承载会话的日志
+    /// 只进本 tab 池; 跨窗格传输把自身与对侧的 scope 都发给 TerminalLogService (双发)。</summary>
+    public string LogScope { get; } = Guid.NewGuid().ToString("N");
+
+    /// <summary>跨窗格传输日志的 scope 组合: 自身 + 对侧 (两个 tab 都发, 保留完整上下文)。</summary>
+    private string[] TransferScopes(FileView opp)
+        => LogScope == opp.LogScope ? new[] { LogScope } : new[] { LogScope, opp.LogScope };
 
     /// <summary>本视图远程会话 (远程模式连接判断/传输用; 本地模式实例存在但未连接)。</summary>
     public SftpSessionService SftpService => _sftp;
@@ -401,11 +418,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     /// </summary>
     private static void SetTipText(FrameworkElement element, string text)
     {
-        element.SetValue(ToolTipService.ToolTipProperty, new ToolTip
-        {
-            Content = text,
-            Style = (Style)Application.Current.Resources["AccentToolTipStyle"],
-        });
+        element.SetValue(ToolTipService.ToolTipProperty, App.MakeAccentTip(text));
         element.SetValue(
             Microsoft.UI.Xaml.Automation.AutomationProperties.NameProperty, text);
     }
@@ -512,7 +525,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         // 避免探测命令与首次列表加载抢通道
         _hashProbePending = true;
         TerminalLogService.Log(string.Format(
-            LocalizationService.GetString("LogConnected"), host.Host));
+            LocalizationService.GetString("LogConnected"), host.Host), LogScope);
         // 先切远程再收引导: 空态 tab 就地转远程, 全程不经过本地列表;
         // 会话已连接, Mode 切换即经 UpdateModeUI 重建远程树根并加载列表。
         Mode = FileViewMode.Remote;
@@ -593,7 +606,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 : ex.Message;
             UpdateStatus(message);
             // 报错与处置同步进命令行面板 (状态栏提示易被错过, 终端留存可回看)
-            TerminalLogService.Log(message);
+            TerminalLogService.Log(message, LogScope);
             return false;
         }
         finally
@@ -2978,19 +2991,25 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
 
         bool destRemote = opp.Mode == FileViewMode.Remote;
         _transferring = true;
+        // 跨窗格传输日志双发: 本 tab 与对侧 tab 的日志池都记 (硬拆会丢上下文)。
+        var transferScopes = TransferScopes(opp);
         try
         {
             // —— 阶段一: 逐项冲突决策 (弹窗串行, 尚不入队; 取消则整批不入队) ——
             // 决策缓存: null = 尚未询问 (后续冲突逐项弹窗); true/false = 全部覆盖/全部跳过
             bool? overwriteAll = null;
             int skipped = 0;
-            var accepted = new List<(FileItemViewModel Item, string Dest, bool DestExists)>();
+            // ForceOverwrite: 用户对本条明确选了"覆盖"——执行体据此跳过续传追加决策,
+            // 防"远端较小旧文件"被误判为中断半成品而缝合成损坏内容 (审核 N1)。
+            // 目标不存在时恒 false: 首传语义, 任务中断重跑时目标侧半成品仍可正常续传。
+            var accepted = new List<(FileItemViewModel Item, string Dest, bool DestExists, bool ForceOverwrite)>();
             foreach (var item in items)
             {
                 string dest = destRemote
                     ? JoinRemotePath(destDir, item.Name)
                     : Path.Combine(destDir, item.Name);
 
+                bool forceOverwrite = false;
                 bool destExists = await TargetEntryExistsAsync(opp, dest);
                 if (destExists)
                 {
@@ -3013,15 +3032,21 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                             skipped++;
                             continue;
                         }
+
+                        forceOverwrite = result == TransferConflictResult.Overwrite;
                     }
                     else if (overwriteAll == false)
                     {
                         skipped++;
                         continue;
                     }
+                    else
+                    {
+                        forceOverwrite = true; // 命中"全部覆盖"缓存
+                    }
                 }
 
-                accepted.Add((item, dest, destExists));
+                accepted.Add((item, dest, destExists, forceOverwrite));
             }
 
             // —— 阶段二: 整批入队 (等待) 并构建执行体, worker 池并发执行 ——
@@ -3031,15 +3056,18 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             // 创建任务保证目标结构完整; 含文件的父目录由文件任务按需创建 (批级
             // 目录创建任务共享, 全批等待同一任务完成后再上传——防并发 "no such file")。
             var workItems = new List<(Guid QueueId, Func<TransferBatchConnections, Task> Run)>();
-            using var connections = new TransferBatchConnections(AppSettingsService.ConcurrentTransfers);
+            using var connections = new TransferBatchConnections();
             var dirTasks = new ConcurrentDictionary<string, Lazy<Task>>();
-            foreach (var (item, dest, destExists) in accepted)
+            foreach (var (item, dest, destExists, forceOverwrite) in accepted)
             {
                 if (!item.IsDirectory)
                 {
-                    var queueTask = TransferQueueService.Enqueue(item.FullPath, dest, NonEmpty(item.DisplaySize));
+                    var queueTask = TransferQueueService.Enqueue(item.FullPath, dest, NonEmpty(item.DisplaySize), item.Size);
+                    queueTask.LogScopes = transferScopes;
                     var progress = new Action<long>(b => TransferQueueService.Report(queueTask.Id, b));
-                    queueTask.Run = BuildTransferRunner(opp, item, dest, destExists, progress);
+                    queueTask.Run = BuildTransferRunner(opp, item, dest, destExists, forceOverwrite, progress,
+                        () => queueTask.IsResumed = true, transferScopes);
+                    AttachVerifyHook(queueTask, opp, destRemote ? item.FullPath : dest, destRemote ? dest : item.FullPath);
                     workItems.Add((queueTask.Id, queueTask.Run));
                     continue;
                 }
@@ -3051,9 +3079,34 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                     && SameRemoteHost(opp) && CoreServices.Transfer.IsFullImplementation)
                 {
                     var treeTask = TransferQueueService.Enqueue(item.FullPath, dest, NonEmpty(item.DisplaySize));
+                    treeTask.LogScopes = transferScopes;
                     treeTask.Run = BuildServerTreeRunner(opp, item, dest, destExists);
                     workItems.Add((treeTask.Id, treeTask.Run));
                     continue;
+                }
+
+                // tar 打包加速 (T12): 本地→远程 / 远程→本地 的目录传输, 文件数达阈值
+                // 时走"单流打包"替代逐文件展开——整目录单任务 (队列单行, 无逐文件进度)。
+                // 远程→远程不走 (cp -a / 中转已覆盖); 本地枚举廉价, 远端探一条 find
+                // 计数; 判定不可用或执行失败都回退下面的逐文件展开, 结果语义不变。
+                if ((destRemote && Mode == FileViewMode.Local)
+                    || (!destRemote && Mode == FileViewMode.Remote))
+                {
+                    var fileCount = Mode == FileViewMode.Local
+                        ? CountLocalFiles(item.FullPath)
+                        : await TarAccelService.CountRemoteFilesAsync(_sftp, item.FullPath);
+                    if (TarAccelService.ShouldUse(fileCount))
+                    {
+                        var tarTask = TransferQueueService.Enqueue(item.FullPath, dest, NonEmpty(item.DisplaySize));
+                        tarTask.LogScopes = transferScopes;
+                        tarTask.IsTarMode = true;
+                        var tarProgress = new Action<long>(b => TransferQueueService.Report(tarTask.Id, b));
+                        tarTask.Run = BuildTarRunner(opp, item, dest, destRemote, tarProgress, transferScopes);
+                        workItems.Add((tarTask.Id, tarTask.Run));
+                        TerminalLogService.Log(string.Format(
+                            LocalizationService.GetString("LogTarMode"), item.Name, fileCount), transferScopes);
+                        continue;
+                    }
                 }
 
                 // 目录展开: 枚举全部子目录/文件 (相对路径), 失败跳过该目录并记命令窗
@@ -3069,7 +3122,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 {
                     skipped++;
                     TerminalLogService.Log(string.Format(
-                        LocalizationService.GetString("LogDirExpandFailed"), item.Name, ex.Message));
+                        LocalizationService.GetString("LogDirExpandFailed"), item.Name, ex.Message), transferScopes);
                     continue;
                 }
 
@@ -3082,11 +3135,13 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                     var src = JoinRemotePath(item.FullPath, rel);
                     var dst = JoinRemotePath(dest, rel);
                     var parentRel = ParentRel(rel);
-                    var qt = TransferQueueService.Enqueue(src, dst, FileEntry.FormatSize(length));
+                    var qt = TransferQueueService.Enqueue(src, dst, FileEntry.FormatSize(length), length);
+                    qt.LogScopes = transferScopes;
                     var p = new Action<long>(b => TransferQueueService.Report(qt.Id, b));
                     qt.Run = BuildExpandedFileRunner(
                         opp, src, dst, parentRel.Length == 0 ? dest : JoinRemotePath(dest, parentRel),
-                        destRemote, p, dirTasks);
+                        destRemote, forceOverwrite, p, dirTasks, () => qt.IsResumed = true, transferScopes);
+                    AttachVerifyHook(qt, opp, destRemote ? src : dst, destRemote ? dst : src);
                     workItems.Add((qt.Id, qt.Run));
                 }
 
@@ -3097,6 +3152,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                     var src = JoinRemotePath(item.FullPath, dirRel);
                     var dst = JoinRemotePath(dest, dirRel);
                     var qt = TransferQueueService.Enqueue(src, dst, NonEmpty(string.Empty));
+                    qt.LogScopes = transferScopes;
                     qt.Run = BuildEnsureDirRunner(opp, dst, destRemote, dirTasks);
                     workItems.Add((qt.Id, qt.Run));
                 }
@@ -3106,7 +3162,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             if (workItems.Count > 0)
             {
                 TerminalLogService.Log(string.Format(
-                    LocalizationService.GetString("LogTransferStart"), workItems.Count, destDir));
+                    LocalizationService.GetString("LogTransferStart"), workItems.Count, destDir), transferScopes);
             }
 
             // 传输中节流刷新目标面板 (FileZilla/WinSCP 惯例: 传输过程目标目录逐步可见,
@@ -3135,7 +3191,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             if (workItems.Count > 0)
             {
                 TerminalLogService.Log(string.Format(
-                    LocalizationService.GetString("LogTransferDone"), done, skipped, failed));
+                    LocalizationService.GetString("LogTransferDone"), done, skipped, failed), transferScopes);
             }
             if (done > 0)
             {
@@ -3304,22 +3360,25 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     /// 远程→本地下载 / 远程→远程 (同主机 cp 直达, 失败回退中转) / 本地→本地复制。
     /// 执行体接受批次连接池参数而非闭包绑定——任务可持久化重跑 ("重置并重新请求
     /// 所有"用新池重放)。仅服务顶层文件条目——顶层目录已在入队阶段展开为逐文件任务。
+    /// onResumed: 实际走断点续传追加分支时回调 (队列行标记"续传中")。
     /// </summary>
     private Func<TransferBatchConnections, Task> BuildTransferRunner(
-        FileView opp, FileItemViewModel item, string dest, bool destExists,
-        Action<long> progress)
+        FileView opp, FileItemViewModel item, string dest, bool destExists, bool forceOverwrite,
+        Action<long> progress, Action? onResumed = null, string[]? transferScopes = null)
     {
         bool destRemote = opp.Mode == FileViewMode.Remote;
 
         if (destRemote && Mode == FileViewMode.Local)
         {
-            // 本地→远程上传: 目标侧连接
+            // 本地→远程上传: 目标侧连接 (装饰器注入暂停检查点: 每传输块检查, 暂停
+            // 中断当前文件留断点; 归还用原 ops——装饰器非 TransferConnection 不参与借还)
             return async connections =>
             {
                 var ops = await connections.AcquireAsync(opp.SftpService);
                 try
                 {
-                    await TransferEntryAsync(ops, item, dest, upload: true, progress);
+                    await TransferFileWithResumeAsync(new PauseInterruptibleOps(ops), item.FullPath, dest,
+                        upload: true, forceOverwrite, progress, onResumed, transferScopes);
                 }
                 finally
                 {
@@ -3330,13 +3389,14 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
 
         if (!destRemote && Mode == FileViewMode.Remote)
         {
-            // 远程→本地下载: 源侧连接
+            // 远程→本地下载: 源侧连接 (暂停装饰器同上)
             return async connections =>
             {
                 var ops = await connections.AcquireAsync(_sftp);
                 try
                 {
-                    await TransferEntryAsync(ops, item, dest, upload: false, progress);
+                    await TransferFileWithResumeAsync(new PauseInterruptibleOps(ops), item.FullPath, dest,
+                        upload: false, forceOverwrite, progress, onResumed, transferScopes);
                 }
                 finally
                 {
@@ -3360,16 +3420,97 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                         return; // 服务端复制成功
                     }
 
-                    await RelayRemoteToRemoteAsync(opp, item.FullPath, dest, item.IsDirectory, progress, connections);
+                    await RelayRemoteToRemoteAsync(opp, item.FullPath, dest, item.IsDirectory, forceOverwrite, progress, connections, transferScopes);
                 };
             }
 
             return connections =>
-                RelayRemoteToRemoteAsync(opp, item.FullPath, dest, item.IsDirectory, progress, connections);
+                RelayRemoteToRemoteAsync(opp, item.FullPath, dest, item.IsDirectory, forceOverwrite, progress, connections, transferScopes);
         }
 
         // 本地→本地复制 (无 SSH 参与, 线程池执行避免占 UI)
         return _ => Task.Run(() => CopyEntryRecursive(item.FullPath, dest));
+    }
+
+    /// <summary>按传输方向为单文件队列任务挂校验执行体（T2, 设置开启且为本地↔远程
+    /// 方向才有; 远程→远程/本地→本地/树直达/tar/空目录无单文件语义, 不校验）。
+    /// 远端侧会话按方向取: 上传 = 目标侧 opp.SftpService, 下载 = 源侧 _sftp。</summary>
+    private void AttachVerifyHook(TransferTask task, FileView opp, string localPath, string remotePath)
+    {
+        if (!AppSettingsService.VerifyAfterTransfer)
+        {
+            return;
+        }
+
+        bool destRemote = opp.Mode == FileViewMode.Remote;
+        var sftp = (destRemote, Mode) switch
+        {
+            (true, FileViewMode.Local) => opp.SftpService,   // 上传: 远端为目标侧
+            (false, FileViewMode.Remote) => _sftp,           // 下载: 远端为源侧
+            _ => null,                                       // 远程→远程 / 本地→本地: 不校验
+        };
+        if (sftp is not null)
+        {
+            task.VerifyHook = BuildVerifyHook(sftp, localPath, remotePath);
+        }
+    }
+
+    private Func<Task<VerifyOutcome>> BuildVerifyHook(
+        SftpSessionService sftp, string localPath, string remotePath)
+        => async () =>
+        {
+            var algorithm = VerifyPolicy.PickAlgorithm(
+                AppSettingsService.VerifyAlgorithm, sftp.ServerSha256, sftp.ServerSha512, sftp.ServerSm3);
+            if (algorithm is null)
+            {
+                return new VerifyOutcome(VerifyResultKind.Skipped);
+            }
+
+            var localHex = await ComputeLocalHashAsync(localPath, algorithm);
+            var remoteHex = await sftp.TryComputeServerHashAsync(remotePath, algorithm);
+            return new VerifyOutcome(
+                VerifyPolicy.Decide(localHex, remoteHex, algorithmAvailable: true),
+                localHex ?? string.Empty, remoteHex ?? string.Empty, algorithm);
+        };
+
+    /// <summary>本地文件杂凑（分块读流, 线程池执行; SM3 走自带托管实现）。
+    /// 读失败→null→校验跳过。</summary>
+    private static async Task<string?> ComputeLocalHashAsync(string path, string algorithm)
+    {
+        try
+        {
+            return await Task.Run(async () =>
+            {
+                await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                    FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                var buffer = new byte[81920];
+                if (algorithm == "SM3")
+                {
+                    var sm3 = new Sm3();
+                    int read;
+                    while ((read = await fs.ReadAsync(buffer)) > 0)
+                    {
+                        sm3.AppendData(buffer, read);
+                    }
+
+                    return sm3.GetHashHex();
+                }
+
+                using var hash = IncrementalHash.CreateHash(
+                    algorithm == "SHA512" ? HashAlgorithmName.SHA512 : HashAlgorithmName.SHA256);
+                int n;
+                while ((n = await fs.ReadAsync(buffer)) > 0)
+                {
+                    hash.AppendData(buffer, 0, n);
+                }
+
+                return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+            });
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -3388,34 +3529,203 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 return; // 服务端整树复制成功
             }
 
-            await RelayRemoteToRemoteAsync(opp, item.FullPath, dest, isDirectory: true, progress: null, connections);
+            await RelayRemoteToRemoteAsync(opp, item.FullPath, dest, isDirectory: true, forceOverwrite: false, progress: null, connections);
         };
     }
 
-    /// <summary>单条目传输 (文件直传含进度回调; 目录递归建/列目录, 目录无进度)。</summary>
-    private static async Task TransferEntryAsync(
-        IRemoteTransferOps ops, FileItemViewModel item, string dest, bool upload, Action<long>? progress = null)
+    /// <summary>
+    /// tar 打包加速执行体 (T12): 整目录单任务。上传=本地 tar stdout 直写远端临时
+    /// 文件后 exec 解包; 下载=远端 exec 打包经 SFTP 下载单文件后本地解包。tar 路径
+    /// 不可用返回 false → 回退逐文件（现状行为, 普通失败语义）; tar 路径执行中抛错
+    /// → 附"整体传输不支持文件级续传"提示（用户需知情: 失败只能整体重试）。
+    /// </summary>
+    private Func<TransferBatchConnections, Task> BuildTarRunner(
+        FileView opp, FileItemViewModel item, string dest, bool destRemote, Action<long> progress,
+        string[]? transferScopes = null)
     {
-        if (item.IsDirectory)
+        if (destRemote && Mode == FileViewMode.Local)
+        {
+            return async connections =>
+            {
+                var ops = await connections.AcquireAsync(opp.SftpService);
+                try
+                {
+                    bool tarOk;
+                    try
+                    {
+                        tarOk = await TarAccelService.UploadDirAsync(
+                            opp.SftpService, ops, item.FullPath, dest, progress, transferScopes);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw TarFailWrapped(ex);
+                    }
+
+                    if (!tarOk)
+                    {
+                        await UploadDirAsync(ops, item.FullPath, dest);
+                    }
+                }
+                finally
+                {
+                    connections.Release(opp.SftpService, ops);
+                }
+            };
+        }
+
+        return async connections =>
+        {
+            var ops = await connections.AcquireAsync(_sftp);
+            try
+            {
+                bool tarOk;
+                try
+                {
+                    tarOk = await TarAccelService.DownloadDirAsync(
+                        _sftp, ops, item.FullPath, dest, progress, transferScopes);
+                }
+                catch (Exception ex)
+                {
+                    throw TarFailWrapped(ex);
+                }
+
+                if (!tarOk)
+                {
+                    await DownloadDirAsync(ops, item.FullPath, dest);
+                }
+            }
+            finally
+            {
+                connections.Release(_sftp, ops);
+            }
+        };
+    }
+
+    /// <summary>tar 任务失败包装: 前置"整体传输, 失败只能整体重试"提示（T12 约束的用户知情）。</summary>
+    private static Exception TarFailWrapped(Exception ex)
+        => new InvalidOperationException(
+            LocalizationService.GetString("QTarFailHint") + " " + ex.Message, ex);
+
+    /// <summary>本地目录文件数（tar 判定用; 只数文件不建表, 失败返回 -1 不走 tar）。</summary>
+    private static int CountLocalFiles(string dir)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Count();
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// 单文件传输（含断点续传决策, T1）: 按"续传"设置查对端已有大小, 纯函数
+    /// <see cref="ResumePolicy.Decide"/> 判定追加/全量/冲突。低于续传阈值
+    /// （设置-传输, 默认 1MB）的小文件只能全量重传。冲突（对端比源还大,
+    /// 内容已变的强信号）不静默追加——记终端日志后按全量重传。forceOverwrite:
+    /// 用户对该条目明确选了"覆盖"——跳过续传决策直接全量重传（全量上传/下载均
+    /// 先截断再写, 天然覆盖语义）, 防"远端较小旧文件"被误判为中断半成品而追加
+    /// 缝合成损坏内容 (审核 N1); 目标不存在时传 false, 首传与重跑续传语义不变。
+    /// 追加分支本身抛异常（老服务器 SftpFileStream 定位不支持等）时回退全量:
+    /// 两种回退目标（UploadFile/DownloadFile）都先截断, 不会留下缝合文件。
+    /// </summary>
+    private static async Task TransferFileWithResumeAsync(
+        IRemoteTransferOps ops, string sourcePath, string destPath, bool upload, bool forceOverwrite,
+        Action<long>? progress, Action? onResumed = null, string[]? logScopes = null)
+    {
+        if (!AppSettingsService.ResumeEnabled || forceOverwrite)
+        {
+            await TransferFilePlainAsync(ops, sourcePath, destPath, upload, progress);
+            return;
+        }
+
+        try
         {
             if (upload)
             {
-                await UploadDirAsync(ops, item.FullPath, dest);
+                long localSize = await Task.Run(() =>
+                {
+                    try
+                    {
+                        return new FileInfo(sourcePath).Length;
+                    }
+                    catch
+                    {
+                        return 0L; // 取不到大小: 不走续传, 全量上传照常报错
+                    }
+                });
+
+                if (localSize > 0)
+                {
+                    var remoteSize = await ops.TryGetSizeAsync(destPath);
+                    var action = ResumePolicy.Decide(localSize, remoteSize, remoteSize >= 0, resumeEnabled: true,
+                        thresholdBytes: AppSettingsService.ResumeThresholdKb * 1024L);
+                    if (action == ResumeAction.Append)
+                    {
+                        onResumed?.Invoke();
+                        await ops.UploadResumeAsync(sourcePath, destPath, remoteSize, progress);
+                        return;
+                    }
+
+                    if (action == ResumeAction.Conflict)
+                    {
+                        TerminalLogService.Log(string.Format(
+                            LocalizationService.GetString("LogResumeConflict"), destPath, remoteSize, localSize), logScopes);
+                    }
+                }
             }
             else
             {
-                await DownloadDirAsync(ops, item.FullPath, dest);
+                var remoteSize = await ops.TryGetSizeAsync(sourcePath);
+                long localSize = 0L;
+                if (File.Exists(destPath))
+                {
+                    try
+                    {
+                        localSize = new FileInfo(destPath).Length;
+                    }
+                    catch
+                    {
+                        localSize = 0L;
+                    }
+                }
+
+                if (remoteSize > 0 && localSize > 0)
+                {
+                    var action = ResumePolicy.Decide(remoteSize, localSize, destExists: true, resumeEnabled: true,
+                        thresholdBytes: AppSettingsService.ResumeThresholdKb * 1024L);
+                    if (action == ResumeAction.Append)
+                    {
+                        onResumed?.Invoke();
+                        await ops.DownloadResumeAsync(sourcePath, destPath, localSize, progress);
+                        return;
+                    }
+
+                    if (action == ResumeAction.Conflict)
+                    {
+                        TerminalLogService.Log(string.Format(
+                            LocalizationService.GetString("LogResumeConflict"), sourcePath, localSize, remoteSize), logScopes);
+                    }
+                }
             }
         }
-        else if (upload)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            await ops.UploadAsync(item.FullPath, dest, progress);
+            // 续传路径自身失败（定位不支持/半途断网）: 全量重传兜底（先截断, 无缝合风险）
+            TerminalLogService.Log(string.Format(
+                LocalizationService.GetString("LogResumeFallback"), destPath, ex.Message), logScopes);
         }
-        else
-        {
-            await ops.DownloadAsync(item.FullPath, dest, progress);
-        }
+
+        await TransferFilePlainAsync(ops, sourcePath, destPath, upload, progress);
     }
+
+    /// <summary>无续传的普通单文件传输（续传关闭/目标不存在/续传失败兜底共用）。</summary>
+    private static Task TransferFilePlainAsync(
+        IRemoteTransferOps ops, string sourcePath, string destPath, bool upload, Action<long>? progress)
+        => upload
+            ? ops.UploadAsync(sourcePath, destPath, progress)
+            : ops.DownloadAsync(sourcePath, destPath, progress);
 
     // —— 目录展开 (传输队列逐文件可见, 见阶段二) ——
 
@@ -3557,19 +3867,21 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     /// 失败进"传输失败"页签可单独重试; 跨主机 cp 不可用, 逐文件经本地中转。
     /// </summary>
     private Func<TransferBatchConnections, Task> BuildExpandedFileRunner(
-        FileView opp, string src, string dst, string destParentDir, bool destRemote,
-        Action<long> progress, ConcurrentDictionary<string, Lazy<Task>> dirTasks)
+        FileView opp, string src, string dst, string destParentDir, bool destRemote, bool forceOverwrite,
+        Action<long> progress, ConcurrentDictionary<string, Lazy<Task>> dirTasks, Action? onResumed = null,
+        string[]? transferScopes = null)
     {
         if (destRemote && Mode == FileViewMode.Local)
         {
-            // 本地→远程上传: 目标侧连接, 先建父目录
+            // 本地→远程上传: 目标侧连接, 先建父目录 (暂停装饰器见 BuildTransferRunner)
             return async connections =>
             {
                 var ops = await connections.AcquireAsync(opp.SftpService);
                 try
                 {
                     await EnsureRemoteDirReadyAsync(ops, destParentDir, dirTasks);
-                    await ops.UploadAsync(src, dst, progress);
+                    await TransferFileWithResumeAsync(new PauseInterruptibleOps(ops), src, dst,
+                        upload: true, forceOverwrite, progress, onResumed, transferScopes);
                 }
                 finally
                 {
@@ -3580,14 +3892,15 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
 
         if (!destRemote && Mode == FileViewMode.Remote)
         {
-            // 远程→本地下载: 源侧连接, 先建本地父目录
+            // 远程→本地下载: 源侧连接, 先建本地父目录 (暂停装饰器见 BuildTransferRunner)
             return async connections =>
             {
                 var ops = await connections.AcquireAsync(_sftp);
                 try
                 {
                     Directory.CreateDirectory(destParentDir);
-                    await ops.DownloadAsync(src, dst, progress);
+                    await TransferFileWithResumeAsync(new PauseInterruptibleOps(ops), src, dst,
+                        upload: false, forceOverwrite, progress, onResumed, transferScopes);
                 }
                 finally
                 {
@@ -3623,7 +3936,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 }
                 else
                 {
-                    await RelayRemoteToRemoteAsync(opp, src, dst, isDirectory: false, progress, connections);
+                    await RelayRemoteToRemoteAsync(opp, src, dst, isDirectory: false, forceOverwrite, progress, connections, transferScopes);
                 }
             };
         }
@@ -3662,16 +3975,23 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     }
 
     /// <summary>
-    /// 跨主机远程→远程经本地中转: 下载到 %TEMP%\iFreeSftp\RemoteTransfer\&lt;guid&gt;\ 再
-    /// 上传到目标, 完成即清理临时目录 (失败也清理; 中转文件与目标同名直接覆盖)。
-    /// 源/目标两侧各借一条传输连接 (用毕归还); 文件阶段带进度回调 (下载→上传字节
-    /// 计数回退由队列服务重立基线)。按路径操作, 顶层条目与目录展开的单文件任务共用。
+    /// 跨主机远程→远程经本地中转: 下载到 %TEMP%\iFreeSftp\RemoteTransfer\&lt;hash&gt;\ 再
+    /// 上传到目标, 完成即清理临时目录。临时目录按 源+目标 路径哈希稳定命名 (非每次
+    /// 随机): 暂停中断保留半成品, 继续后重跑同一任务可续传——temp 已达源大小跳过
+    /// 下载, 目标侧半成品经续传决策追加; 完成/失败才清理 (暂停中断置 keepTemp 后
+    /// 原样上抛交 RunOneAsync 回排"等待")。forceOverwrite 仅单文件 temp→目标段消费
+    /// (用户选"覆盖"时禁用追加防缝合损坏, 审核 N1); 源→temp 段不消费——temp 任务
+    /// 私有, 大小判定安全; 目录分支天然覆盖语义, 不消费。源/目标两侧各借一条传输
+    /// 连接 (用毕归还), 两侧操作均经暂停装饰器 (每传输块检查)。按路径操作, 顶层
+    /// 条目与目录展开的单文件任务共用。
     /// </summary>
     private async Task RelayRemoteToRemoteAsync(FileView opp, string srcPath, string dstPath,
-        bool isDirectory, Action<long>? progress, TransferBatchConnections connections)
+        bool isDirectory, bool forceOverwrite, Action<long>? progress, TransferBatchConnections connections,
+        string[]? transferScopes = null)
     {
-        var tempRoot = Path.Combine(
-            Path.GetTempPath(), "iFreeSftp", "RemoteTransfer", Guid.NewGuid().ToString("N"));
+        var tempRoot = Path.Combine(Path.GetTempPath(), "iFreeSftp", "RemoteTransfer",
+            RelayTempDirName(srcPath, dstPath));
+        var keepTemp = false;
         try
         {
             Directory.CreateDirectory(tempRoot);
@@ -3681,7 +4001,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 var src = await connections.AcquireAsync(_sftp);
                 try
                 {
-                    await DownloadDirAsync(src, srcPath, localPath);
+                    // temp 任务私有: 已完整下载 (大小一致) 的文件跳过重下, 按文件粒度续传
+                    await DownloadDirAsync(new PauseInterruptibleOps(src), srcPath, localPath, skipComplete: true);
                 }
                 finally
                 {
@@ -3691,7 +4012,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 var dst = await connections.AcquireAsync(opp.SftpService);
                 try
                 {
-                    await UploadDirAsync(dst, localPath, dstPath);
+                    await UploadDirAsync(new PauseInterruptibleOps(dst), localPath, dstPath);
                 }
                 finally
                 {
@@ -3700,20 +4021,32 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             }
             else
             {
+                // 阶段一 源→temp: temp 已达源大小视为上次中断的完整下载, 跳过;
+                // 半成品走续传决策追加 (temp 任务私有, 大小判定安全, 故不消费覆盖决策)
                 var src = await connections.AcquireAsync(_sftp);
                 try
                 {
-                    await src.DownloadAsync(srcPath, localPath, progress);
+                    var srcOps = new PauseInterruptibleOps(src);
+                    var srcSize = await srcOps.TryGetSizeAsync(srcPath);
+                    if (srcSize < 0 || LocalFileSize(localPath) != srcSize)
+                    {
+                        await TransferFileWithResumeAsync(srcOps, srcPath, localPath,
+                            upload: false, forceOverwrite: false, progress, logScopes: transferScopes);
+                    }
                 }
                 finally
                 {
                     connections.Release(_sftp, src);
                 }
 
+                // 阶段二 temp→目标: 目标侧非任务私有 (可能本就有同名旧文件), 不按
+                // 大小跳过; 用户选"覆盖"时禁用追加直接全量重传 (防较小旧文件被误判
+                // 为半成品缝合成损坏内容), 未选覆盖时半成品走续传决策追加
                 var dst = await connections.AcquireAsync(opp.SftpService);
                 try
                 {
-                    await dst.UploadAsync(localPath, dstPath, progress);
+                    await TransferFileWithResumeAsync(new PauseInterruptibleOps(dst), localPath, dstPath,
+                        upload: true, forceOverwrite, progress, logScopes: transferScopes);
                 }
                 finally
                 {
@@ -3721,9 +4054,35 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 }
             }
         }
+        catch (PauseRequestedException)
+        {
+            keepTemp = true; // 暂停中断: 保留半成品供重跑续传, 上抛交 RunOneAsync 回排"等待"
+            throw;
+        }
         finally
         {
-            TryDeleteDir(tempRoot);
+            if (!keepTemp)
+            {
+                TryDeleteDir(tempRoot);
+            }
+        }
+    }
+
+    /// <summary>中转临时目录名：源+目标路径哈希 (SHA-256 前 24 个 hex 字符)。稳定
+    /// 命名使暂停中断后的重跑命中同一 temp 完成续传; 源或目标不同的任务互不共享。</summary>
+    private static string RelayTempDirName(string srcPath, string dstPath)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{srcPath}|{dstPath}")))[..24];
+
+    /// <summary>本地文件大小 (不存在/不可读返回 -1)。</summary>
+    private static long LocalFileSize(string path)
+    {
+        try
+        {
+            return new FileInfo(path).Length;
+        }
+        catch
+        {
+            return -1L;
         }
     }
 
@@ -3790,8 +4149,12 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         }
     }
 
-    /// <summary>递归下载目录 (目录合并, 同名文件覆盖; 递归内部不再逐项询问)。</summary>
-    private static async Task DownloadDirAsync(IRemoteTransferOps sftp, string remoteDir, string localDir)
+    /// <summary>递归下载目录 (目录合并, 同名文件覆盖; 递归内部不再逐项询问)。
+    /// skipComplete 仅限中转 temp (任务私有): 已存在且大小一致的文件视为上次暂停
+    /// 中断的完整下载成果, 跳过重下 (按文件粒度续传); 真实目标目录不传——目标可能
+    /// 本就有同名旧文件, 大小一致不代表内容一致, 照常覆盖下载。</summary>
+    private static async Task DownloadDirAsync(IRemoteTransferOps sftp, string remoteDir, string localDir,
+        bool skipComplete = false)
     {
         Directory.CreateDirectory(localDir);
         foreach (var entry in await sftp.ListDirectoryAsync(remoteDir))
@@ -3799,10 +4162,15 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             var local = Path.Combine(localDir, entry.Name);
             if (entry.IsDirectory)
             {
-                await DownloadDirAsync(sftp, JoinRemotePath(remoteDir, entry.Name), local);
+                await DownloadDirAsync(sftp, JoinRemotePath(remoteDir, entry.Name), local, skipComplete);
             }
             else
             {
+                if (skipComplete && LocalFileSize(local) == entry.Length)
+                {
+                    continue;
+                }
+
                 await sftp.DownloadAsync(JoinRemotePath(remoteDir, entry.Name), local);
             }
         }

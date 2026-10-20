@@ -41,11 +41,15 @@ public sealed partial class FolderContainer : UserControl
     /// <summary>因空状态引导隐藏了标签条头部（恢复用）。</summary>
     private bool _headerHiddenForEmpty;
 
+    /// <summary>关闭确认对话框展示中（同窗 ContentDialog 单实例, 防并发弹窗重入）。</summary>
+    private bool _confirmingOpen;
+
     public FolderContainer()
     {
         InitializeComponent();
         // + 按钮: 打开"打开目标"选择器 (本地文件系统 / 主机列表)。
         Strip.NewTabRequested += (_, _) => OpenPickerRequested?.Invoke(PaneName);
+        Strip.TabCloseConfirming += OnTabCloseConfirming;
         Strip.TabCloseRequested += OnTabCloseRequested;
         // 换 tab 后活动视图变化: 比对激活中时新活动视图按合并名清单重排
         // (未激活的视图仍是常规列表, 重排幂等无害)。
@@ -136,7 +140,8 @@ public sealed partial class FolderContainer : UserControl
         {
             if (tab.Content is FileView view)
             {
-                Strip.SetTabTitle(tab, GetTabTitle(view.Mode));
+                // 主机 tab 标题优先 (连接时已写名称+IP), 不被语言切换的通用标题覆盖
+                Strip.SetTabTitle(tab, view.HostTabTitle ?? GetTabTitle(view.Mode));
                 Strip.SetTabIcon(tab, view.Mode == FileViewMode.Remote
                     ? IdeTabStrip.RemoteIconGlyph
                     : IdeTabStrip.LocalIconGlyph);
@@ -195,10 +200,10 @@ public sealed partial class FolderContainer : UserControl
             }
         };
 
-        // 标题与图标随视图模式变化（本地/远程）。
+        // 标题与图标随视图模式变化（本地/远程）; 主机 tab 保持名称+IP 标题。
         view.ModeChanged += mode =>
         {
-            Strip.SetTabTitle(tab, GetTabTitle(mode));
+            Strip.SetTabTitle(tab, view.HostTabTitle ?? GetTabTitle(mode));
             Strip.SetTabIcon(tab, mode == FileViewMode.Remote
                 ? IdeTabStrip.RemoteIconGlyph
                 : IdeTabStrip.LocalIconGlyph);
@@ -209,46 +214,65 @@ public sealed partial class FolderContainer : UserControl
     }
 
     /// <summary>
-    /// 连接主机，成功后才落位（HostPanel 连接入口）。连接阶段（日志/loading/指纹
-    /// 确认弹窗锚定本容器）不动任何标签页; 成功: newTab 新建远程模式 tab、否则活动
-    /// tab 就地接管会话转远程并加载列表; 失败: 仅命令窗日志, 不构建 tab 与远程容器。
+    /// 连接主机，标签先行 (tab-first): 新标签意图时立即落位远程占位 tab, 标题=
+    /// 主机名称+IP, 连接成败均保留——失败仅把错误写进该 tab 状态栏与命令窗,
+    /// 不撤销 tab (2026-10-17); 复用路径 (当前 tab 打开) 仍保持成功才接管。
+    /// 连接阶段 (日志/loading/指纹确认弹窗锚定本容器) 不动已有标签页; 成功:
+    /// 占位 tab 就地接管会话或活动 tab 转远程并加载列表。
     /// 返回 (是否成功, 用户本次确认的指纹)。
     /// </summary>
     public async Task<(bool Ok, string? Fingerprint)> ConnectAndOpenAsync(HostProfile host, bool newTab)
     {
+        // 标签先行: 立即建远程占位 tab 并写主机标题, 失败不撤销。
+        // 先落 tab 再建会话: 会话日志的 scope 归属 (含指纹审计) 需要 tab 的 LogScope。
+        TabViewItem? pendingTab = null;
+        FileView? pendingView = null;
+        if (newTab || Strip.Tabs.TabItems.Count == 0)
+        {
+            (pendingTab, pendingView) = AddNewTabGetView(remote: true);
+            pendingView.HostTabTitle = HostTabNaming.Build(host.Name, host.Host);
+            Strip.SetTabTitle(pendingTab, pendingView.HostTabTitle);
+        }
+
+        var scope = (pendingView ?? ActiveView)!.LogScope;
+
+        // 注册日志来源标签 (主机名称+IP): 本连接所有日志在公用命令窗带此前缀,
+        // 直接用 host 参数注册, 不等 HostTabTitle, 保证 LogConnecting 也带标签。
+        TerminalLogService.RegisterScopeTitle(scope, HostTabNaming.Build(host.Name, host.Host));
+
         var session = new SftpSessionService
         {
+            LogScope = scope,
             ConfirmHostKey = fp =>
             {
-                TerminalLogService.Log(LocalizationService.GetString("LogWaitFingerprint"));
+                TerminalLogService.Log(LocalizationService.GetString("LogWaitFingerprint"), scope);
                 return HostKeyConfirmDialog.ShowFromWorkerAsync(this, host.Host, fp);
             },
             ConfirmHostKeyChange = (stored, presented) =>
             {
-                TerminalLogService.Log(LocalizationService.GetString("LogWaitFingerprint"));
+                TerminalLogService.Log(LocalizationService.GetString("LogWaitFingerprint"), scope);
                 return HostKeyConfirmDialog.ShowChangeFromWorkerAsync(this, host.Host, stored, presented);
             },
         };
         session.SetTrustedFingerprint(string.IsNullOrWhiteSpace(host.HostKeyFingerprint)
             ? null
             : host.HostKeyFingerprint);
+
         TerminalLogService.SetBusy(true);
         TerminalLogService.Log(string.Format(
-            LocalizationService.GetString("LogConnecting"), host.Host, host.Port));
+            LocalizationService.GetString("LogConnecting"), host.Host, host.Port), scope);
         try
         {
             if (!await session.ConnectAsync(host))
             {
-                TerminalLogService.Log(string.Format(
-                    LocalizationService.GetString("LogConnectFailed"), string.Empty));
+                ReportConnectFailure(scope, pendingView, string.Empty);
                 session.Dispose();
                 return (false, null);
             }
         }
         catch (Exception ex)
         {
-            TerminalLogService.Log(string.Format(
-                LocalizationService.GetString("LogConnectFailed"), ex.Message));
+            ReportConnectFailure(scope, pendingView, ex.Message);
             session.Dispose();
             return (false, null);
         }
@@ -257,11 +281,11 @@ public sealed partial class FolderContainer : UserControl
             TerminalLogService.SetBusy(false);
         }
 
-        // 连接成功才构建/转换 tab 与远程容器。
-        var view = newTab || Strip.Tabs.TabItems.Count == 0
-            ? AddNewTabGetView(remote: true)
-            : ActiveView!;
+        // 连接成功: 占位 tab 就地接管, 复用路径由活动 tab 接管 (补主机标题)。
+        var view = pendingView ?? ActiveView!;
+        view.HostTabTitle = HostTabNaming.Build(host.Name, host.Host);
         view.AttachConnectedSession(session, host);
+        SyncHostTabTitle(view);
 
         // 同步浏览: 主机开启同步且填了本地目录时, 对侧窗格按该目录初始定位
         // (本地/空态视图就地导航, 远程会话视图新开本地 tab, 不劫持原会话)。
@@ -372,11 +396,119 @@ public sealed partial class FolderContainer : UserControl
         }
     }
 
-    /// <summary>AddNewTab 的带返回值变体: 返回新建 tab 承载的 FileView。</summary>
-    private FileView AddNewTabGetView(bool remote)
+    /// <summary>AddNewTab 的带返回值变体: 返回新建的 tab 与其承载的 FileView
+    /// (tab-first 连接需要 tab 引用, 建出后立即写主机标题)。</summary>
+    private (TabViewItem Tab, FileView View) AddNewTabGetView(bool remote)
     {
         AddNewTab(remote: remote);
-        return ActiveView!;
+        var tab = (TabViewItem)Strip.Tabs.SelectedItem;
+        return (tab, (FileView)tab.Content);
+    }
+
+    /// <summary>连接失败落位: 命令窗日志 + 占位 tab 状态栏显示错误 (tab 保留,
+    /// 供用户重试前查看原因); 复用路径 (无占位 tab) 仅写命令窗。</summary>
+    private void ReportConnectFailure(string scope, FileView? view, string error)
+    {
+        var msg = string.Format(
+            LocalizationService.GetString("LogConnectFailed"),
+            string.IsNullOrEmpty(error)
+                ? LocalizationService.GetString("LogConnectUnknown")
+                : error);
+        TerminalLogService.Log(msg, scope);
+        view?.ShowConnectFailure(msg);
+    }
+
+    /// <summary>把视图的主机标题同步到承载它的 tab (成功落位后调用;
+    /// 复用路径的活动 tab 标题在此时才从通用标题更新为主机标题)。</summary>
+    private void SyncHostTabTitle(FileView view)
+    {
+        if (view.HostTabTitle is null)
+        {
+            return;
+        }
+
+        var tab = Strip.Tabs.TabItems.OfType<TabViewItem>()
+            .FirstOrDefault(t => ReferenceEquals(t.Content, view));
+        if (tab is not null)
+        {
+            Strip.SetTabTitle(tab, view.HostTabTitle);
+        }
+    }
+
+    /// <summary>
+    /// 关 tab 前确认: 本 tab 有活动传输任务时弹三选——后台继续（传输走独立连接,
+    /// tab 关闭后照常跑完）/ 取消队列并关闭（取消本 tab 任务, 等块边界退出再关）/
+    /// 不关了。无活动任务（或引导页）静默放行。
+    /// </summary>
+    private async Task<bool> OnTabCloseConfirming(TabViewItem tab)
+    {
+        // 对话框展示/等待期间忽略后续关闭请求（返回 false 防止并发关闭绕过确认）
+        if (_confirmingOpen)
+        {
+            return false;
+        }
+
+        if (tab.Content is not FileView view
+            || !TransferQueueService.HasActiveForScope(view.LogScope))
+        {
+            return true;
+        }
+
+        if (XamlRoot is null)
+        {
+            return true; // 未入树无法弹窗, 放行避免 tab 卡死关不掉
+        }
+
+        _confirmingOpen = true;
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = LocalizationService.GetString("TabCloseTitle"),
+                Content = LocalizationService.GetString("TabCloseContent"),
+                PrimaryButtonText = LocalizationService.GetString("TabCloseBackground"),
+                SecondaryButtonText = LocalizationService.GetString("TabCloseCancelQueue"),
+                CloseButtonText = LocalizationService.GetString("TabCloseStay"),
+                DefaultButton = ContentDialogButton.Close,
+            };
+            var result = await dialog.ShowAsync();
+            if (result == ContentDialogResult.Primary)
+            {
+                return true; // 后台继续: 传输连接独立于标签页, 直接关
+            }
+
+            if (result == ContentDialogResult.Secondary)
+            {
+                // 只取消本 tab 的活动任务（不动其他 tab, 不动全局暂停状态）
+                foreach (var task in TransferQueueService.Get(TransferQueueTab.Active))
+                {
+                    if ((task.Status is TransferStatus.Waiting or TransferStatus.Transferring)
+                        && Array.IndexOf(task.LogScopes, view.LogScope) >= 0)
+                    {
+                        TransferQueueService.CancelTask(task.Id);
+                    }
+                }
+
+                // 轮询等传输中任务到块边界退出（结算为"已取消"）; 超时兜底放行——
+                // 传输连接独立存活, 迟到的结算照常落库, 关 tab 不受影响。
+                bool Running() => TransferQueueService.Get(TransferQueueTab.Active).Any(t =>
+                    (t.Status is TransferStatus.Waiting or TransferStatus.Transferring)
+                    && Array.IndexOf(t.LogScopes, view.LogScope) >= 0);
+                for (var i = 0; i < 50 && Running(); i++)
+                {
+                    await Task.Delay(100);
+                }
+
+                return true;
+            }
+
+            return false; // 不关了
+        }
+        finally
+        {
+            _confirmingOpen = false;
+        }
     }
 
     /// <summary>关闭标签页: IdeTabStrip 已把标签移出, 此处释放内容资源。</summary>
@@ -384,6 +516,8 @@ public sealed partial class FolderContainer : UserControl
     {
         if (tab.Content is FileView view)
         {
+            // 先注销日志来源标签, 再销毁
+            TerminalLogService.UnregisterScope(view.LogScope);
             view.Dispose();
         }
 

@@ -42,6 +42,9 @@ public sealed partial class MainContainer : Page
         // Mica 半透明背景: 设置开关控制打底/边框层 (ShellBorder) 透明化,
         // 与 Header.RootGrid 同步让系统材质透出; 主题切换时重赋纯色画刷。
         // SettingsChanged 可从任意线程触发, marshal 回 UI 线程再动控件。
+        // 生命周期约定: 本页由主窗口一次性导航创建 (RootFrame.Navigate(typeof(MainContainer))),
+        // 生命周期等同窗口, 依赖窗口关闭回收——下方静态事件订阅 (含 lambda, 无法退订)
+        // 因此不泄漏; 勿二次导航或多实例化, 否则旧实例将经静态事件长存。
         ThemeService.ThemeChanged += _ => ApplyMicaBackground();
         AppSettingsService.SettingsChanged += () => DispatcherQueue.TryEnqueue(ApplyMicaBackground);
         ApplyMicaBackground();
@@ -85,9 +88,7 @@ public sealed partial class MainContainer : Page
     {
         var brush = AppSettingsService.MicaEnabled
             ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent)
-            : new Microsoft.UI.Xaml.Media.SolidColorBrush(ThemeService.IsDark
-                ? Windows.UI.Color.FromArgb(255, 0x26, 0x30, 0x3D) // Dark HeaderAreaBrush
-                : Windows.UI.Color.FromArgb(255, 0xE9, 0xE9, 0xE9)); // Light HeaderAreaBrush
+            : new Microsoft.UI.Xaml.Media.SolidColorBrush(ThemeService.HeaderAreaColor());
         ShellBorder.Background = brush;
         ShellBorder.BorderBrush = brush;
     }

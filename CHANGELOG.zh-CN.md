@@ -6,12 +6,24 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本（`主.次.修订`）。
 
+## [0.8.5] - 2026-10-18
+
+断点续传增强策略、传输后校验与 tar 打包加速目录传输。
+
+### 新增
+- 断点续传策略增强。
+- 传输后校验（默认关闭）。
+- tar 打包加速目录传输。
+
+### 改进
+- 更正一些队列策略。
+
 ## [0.8.3] - 2026-10-16
 
 Mica 材质与导入向导打磨。
 
 ### 新增
-- Mica 半透明背景：设置 → 外观可开启 Windows 11 Mica 材质——标题栏、窗口边框与容器间隙变为半透明并透出系统背景。
+- Mica 半透明背景：设置 → 外观可开启 Windows 11 Mica 材质——标题栏、窗口边框与容器间隙变为半透明并透出系统背景，文件区保持纯色保证可读性。默认关闭；设置持久化，并随深浅主题切换自适应。
 
 ### 修复
 - 导入向导：确认页表格加宽，各列与表头精确对齐，并加入淡淡的表头/行分隔线，表格更易扫读。
@@ -75,7 +87,8 @@ Mica 材质与导入向导打磨。
 - 语言词典外置 locales 目录，用户可自建语言文件并自动被发现
 - 同步浏览、文件比对、橡皮筋框选、跨窗格拖拽传输
 
-[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.5...HEAD
+[0.8.5]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.3...v0.8.5
 [0.8.3]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.0...v0.8.1

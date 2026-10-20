@@ -4,7 +4,7 @@
 
 基于 WinUI 3 的桌面 SFTP 客户端——双窗格、多标签，快速、安全、完全免费。
 
-![Version](https://img.shields.io/badge/version-0.8.3-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.8.5-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
 
 官网 <https://ifrees.top> · 发布页 <https://github.com/iFreeshine/iFreeSftp/releases> · 赞助 <https://afdian.com/a/ifree>
 
@@ -61,7 +61,7 @@ locales\               # en-US / zh-CN 语言词典——可直接编辑翻译�
 
 ![主界面](docs/screenshots/app-main-dark.png)
 
-![浅色主题](docs/screenshots/app-2.png)
+![浅色主题](docs/screenshots/app-main-light.png)
 
 ![设置](docs/screenshots/app-settings.png)
 

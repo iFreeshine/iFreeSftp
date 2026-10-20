@@ -55,7 +55,9 @@
                 Padding="12,8"
                 HorizontalScrollBarVisibility="Disabled"
                 VerticalScrollBarVisibility="Auto">
-                <ItemsControl x:Name="LogList" ItemsSource="{x:Bind Lines}">
+                <ItemsControl
+                    x:Name="LogList"
+                    ItemsSource="{x:Bind Lines}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="services:TerminalLogEntry">
                             <Grid

@@ -407,20 +407,24 @@ public sealed partial class HostPanel : UserControl
 
     /// <summary>
     /// 导入向导回调: 逐条转 HostProfile 追加到工作集与卡片列表, 立即落盘 (与复制菜单同款
-    /// 导入即存语义)。日志只记条数, 不落任何会话内容。
+    /// 导入即存语义)。日志只记条数, 不落任何会话内容。落盘走 AppendHosts 只追加导入条目,
+    /// 不提交工作集里其他未保存修改 (那些随显式保存/未保存关闭回滚走)。
     /// </summary>
     private void ImportOverlay_ImportRequested(List<ImportedSession> sessions)
     {
+        var imported = new List<HostProfile>(sessions.Count);
         foreach (var session in sessions)
         {
             var host = HostImportParser.ToHostProfile(session);
             HostStoreService.Hosts.Add(host);
             _list.Add(host);
+            imported.Add(host);
         }
 
         UpdateEmptyHint();
-        HostStoreService.Save();
-        _dirty = false; // N4 修复：Save 之后工作集与磁盘一致，不能再标脏（否则误触发其他保存路径）
+        HostStoreService.AppendHosts(imported);
+        // 不动 _dirty: 工作集里其他未保存修改的脏标志保持原值
+        // (导入条目已落盘, Reload 后也会回来, 不需要为此标脏/清脏)。
         TerminalLogService.Log(string.Format(
             LocalizationService.GetString("LogImportDone"), sessions.Count));
     }
@@ -500,8 +504,8 @@ public sealed partial class HostPanel : UserControl
         }
 
         // 关闭面板回主页; 连接过程与结果在右下角主机命令窗输出。
-        // 只有连接成功才会构建 tab 与远程容器 (FolderContainer.ConnectAndOpenAsync),
-        // 失败不建 tab, 保持窗格原状。
+        // tab 先行 (FolderContainer.ConnectAndOpenAsync): 新标签意图立即落位
+        // 主机 tab (名称+IP), 连接失败不撤销 tab, 错误显示在该 tab 状态栏。
         RequestClose();
 
         var (ok, fingerprint) = await (ConnectRequested?.Invoke(ConnectPane, mode == "new", host)
@@ -521,8 +525,13 @@ public sealed partial class HostPanel : UserControl
             if (target is not null)
             {
                 target.HostKeyFingerprint = fingerprint;
-                HostStoreService.Save();
-                TerminalLogService.Log(LocalizationService.GetString("LogFingerprintSaved"));
+                // 单条落盘只写回盘上该记录的指纹, 不连带提交工作集里其他未保存编辑
+                // (全量 Save 会把它们一并写盘, 使"未保存关闭"的 Reload 回滚失效)。
+                // 盘上无记录(新增未保存/关键字已改未保存)时指纹留在工作集, 随显式保存落盘。
+                if (HostStoreService.SaveSingle(target))
+                {
+                    TerminalLogService.Log(LocalizationService.GetString("LogFingerprintSaved"));
+                }
             }
         }
     }
@@ -587,7 +596,9 @@ public sealed partial class HostPanel : UserControl
         copy.Name = $"{host.Name} {LocalizationService.GetString("DuplicateSuffix")}";
         HostStoreService.Hosts.Insert(index + 1, copy);
         _list.Insert(index + 1, copy);
-        HostStoreService.Save(); // 复制即落盘, 副本不会因未保存关闭而丢失
+        // 只把副本追加进存档 (AppendHosts), 不全量提交工作集里其他未保存修改;
+        // Reload 时副本已在盘上, 不会因未保存关闭而丢失。
+        HostStoreService.AppendHosts(new[] { copy });
         _dirty = true;
         HostList.SelectedItem = copy;
     }
@@ -629,7 +640,7 @@ public sealed partial class HostPanel : UserControl
     private void EditBtn_Loading(object sender, object args)
     {
         var tip = LocalizationService.GetString("EditHost");
-        ToolTipService.SetToolTip((FrameworkElement)sender, MakeAccentTip(tip));
+        ToolTipService.SetToolTip((FrameworkElement)sender, App.MakeAccentTip(tip));
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName((FrameworkElement)sender, tip);
     }
 
@@ -1078,11 +1089,11 @@ public sealed partial class HostPanel : UserControl
     private void ApplyResources()
     {
         TitleText.Text = LocalizationService.GetString("HostPanelTitle");
-        ToolTipService.SetToolTip(AddBtn, MakeAccentTip(LocalizationService.GetString("AddHost")));
+        ToolTipService.SetToolTip(AddBtn, App.MakeAccentTip(LocalizationService.GetString("AddHost")));
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(AddBtn, LocalizationService.GetString("AddHost"));
         var closeText = LocalizationService.GetString("Close");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(TitleCloseBtn, closeText);
-        ToolTipService.SetToolTip(TitleCloseBtn, MakeAccentTip(closeText));
+        ToolTipService.SetToolTip(TitleCloseBtn, App.MakeAccentTip(closeText));
         GeneralTab.Header = LocalizationService.GetString("TabGeneral");
         SyncTab.Header = LocalizationService.GetString("TabSync");
         TransferTab.Header = LocalizationService.GetString("TabTransfer");
@@ -1110,14 +1121,8 @@ public sealed partial class HostPanel : UserControl
         CloseBtn.Content = LocalizationService.GetString("Close");
         EmptyHint.Text = LocalizationService.GetString("EmptyHostList");
         var importText = LocalizationService.GetString("ImportHosts");
-        ToolTipService.SetToolTip(ImportBtn, MakeAccentTip(importText));
+        ToolTipService.SetToolTip(ImportBtn, App.MakeAccentTip(importText));
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ImportBtn, importText);
         ImportOverlay.ApplyResources();
     }
-
-    private static ToolTip MakeAccentTip(string text) => new()
-    {
-        Content = text,
-        Style = (Style)Application.Current.Resources["AccentToolTipStyle"],
-    };
 }

@@ -46,3 +46,19 @@ public class RemotePathTests
     public void Join_ReturnsExpected(string dir, string name, string expected)
         => Assert.Equal(expected, RemotePath.Join(dir, name));
 }
+
+// 主机 tab 标题 ("名称 (IP)"): 连接落位即写入, hover tooltip 显示全文
+public class HostTabNamingTests
+{
+    [Theory]
+    [InlineData("我的服务器", "192.168.1.10", "我的服务器 (192.168.1.10)")]
+    [InlineData("  web  ", "  example.com  ", "web (example.com)")]  // 两端空白裁剪
+    [InlineData("", "10.0.0.1", "10.0.0.1")]                          // 名称空只显示地址
+    [InlineData(null, "10.0.0.1", "10.0.0.1")]
+    [InlineData("10.0.0.1", "10.0.0.1", "10.0.0.1")]                  // 名称与地址相同不重复
+    [InlineData("vps", null, "vps")]                                  // 地址缺失回退名称
+    [InlineData(null, null, "")]                                      // 双空: 空标题
+    [InlineData("   ", "", "")]
+    public void Build_ReturnsExpected(string? name, string? host, string expected)
+        => Assert.Equal(expected, HostTabNaming.Build(name, host));
+}

@@ -26,6 +26,18 @@ public partial class App : Application
     /// <summary>主窗口引用，供 ThemeService 等服务访问。</summary>
     public static Window? MainAppWindow { get; private set; }
 
+    /// <summary>
+    /// 全局 tooltip 令牌的创建入口 (样式 AccentToolTipStyle 定义见 App.xaml):
+    /// 蓝色背景白字、显示在宿主元素下方 (Placement=Bottom)。
+    /// 全应用 tooltip 统一走本方法; 不要 ToolTipService.SetToolTip(元素, 字符串)——
+    /// 字符串重载会回落系统灰底默认样式, 与令牌外观不一致。
+    /// </summary>
+    public static ToolTip MakeAccentTip(string text) => new()
+    {
+        Content = text,
+        Style = (Style)Current.Resources["AccentToolTipStyle"],
+    };
+
     // —— 单实例 ——
     // 字段保引用: Mutex 被 GC 回收会提前释放互斥, 单实例随之失效
     private static Mutex? _singleInstanceMutex;

@@ -6,12 +6,24 @@ All notable, user-visible changes will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`).
 
+## [0.8.5] - 2026-10-18
+
+Resumable transfer enhancements, post-transfer verification and tar-accelerated directory transfer.
+
+### Added
+- Resumable transfer strategy enhancements.
+- Post-transfer verification (off by default).
+- tar-accelerated directory transfer.
+
+### Improved
+- Corrected some queue strategies.
+
 ## [0.8.3] - 2026-10-16
 
 Mica material and import wizard polish.
 
 ### Added
-- Mica background toggle: Settings → Appearance can enable the Windows 11 Mica material — the title bar, window border and container gaps turn translucent and show the system backdrop.
+- Mica background toggle: Settings → Appearance can enable the Windows 11 Mica material — the title bar, window border and container gaps turn translucent and show the system backdrop, while file areas stay solid for readability. Off by default; the setting persists and adapts to light/dark theme switches.
 
 ### Fixed
 - Import wizard: the confirmation table is wider, columns now align precisely with the header, and subtle header/row separator lines make the table easier to scan.
@@ -75,7 +87,8 @@ First public release.
 - Language dictionaries moved to an external locales folder; user-created language files are discovered automatically
 - Synchronized browsing, file comparison, rubber-band selection, cross-pane drag-and-drop transfer
 
-[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.5...HEAD
+[0.8.5]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.3...v0.8.5
 [0.8.3]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.0...v0.8.1

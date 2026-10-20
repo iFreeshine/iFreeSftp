@@ -73,14 +73,24 @@
 
         <!-- 队列右键菜单: 按状态显隐, 弹出位置与可见性由代码后置 Root_RightTapped 决定
              (样式与终端命令窗一致: presenter 背景代码后置按主题直配, 字号 12)。
-             弹出规则: 传输中 = 暂停 + 停止 + 删除所有 / 暂停中 = 继续传输 + 停止 +
-             删除所有 / 全部成功或含失败 = 删除所有 + 重置并重新请求所有。队列空不弹 -->
+             弹出规则: 传输中 = 暂停 + 停止 + 清除已完成 / 暂停中 = 继续传输 + 停止 +
+             清除已完成 / 队列静止且有已完结 = 清除已完成 + 重置并重新请求所有。
+             队列空不弹 -->
         <MenuFlyout x:Name="QueueMenuFlyout">
             <MenuFlyoutItem x:Name="PauseItem" FontSize="12" Click="PauseItem_Click" />
             <MenuFlyoutItem x:Name="ResumeItem" FontSize="12" Click="ResumeItem_Click" />
             <MenuFlyoutItem x:Name="StopItem" FontSize="12" Click="StopItem_Click" />
-            <MenuFlyoutItem x:Name="DeleteAllItem" FontSize="12" Click="DeleteAllItem_Click" />
+            <MenuFlyoutItem x:Name="ClearDoneItem" FontSize="12" Click="ClearDoneItem_Click" />
+            <MenuFlyoutItem x:Name="ClearAllItem" FontSize="12" Click="ClearAllItem_Click" />
             <MenuFlyoutItem x:Name="RetryAllItem" FontSize="12" Click="RetryAllItem_Click" />
+        </MenuFlyout>
+
+        <!-- 行右键菜单: 取消(等待/传输中) / 重试(失败/已取消) / 移除(已完结),
+             显隐由 Row_RightTapped 按行任务状态决定 -->
+        <MenuFlyout x:Name="RowMenuFlyout">
+            <MenuFlyoutItem x:Name="RowCancelItem" FontSize="12" Click="RowCancelItem_Click" />
+            <MenuFlyoutItem x:Name="RowRetryItem" FontSize="12" Click="RowRetryItem_Click" />
+            <MenuFlyoutItem x:Name="RowRemoveItem" FontSize="12" Click="RowRemoveItem_Click" />
         </MenuFlyout>
     </UserControl.Resources>
 
@@ -185,7 +195,11 @@
             SelectionMode="None">
             <ListView.ItemTemplate>
                 <DataTemplate>
-                    <Grid x:Name="RowRoot" Padding="12,5" ColumnSpacing="12">
+                    <Grid
+                        x:Name="RowRoot"
+                        Padding="12,5"
+                        ColumnSpacing="12"
+                        RightTapped="Row_RightTapped">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="2*" />
                             <ColumnDefinition Width="2*" />

@@ -725,6 +725,9 @@
   <data name="LogConnectFailed" xml:space="preserve">
     <value>连接失败：{0}</value>
   </data>
+  <data name="LogConnectUnknown" xml:space="preserve">
+    <value>未返回错误详情</value>
+  </data>
   <data name="LogRetry" xml:space="preserve">
     <value>连接失败：{0}，{1} 秒后进行第 {2}/{3} 次重试 …</value>
   </data>
@@ -917,8 +920,11 @@
   <data name="QMenuStop" xml:space="preserve">
     <value>停止</value>
   </data>
-  <data name="QMenuDeleteAll" xml:space="preserve">
-    <value>删除所有</value>
+  <data name="QMenuClearDone" xml:space="preserve">
+    <value>清除已完成</value>
+  </data>
+  <data name="QMenuClearAll" xml:space="preserve">
+    <value>清除所有</value>
   </data>
   <data name="QMenuRetryAll" xml:space="preserve">
     <value>重置并重新请求所有</value>
@@ -926,8 +932,32 @@
   <data name="QStatePaused" xml:space="preserve">
     <value>已暂停</value>
   </data>
-  <data name="QStoppedReason" xml:space="preserve">
-    <value>已停止</value>
+  <data name="QStateCancelled" xml:space="preserve">
+    <value>已取消</value>
+  </data>
+  <data name="QMenuRowCancel" xml:space="preserve">
+    <value>取消</value>
+  </data>
+  <data name="QMenuRowRetry" xml:space="preserve">
+    <value>重试</value>
+  </data>
+  <data name="QMenuRowRemove" xml:space="preserve">
+    <value>移除</value>
+  </data>
+  <data name="TabCloseTitle" xml:space="preserve">
+    <value>关闭标签页</value>
+  </data>
+  <data name="TabCloseContent" xml:space="preserve">
+    <value>此标签页仍有进行中的传输任务，如何处理？</value>
+  </data>
+  <data name="TabCloseBackground" xml:space="preserve">
+    <value>后台继续</value>
+  </data>
+  <data name="TabCloseCancelQueue" xml:space="preserve">
+    <value>取消队列并关闭</value>
+  </data>
+  <data name="TabCloseStay" xml:space="preserve">
+    <value>不关了</value>
   </data>
   <data name="LogQueuePaused" xml:space="preserve">
     <value>传输已暂停</value>
@@ -1061,5 +1091,117 @@
   </data>
   <data name="LogImportDone" xml:space="preserve">
     <value>已从本机来源导入 {0} 条主机</value>
+  </data>
+
+  <data name="ResumeLabel" xml:space="preserve">
+    <value>断点续传</value>
+  </data>
+  <data name="ResumeHint" xml:space="preserve">
+    <value>开启后，大文件传输中断可从断点续传：目标小于源时追加，大小相等或目标更大一律全量重传。同名旧文件会先弹窗确认，选择"覆盖"即全量重传，不会误追加。适合大文件经不稳定链路传输，默认开启。</value>
+  </data>
+  <data name="VerifyAfterLabel" xml:space="preserve">
+    <value>传输后校验</value>
+  </data>
+  <data name="VerifyAfterHint" xml:space="preserve">
+    <value>传输完成后自动比对本地与远端文件杂凑（经 exec 通道，不占传输链路），不一致的任务标记失败，尽早暴露损坏文件；命令通道不可用时跳过校验，不影响传输结果。默认关闭。</value>
+  </data>
+  <data name="VerifyAlgoAuto" xml:space="preserve">
+    <value>自动</value>
+  </data>
+  <data name="VerifyAlgoSha256" xml:space="preserve">
+    <value>SHA256</value>
+  </data>
+  <data name="VerifyAlgoSha512" xml:space="preserve">
+    <value>SHA512</value>
+  </data>
+  <data name="VerifyAlgoSm3" xml:space="preserve">
+    <value>SM3</value>
+  </data>
+  <data name="VerifyAlgoLabel" xml:space="preserve">
+    <value>校验算法</value>
+  </data>
+  <data name="VerifyAlgoDesc" xml:space="preserve">
+    <value>自动：按服务端支持情况选最强算法（SHA256 → SHA512 → SM3）；固定算法不可用时校验跳过</value>
+  </data>
+  <data name="TarAccelLabel" xml:space="preserve">
+    <value>tar 打包加速</value>
+  </data>
+  <data name="TarAccelHint" xml:space="preserve">
+    <value>目录传输文件数较多时用单流打包替代逐文件往返（海量小文件数量级提速）；本地或服务端没有 tar、空间不足、命令失败时自动回退逐文件，结果不变。tar 模式为整目录单任务，失败只能整体重试。</value>
+  </data>
+  <data name="TarThresholdLabel" xml:space="preserve">
+    <value>tar 文件数阈值</value>
+  </data>
+  <data name="TarThresholdHint" xml:space="preserve">
+    <value>目录内文件数达到该值才改用单流打包，少量文件逐文件直传更快</value>
+  </data>
+  <data name="QStateResuming" xml:space="preserve">
+    <value>续传中</value>
+  </data>
+  <data name="QStateVerifying" xml:space="preserve">
+    <value>校验中</value>
+  </data>
+  <data name="QVerifyVerified" xml:space="preserve">
+    <value>已校验</value>
+  </data>
+  <data name="QVerifySkipped" xml:space="preserve">
+    <value>校验跳过</value>
+  </data>
+  <data name="QVerifyMismatch" xml:space="preserve">
+    <value>校验不匹配</value>
+  </data>
+  <data name="QVerifyMismatchDetail" xml:space="preserve">
+    <value>校验不匹配（本地 {0} / 远端 {1}）</value>
+  </data>
+  <data name="QStateTarMode" xml:space="preserve">
+    <value>tar 加速</value>
+  </data>
+  <data name="QTarFailHint" xml:space="preserve">
+    <value>tar 模式为整体传输，失败只能整体重试（无文件级续传）：</value>
+  </data>
+  <data name="LogTarMode" xml:space="preserve">
+    <value>[tar 加速] {0}（{1} 个文件，单流打包）</value>
+  </data>
+  <data name="LogTarNoLocalTar" xml:space="preserve">
+    <value>[tar 加速] 本机没有 tar 命令，回退逐文件传输</value>
+  </data>
+  <data name="LogTarLocalFail" xml:space="preserve">
+    <value>[tar 加速] 本机 tar 失败（退出码 {0}）：{1}</value>
+  </data>
+  <data name="LogTarExecFail" xml:space="preserve">
+    <value>[tar 加速] 服务端命令失败（退出码 {1}）：{0} → {2}</value>
+  </data>
+  <data name="LogTarRenameFailed" xml:space="preserve">
+    <value>[tar 加速] 临时目录切换失败，改为直接解包覆盖：{0}（{1}）</value>
+  </data>
+  <data name="LogTarCleanupFailed" xml:space="preserve">
+    <value>[tar 加速] 临时文件清理失败（不影响传输结果）：{0}（{1}）</value>
+  </data>
+  <data name="LogResumeConflict" xml:space="preserve">
+    <value>[续传] 目标大于源（内容可能已变），全量重传：{0}（目标 {1} 字节 / 源 {2} 字节）</value>
+  </data>
+  <data name="LogResumeFallback" xml:space="preserve">
+    <value>[续传] 追加失败，回退全量传输：{0}（{1}）</value>
+  </data>
+  <data name="LogVerifyMatch" xml:space="preserve">
+    <value>[校验] 校验通过：{0}（{1}）</value>
+  </data>
+  <data name="LogVerifyMismatch" xml:space="preserve">
+    <value>[校验] 校验不匹配：{0}（本地 {1} / 远端 {2}）</value>
+  </data>
+  <data name="LogVerifySkipped" xml:space="preserve">
+    <value>[校验] 校验跳过：{0}</value>
+  </data>
+  <data name="ResumeThresholdLabel" xml:space="preserve">
+    <value>续传阈值</value>
+  </data>
+  <data name="ResumeThresholdHint" xml:space="preserve">
+    <value>小于该值的文件一律全量重传（重传代价可忽略，阈值宜取大不取小）</value>
+  </data>
+  <data name="ValueFormatKb" xml:space="preserve">
+    <value>{0} KB</value>
+  </data>
+  <data name="ValueFormatFiles" xml:space="preserve">
+    <value>{0} 个文件</value>
   </data>
 </root>

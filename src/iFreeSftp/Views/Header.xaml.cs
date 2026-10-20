@@ -53,7 +53,8 @@ public sealed partial class Header : Window
         // 面板关闭请求 (面板内部处理完保存/丢弃后通知隐藏覆盖层)。
         HostPanelOverlay.CloseRequested += () => HostPanelOverlay.Visibility = Visibility.Collapsed;
         // 主机连接: 按面板指定的窗格 (Left/Right) 与 tab 意图发起连接,
-        // 只有连接成功才会构建 tab 与远程容器 (失败仅命令窗日志)。
+        // tab 先行: 新标签意图立即落位主机 tab (名称+IP, 连接成败均保留),
+        // 失败把错误写进该 tab 状态栏与命令窗。
         HostPanelOverlay.ConnectRequested = (pane, newTab, host) =>
         {
             var main = RootFrame.Content as MainContainer;
@@ -94,6 +95,9 @@ public sealed partial class Header : Window
 
         // Mica 半透明背景: 设置开关控制窗口骨架层 (RootGrid) 透明化,
         // 主题切换时重赋纯色画刷 (Mica 开启时保持透明让系统材质透出)。
+        // 生命周期约定: 本窗口为进程级单例主窗口, 生命周期 = 进程, 构造期静态事件
+        // 订阅 (含 lambda, 无法退订) 依赖进程退出回收, 不构成泄漏; 实例事件已在
+        // 下方 Closed 中退订。
         ThemeService.ThemeChanged += _ => ApplyMicaBackground();
         AppSettingsService.SettingsChanged += OnMicaSettingChanged;
         ApplyMicaBackground();
@@ -144,9 +148,7 @@ public sealed partial class Header : Window
     {
         RootGrid.Background = AppSettingsService.MicaEnabled
             ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Colors.Transparent)
-            : new Microsoft.UI.Xaml.Media.SolidColorBrush(ThemeService.IsDark
-                ? Windows.UI.Color.FromArgb(255, 0x26, 0x30, 0x3D) // Dark HeaderAreaBrush
-                : Windows.UI.Color.FromArgb(255, 0xE9, 0xE9, 0xE9)); // Light HeaderAreaBrush
+            : new Microsoft.UI.Xaml.Media.SolidColorBrush(ThemeService.HeaderAreaColor());
 
         if (AppSettingsService.MicaEnabled)
         {
@@ -296,27 +298,27 @@ public sealed partial class Header : Window
         // 主题图标: 暗色显示月亮(E708), 亮色显示太阳(E706)。
         // 注意 Segoe Fluent Icons: E706=太阳, E708=月亮 (与直觉相反, 已实测字形)。
         ThemeIcon.Glyph = ThemeService.IsDark ? "\uE708" : "\uE706";
-        ToolTipService.SetToolTip(ThemeToggleBtn, CreateAccentToolTip(LocalizationService.GetString("ThemeToggleLabel")));
+        ToolTipService.SetToolTip(ThemeToggleBtn, App.MakeAccentTip(LocalizationService.GetString("ThemeToggleLabel")));
         AutomationProperties.SetName(ThemeToggleBtn, LocalizationService.GetString("ThemeToggleLabel"));
 
         // 主机文字按钮与设置图标按钮。
         HostBtnText.Text = LocalizationService.GetString("Host");
-        ToolTipService.SetToolTip(SettingsBtn, CreateAccentToolTip(LocalizationService.GetString("SettingsLabel")));
+        ToolTipService.SetToolTip(SettingsBtn, App.MakeAccentTip(LocalizationService.GetString("SettingsLabel")));
         AutomationProperties.SetName(SettingsBtn, LocalizationService.GetString("SettingsLabel"));
 
         // 模式胶囊 (主机按钮左侧): 同步浏览/文件比对, 文字显示在 tooltip。
         // tooltip 挂透明宿主 (Grid) 而非按钮: 按钮禁用时不参与命中测试, 挂按钮上 disable 无 tooltip;
         // 读屏可访问名挂实际按钮 (焦点落在 ToggleButton 上)。
-        ToolTipService.SetToolTip(SyncBrowseToggleHost, CreateAccentToolTip(LocalizationService.GetString("HeaderSyncBrowse")));
+        ToolTipService.SetToolTip(SyncBrowseToggleHost, App.MakeAccentTip(LocalizationService.GetString("HeaderSyncBrowse")));
         AutomationProperties.SetName(SyncBrowseToggle, LocalizationService.GetString("HeaderSyncBrowse"));
-        ToolTipService.SetToolTip(CompareToggleHost, CreateAccentToolTip(LocalizationService.GetString("HeaderCompare")));
+        ToolTipService.SetToolTip(CompareToggleHost, App.MakeAccentTip(LocalizationService.GetString("HeaderCompare")));
         AutomationProperties.SetName(CompareToggle, LocalizationService.GetString("HeaderCompare"));
 
         // 语言按钮 tooltip 显示即将切换到的目标语言。
         string langName = LocalizationService.CurrentCulture.StartsWith("zh", System.StringComparison.OrdinalIgnoreCase)
             ? LocalizationService.GetString("LangEnglish")
             : LocalizationService.GetString("LangChinese");
-        ToolTipService.SetToolTip(LangToggleBtn, CreateAccentToolTip(langName));
+        ToolTipService.SetToolTip(LangToggleBtn, App.MakeAccentTip(langName));
         AutomationProperties.SetName(LangToggleBtn, langName);
 
         // 更新徽标文案随语言重刷 (可见性重算幂等)。
@@ -360,13 +362,6 @@ public sealed partial class Header : Window
             // 系统拒绝启动: 静默
         }
     }
-
-    /// <summary>创建图标按钮的 tooltip: 蓝色背景、显示在图标下方 (样式定义见 App.xaml)。</summary>
-    private static ToolTip CreateAccentToolTip(string text) => new()
-    {
-        Content = text,
-        Style = (Style)Application.Current.Resources["AccentToolTipStyle"],
-    };
 
     /// <summary>
     /// 右侧按钮组紧贴系统 caption 按钮, 且整体与 caption 按钮垂直居中。

@@ -80,27 +80,67 @@ public static class HostStoreService
         {
             Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
             // 持久化快照: 密码以 DPAPI(当前用户) 密文落盘, 内存工作集保持明文。
-            var snapshot = Hosts.Select(h => new HostProfile
-            {
-                Name = h.Name,
-                Host = h.Host,
-                Port = h.Port,
-                AuthMode = h.AuthMode,
-                KeyFilePath = h.KeyFilePath,
-                Username = h.Username,
-                Password = Protect(h.Password),
-                LocalSyncPath = h.LocalSyncPath,
-                RemoteSyncPath = h.RemoteSyncPath,
-                SyncEnabled = h.SyncEnabled,
-                CompareEnabled = h.CompareEnabled,
-                KeepAliveEnabled = h.KeepAliveEnabled,
-                KeepAliveIntervalSeconds = h.KeepAliveIntervalSeconds,
-                TimeoutSeconds = h.TimeoutSeconds,
-                MaxRetries = h.MaxRetries,
-                RetryDelaySeconds = h.RetryDelaySeconds,
-                HostKeyFingerprint = h.HostKeyFingerprint,
-            }).ToList();
+            var snapshot = Hosts.Select(Snapshot).ToList();
             File.WriteAllText(StorePath, JsonSerializer.Serialize(new HostStore { hosts = snapshot }, JsonOptions));
+        }
+    }
+
+    /// <summary>单条落盘快照：密码以 DPAPI(当前用户) 密文写入, 内存工作集保持明文。</summary>
+    private static HostProfile Snapshot(HostProfile h) => new()
+    {
+        Name = h.Name,
+        Host = h.Host,
+        Port = h.Port,
+        AuthMode = h.AuthMode,
+        KeyFilePath = h.KeyFilePath,
+        Username = h.Username,
+        Password = Protect(h.Password),
+        LocalSyncPath = h.LocalSyncPath,
+        RemoteSyncPath = h.RemoteSyncPath,
+        SyncEnabled = h.SyncEnabled,
+        CompareEnabled = h.CompareEnabled,
+        KeepAliveEnabled = h.KeepAliveEnabled,
+        KeepAliveIntervalSeconds = h.KeepAliveIntervalSeconds,
+        TimeoutSeconds = h.TimeoutSeconds,
+        MaxRetries = h.MaxRetries,
+        RetryDelaySeconds = h.RetryDelaySeconds,
+        HostKeyFingerprint = h.HostKeyFingerprint,
+    };
+
+    /// <summary>
+    /// 追加主机进盘上存档（复制/导入的"即存"路径）：把传入主机以全字段快照追加进
+    /// hosts.json，不动存档中已有记录，也不提交内存工作集里其他未保存修改——
+    /// 全量 Save 会把工作集里的脏编辑一并落盘, 使面板"未保存关闭"的 Reload 回滚失效。
+    /// 内存工作集的追加由调用方先行完成, 本方法只管盘。返回是否成功写盘。
+    /// </summary>
+    public static bool AppendHosts(IEnumerable<HostProfile> hosts)
+    {
+        lock (_gate)
+        {
+            try
+            {
+                var items = hosts as ICollection<HostProfile> ?? hosts?.ToList() ?? new List<HostProfile>();
+                if (items.Count == 0)
+                {
+                    return true;
+                }
+
+                var doc = File.Exists(StorePath)
+                    ? JsonDocument.Parse(File.ReadAllText(StorePath)).RootElement
+                    : (JsonElement?)null;
+                var stored = doc is not null && doc.Value.TryGetProperty("hosts", out var hostsEl)
+                    ? JsonSerializer.Deserialize<List<HostProfile>>(hostsEl.GetRawText(), JsonOptions) ?? new()
+                    : new();
+                stored.AddRange(items.Select(Snapshot));
+                Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
+                File.WriteAllText(StorePath, JsonSerializer.Serialize(new HostStore { hosts = stored }, JsonOptions));
+                return true;
+            }
+            catch
+            {
+                // 存档损坏/占用等异常：跳过落盘, 主机仍留在内存工作集, 随显式 Save 落盘。
+                return false;
+            }
         }
     }
 

@@ -11,9 +11,15 @@ namespace iFreeSftp.Services;
 /// </summary>
 public static class AppSettingsService
 {
-    private static readonly string StorePath = Path.Combine(
+    // 非 readonly: 仅供测试经 SetStorePathForTests 重定向到临时目录（测试工程经
+    // InternalsVisibleTo 调用）, 避免读写真实用户存档; 应用生命周期内从不改写。
+    private static string StorePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "iFreeSftp", "settings.json");
+
+    /// <summary>仅供测试: 把存档路径重定向到指定文件（真实应用从不调用）。
+    /// Load/Save/FlushNow 均按当前路径读写, 重定向后与真实存档完全隔离。</summary>
+    internal static void SetStorePathForTests(string path) => StorePath = path;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -91,11 +97,17 @@ public static class AppSettingsService
     /// 让系统 Mica 材质从标题栏/边框/间隙透出（仅 Windows 11 有效）。</summary>
     public static bool MicaEnabled { get; private set; } = false;
 
-    /// <summary>传输-断点续传开关，默认**关闭**（保守默认，见全局规范 4.4）。
-    /// 开启后: 目标已存在且严格小于源时才从断点追加。相等/更大一律全量重传——
+    /// <summary>传输-断点续传开关，默认**开启**（大文件经不稳定链路的核心必备能力,
+    /// 竞品基线）。目标已存在且严格小于源时从断点追加; 相等/更大一律全量重传——
     /// "远端存在同名的较小旧文件"时追加会把旧内容缝进新文件产生损坏, 该风险
-    /// 无法从大小可靠区分, 故需用户显式知情开启（适合大文件经不稳定链路传输）。</summary>
-    public static bool ResumeEnabled { get; private set; } = false;
+    /// 无法从大小可靠区分, 宁可重传不丢数据。可关闭, 关闭后行为与无续传版一致。</summary>
+    public static bool ResumeEnabled { get; private set; } = true;
+
+    /// <summary>传输-断点续传阈值（KB, 200-1024），默认 1024。文件小于该值时只能
+    /// 全量重传不续传——小文件重传代价可忽略、续传收益趋零（阈值宜取大不取小,
+    /// 避免为省少量字节引入缝合风险）。当前版本设置面板不暴露该项（属有意收窄,
+    /// 避免与断点续传开关叠加造成语义困惑）, 仅可通过配置文件 resumeThresholdKb 调整。</summary>
+    public static int ResumeThresholdKb { get; private set; } = 1024;
 
     /// <summary>传输-tar 打包加速开关，默认开启。目录传输（本地→远程 / 远程→本地）
     /// 文件数达到 <see cref="TarAccelMinFiles"/> 时走"单流打包"替代逐文件 SFTP
@@ -106,6 +118,15 @@ public static class AppSettingsService
     /// <summary>传输-tar 加速生效的最小文件数（10-10000），默认 50。低于该阈值
     /// 逐文件传输的往返开销可忽略, 不值得打包的额外磁盘与命令开销。</summary>
     public static int TarAccelMinFiles { get; private set; } = 50;
+
+    /// <summary>传输-传输后校验开关，默认**关闭**。开启后每个传输成功的单文件任务
+    /// 异步比对本地与远端杂凑（exec 通道，不占传输并发），不匹配 → 任务失败
+    /// "校验不匹配"；校验本身不可用 → "校验跳过"，不影响传输结果。</summary>
+    public static bool VerifyAfterTransfer { get; private set; }
+
+    /// <summary>校验算法: "Auto"（按服务端可用性 SHA256→SHA512→SM3 顺位回退, 默认）|
+    /// "SHA256" | "SHA512" | "SM3"（显式指定不可用时校验跳过, 不擅自换算法）。</summary>
+    public static string VerifyAlgorithm { get; private set; } = "Auto";
 
     /// <summary>任一设置变更后触发 (跨面板联动, 如更新提醒开关 → 标题徽标重算;
     /// 订阅方需自行 marshal 到 UI 线程并保证处理幂等)。</summary>
@@ -218,6 +239,11 @@ public static class AppSettingsService
                 ResumeEnabled = resume.GetBoolean();
             }
 
+            if (doc.TryGetProperty("resumeThresholdKb", out var resumeThreshold) && resumeThreshold.TryGetInt32(out var rt))
+            {
+                ResumeThresholdKb = Math.Clamp(rt, 200, 1024);
+            }
+
             if (doc.TryGetProperty("tarAccelEnabled", out var tarAccel)
                 && tarAccel.ValueKind is JsonValueKind.True or JsonValueKind.False)
             {
@@ -227,6 +253,21 @@ public static class AppSettingsService
             if (doc.TryGetProperty("tarAccelMinFiles", out var tarMin) && tarMin.TryGetInt32(out var tm))
             {
                 TarAccelMinFiles = Math.Clamp(tm, 10, 10000);
+            }
+
+            if (doc.TryGetProperty("verifyAfterTransfer", out var verify)
+                && verify.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                VerifyAfterTransfer = verify.GetBoolean();
+            }
+
+            if (doc.TryGetProperty("verifyAlgorithm", out var verifyAlgo) && verifyAlgo.ValueKind == JsonValueKind.String)
+            {
+                var algo = verifyAlgo.GetString();
+                if (algo is "Auto" or "SHA256" or "SHA512" or "SM3")
+                {
+                    VerifyAlgorithm = algo;
+                }
             }
         }
         catch
@@ -349,6 +390,13 @@ public static class AppSettingsService
         Save();
     }
 
+    /// <summary>记录断点续传阈值（KB, 200-1024）并落盘。</summary>
+    public static void SetResumeThresholdKb(int kb)
+    {
+        ResumeThresholdKb = Math.Clamp(kb, 200, 1024);
+        Save();
+    }
+
     /// <summary>记录 tar 打包加速开关并落盘。</summary>
     public static void SetTarAccelEnabled(bool enabled)
     {
@@ -360,6 +408,20 @@ public static class AppSettingsService
     public static void SetTarAccelMinFiles(int count)
     {
         TarAccelMinFiles = Math.Clamp(count, 10, 10000);
+        Save();
+    }
+
+    /// <summary>记录传输后校验开关并落盘。</summary>
+    public static void SetVerifyAfterTransfer(bool enabled)
+    {
+        VerifyAfterTransfer = enabled;
+        Save();
+    }
+
+    /// <summary>记录校验算法（Auto/SHA256/SHA512/SM3, 未知值回落 Auto）并落盘。</summary>
+    public static void SetVerifyAlgorithm(string algorithm)
+    {
+        VerifyAlgorithm = algorithm is "SHA256" or "SHA512" or "SM3" ? algorithm : "Auto";
         Save();
     }
 
@@ -413,8 +475,11 @@ public static class AppSettingsService
                 updateCheckEnabled = UpdateCheckEnabled,
                 micaEnabled = MicaEnabled,
                 resumeEnabled = ResumeEnabled,
+                resumeThresholdKb = ResumeThresholdKb,
                 tarAccelEnabled = TarAccelEnabled,
                 tarAccelMinFiles = TarAccelMinFiles,
+                verifyAfterTransfer = VerifyAfterTransfer,
+                verifyAlgorithm = VerifyAlgorithm,
             }, JsonOptions));
     }
 }

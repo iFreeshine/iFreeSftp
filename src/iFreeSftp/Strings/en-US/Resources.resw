@@ -725,6 +725,9 @@ Update and trust only if you are aware of this change; otherwise reject to preve
   <data name="LogConnectFailed" xml:space="preserve">
     <value>Connection failed: {0}</value>
   </data>
+  <data name="LogConnectUnknown" xml:space="preserve">
+    <value>no error details returned</value>
+  </data>
   <data name="LogRetry" xml:space="preserve">
     <value>Connection failed: {0}. Retrying (attempt {2}/{3}) in {1} s …</value>
   </data>
@@ -917,8 +920,11 @@ Update and trust only if you are aware of this change; otherwise reject to preve
   <data name="QMenuStop" xml:space="preserve">
     <value>Stop</value>
   </data>
-  <data name="QMenuDeleteAll" xml:space="preserve">
-    <value>Delete all</value>
+  <data name="QMenuClearDone" xml:space="preserve">
+    <value>Clear completed</value>
+  </data>
+  <data name="QMenuClearAll" xml:space="preserve">
+    <value>Clear all</value>
   </data>
   <data name="QMenuRetryAll" xml:space="preserve">
     <value>Reset and re-request all</value>
@@ -926,8 +932,32 @@ Update and trust only if you are aware of this change; otherwise reject to preve
   <data name="QStatePaused" xml:space="preserve">
     <value>Paused</value>
   </data>
-  <data name="QStoppedReason" xml:space="preserve">
-    <value>Stopped</value>
+  <data name="QStateCancelled" xml:space="preserve">
+    <value>Cancelled</value>
+  </data>
+  <data name="QMenuRowCancel" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
+  <data name="QMenuRowRetry" xml:space="preserve">
+    <value>Retry</value>
+  </data>
+  <data name="QMenuRowRemove" xml:space="preserve">
+    <value>Remove</value>
+  </data>
+  <data name="TabCloseTitle" xml:space="preserve">
+    <value>Close tab</value>
+  </data>
+  <data name="TabCloseContent" xml:space="preserve">
+    <value>This tab still has active transfer tasks. What would you like to do?</value>
+  </data>
+  <data name="TabCloseBackground" xml:space="preserve">
+    <value>Continue in background</value>
+  </data>
+  <data name="TabCloseCancelQueue" xml:space="preserve">
+    <value>Cancel queue and close</value>
+  </data>
+  <data name="TabCloseStay" xml:space="preserve">
+    <value>Keep tab</value>
   </data>
   <data name="LogQueuePaused" xml:space="preserve">
     <value>Transfer paused</value>
@@ -1061,5 +1091,117 @@ Update and trust only if you are aware of this change; otherwise reject to preve
   </data>
   <data name="LogImportDone" xml:space="preserve">
     <value>Imported {0} hosts from local sources</value>
+  </data>
+
+  <data name="ResumeLabel" xml:space="preserve">
+    <value>Resume transfer</value>
+  </data>
+  <data name="ResumeHint" xml:space="preserve">
+    <value>When enabled, interrupted large-file transfers resume from the breakpoint: the destination is appended to only if it is smaller than the source; equal or larger destinations are always re-sent in full. An existing file with the same name is confirmed via a conflict dialog — choosing Overwrite always re-sends in full and never appends. Intended for large files over unstable links; on by default.</value>
+  </data>
+  <data name="VerifyAfterLabel" xml:space="preserve">
+    <value>Verify after transfer</value>
+  </data>
+  <data name="VerifyAfterHint" xml:space="preserve">
+    <value>After each transfer, compare local and remote file hashes over the exec channel and flag mismatched files as failed to surface corruption early. Skips verification when the command channel is unavailable; never affects the transfer result. Off by default.</value>
+  </data>
+  <data name="VerifyAlgoAuto" xml:space="preserve">
+    <value>Auto</value>
+  </data>
+  <data name="VerifyAlgoSha256" xml:space="preserve">
+    <value>SHA256</value>
+  </data>
+  <data name="VerifyAlgoSha512" xml:space="preserve">
+    <value>SHA512</value>
+  </data>
+  <data name="VerifyAlgoSm3" xml:space="preserve">
+    <value>SM3</value>
+  </data>
+  <data name="VerifyAlgoLabel" xml:space="preserve">
+    <value>Hash algorithm</value>
+  </data>
+  <data name="VerifyAlgoDesc" xml:space="preserve">
+    <value>Auto: pick the strongest algorithm the server supports (SHA256 → SHA512 → SM3). A fixed algorithm that is unavailable skips verification.</value>
+  </data>
+  <data name="TarAccelLabel" xml:space="preserve">
+    <value>Tar packing acceleration</value>
+  </data>
+  <data name="TarAccelHint" xml:space="preserve">
+    <value>Directory transfers with many files use a single packed stream instead of per-file round trips (orders of magnitude faster for huge numbers of small files). Falls back to per-file transfer automatically when tar is missing, space runs out, or a command fails. Tar mode is one whole-directory task: a failure restarts the whole directory.</value>
+  </data>
+  <data name="TarThresholdLabel" xml:space="preserve">
+    <value>Tar file-count threshold</value>
+  </data>
+  <data name="TarThresholdHint" xml:space="preserve">
+    <value>Switch to single-stream packing only when a directory contains at least this many files; per-file transfer is faster for small batches.</value>
+  </data>
+  <data name="QStateResuming" xml:space="preserve">
+    <value>Resuming</value>
+  </data>
+  <data name="QStateVerifying" xml:space="preserve">
+    <value>Verifying</value>
+  </data>
+  <data name="QVerifyVerified" xml:space="preserve">
+    <value>Verified</value>
+  </data>
+  <data name="QVerifySkipped" xml:space="preserve">
+    <value>Verify skipped</value>
+  </data>
+  <data name="QVerifyMismatch" xml:space="preserve">
+    <value>Mismatch</value>
+  </data>
+  <data name="QVerifyMismatchDetail" xml:space="preserve">
+    <value>Checksum mismatch (local {0}, remote {1})</value>
+  </data>
+  <data name="QStateTarMode" xml:space="preserve">
+    <value>tar accel</value>
+  </data>
+  <data name="QTarFailHint" xml:space="preserve">
+    <value>Tar mode transfers the directory as a whole; a failure restarts everything (no per-file resume):</value>
+  </data>
+  <data name="LogTarMode" xml:space="preserve">
+    <value>[tar accel] {0} ({1} files, single packed stream)</value>
+  </data>
+  <data name="LogTarNoLocalTar" xml:space="preserve">
+    <value>[tar accel] No local tar command, falling back to per-file transfer</value>
+  </data>
+  <data name="LogTarLocalFail" xml:space="preserve">
+    <value>[tar accel] Local tar failed (exit {0}): {1}</value>
+  </data>
+  <data name="LogTarExecFail" xml:space="preserve">
+    <value>[tar accel] Server command failed (exit {1}): {0} -> {2}</value>
+  </data>
+  <data name="LogTarRenameFailed" xml:space="preserve">
+    <value>[tar accel] Temp dir switch failed, unpacking directly instead: {0} ({1})</value>
+  </data>
+  <data name="LogTarCleanupFailed" xml:space="preserve">
+    <value>[tar accel] Temp file cleanup failed (transfer itself unaffected): {0} ({1})</value>
+  </data>
+  <data name="LogResumeConflict" xml:space="preserve">
+    <value>[resume] Destination is larger than source (content may have changed), re-sending in full: {0} (dest {1} bytes / source {2} bytes)</value>
+  </data>
+  <data name="LogResumeFallback" xml:space="preserve">
+    <value>[resume] Append failed, falling back to full transfer: {0} ({1})</value>
+  </data>
+  <data name="LogVerifyMatch" xml:space="preserve">
+    <value>[verify] Matched: {0} ({1})</value>
+  </data>
+  <data name="LogVerifyMismatch" xml:space="preserve">
+    <value>[verify] Mismatch: {0} (local {1} / remote {2})</value>
+  </data>
+  <data name="LogVerifySkipped" xml:space="preserve">
+    <value>[verify] Skipped: {0}</value>
+  </data>
+  <data name="ResumeThresholdLabel" xml:space="preserve">
+    <value>Resume threshold</value>
+  </data>
+  <data name="ResumeThresholdHint" xml:space="preserve">
+    <value>Files smaller than this are always re-sent in full (cost is negligible; prefer a larger threshold)</value>
+  </data>
+  <data name="ValueFormatKb" xml:space="preserve">
+    <value>{0} KB</value>
+  </data>
+  <data name="ValueFormatFiles" xml:space="preserve">
+    <value>{0} files</value>
   </data>
 </root>

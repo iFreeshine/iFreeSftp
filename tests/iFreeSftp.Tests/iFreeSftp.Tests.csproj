@@ -29,6 +29,7 @@
     <Compile Include="..\..\src\iFreeSftp\Services\UrlGuard.cs" Link="Linked\Services\UrlGuard.cs" />
     <Compile Include="..\..\src\iFreeSftp\Services\HostStoreService.cs" Link="Linked\Services\HostStoreService.cs" />
     <Compile Include="..\..\src\iFreeSftp\Services\HostImportParser.cs" Link="Linked\Services\HostImportParser.cs" />
+    <Compile Include="..\..\src\iFreeSftp\Services\AppSettingsService.cs" Link="Linked\Services\AppSettingsService.cs" />
   </ItemGroup>
 
 </Project>

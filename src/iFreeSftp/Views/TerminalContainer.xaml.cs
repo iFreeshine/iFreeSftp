@@ -10,13 +10,14 @@ namespace iFreeSftp.Views;
 /// 终端容器：主机命令窗，位于右文件夹容器下方。
 /// 暗绿终端风格，无标题栏；每条日志独立段落（时间戳固定列 + 正文自动换行，
 /// 续行对齐时间戳之后）；日志来自 TerminalLogService，忙状态由 BusyChanged 驱动。
+/// 公用单一日志池，跨主机日志由 TerminalLogService 拼主机标签前缀（"[主机名 (IP)]"）区分来源。
 /// </summary>
 public sealed partial class TerminalContainer : UserControl
 {
     /// <summary>日志条数上限：超出后丢弃最早的条目，防止长会话内存/渲染膨胀。</summary>
     private const int MaxLines = 400;
 
-    /// <summary>日志集合（x:Bind 数据源；仅增删条目, 属性本身不更新）。</summary>
+    /// <summary>日志池（公用单池，全部日志进同一区域）。</summary>
     private ObservableCollection<TerminalLogEntry> Lines { get; } = new();
 
     public TerminalContainer()
@@ -44,10 +45,15 @@ public sealed partial class TerminalContainer : UserControl
                 Lines.RemoveAt(0);
             }
 
-            // 自动滚动到底。
-            LogScroll.UpdateLayout();
-            LogScroll.ChangeView(null, LogScroll.ScrollableHeight, null);
+            ScrollToBottom();
         });
+    }
+
+    /// <summary>自动滚动到底（有新条目时调用）。</summary>
+    private void ScrollToBottom()
+    {
+        LogScroll.UpdateLayout();
+        LogScroll.ChangeView(null, LogScroll.ScrollableHeight, null);
     }
 
     private void OnBusyChanged(bool busy)

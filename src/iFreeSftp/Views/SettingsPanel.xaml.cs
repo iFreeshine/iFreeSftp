@@ -227,6 +227,18 @@ public sealed partial class SettingsPanel : UserControl
         EditorModeOptions.SelectedIndex = AppSettingsService.EditorMode == "external" ? 1 : 0;
         EditorPathBox.Text = AppSettingsService.EditorPath;
         DeleteServerCmdToggle.IsOn = AppSettingsService.RemoteDeleteMode != "recursive";
+        ResumeToggle.IsOn = AppSettingsService.ResumeEnabled;
+        ResumeThresholdSlider.Value = AppSettingsService.ResumeThresholdKb; // 越界旧档自动 coerce 到边界
+        TarAccelToggle.IsOn = AppSettingsService.TarAccelEnabled;
+        TarThresholdSlider.Value = AppSettingsService.TarAccelMinFiles; // 越界旧档自动 coerce 到边界
+        VerifyToggle.IsOn = AppSettingsService.VerifyAfterTransfer;
+        VerifyAlgorithmBox.SelectedIndex = AppSettingsService.VerifyAlgorithm switch
+        {
+            "SHA256" => 1,
+            "SHA512" => 2,
+            "SM3" => 3,
+            _ => 0,
+        };
         KeepAliveToggle.IsOn = AppSettingsService.KeepAliveEnabled;
         KeepAliveIntervalSlider.Value = AppSettingsService.KeepAliveIntervalSeconds;
         UpdateCheckToggle.IsOn = AppSettingsService.UpdateCheckEnabled;
@@ -234,6 +246,9 @@ public sealed partial class SettingsPanel : UserControl
         UpdateKeepAliveIntervalEnabled();
         UpdateDeleteModeHint();
         UpdateEditorPathCardState();
+        UpdateResumeThresholdCardState(); // 联动卡状态可能残留在上次手动拨动开关时, 每次打开按当前开关纠正
+        UpdateTarThresholdCardState();
+        UpdateVerifyAlgorithmCardState();
         UpdateSliderValueTexts();
         _syncing = false;
     }
@@ -338,12 +353,16 @@ public sealed partial class SettingsPanel : UserControl
         var seconds = LocalizationService.GetString("ValueFormatSeconds");
         var times = LocalizationService.GetString("ValueFormatTimes");
         var tasks = LocalizationService.GetString("ValueFormatTasks");
+        var kb = LocalizationService.GetString("ValueFormatKb");
         TimeoutValueText.Text = string.Format(seconds, (int)TimeoutSlider.Value);
         MaxRetriesValueText.Text = string.Format(times, (int)MaxRetriesSlider.Value);
         RetryDelayValueText.Text = string.Format(seconds, (int)RetryDelaySlider.Value);
         OperationTimeoutValueText.Text = string.Format(seconds, (int)OperationTimeoutSlider.Value);
         ConcurrentValueText.Text = string.Format(tasks, (int)ConcurrentSlider.Value);
         KeepAliveIntervalValueText.Text = string.Format(seconds, (int)KeepAliveIntervalSlider.Value);
+        ResumeThresholdValueText.Text = string.Format(kb, (int)ResumeThresholdSlider.Value);
+        var files = LocalizationService.GetString("ValueFormatFiles");
+        TarThresholdValueText.Text = string.Format(files, (int)TarThresholdSlider.Value);
     }
 
     /// <summary>连接打开方式修改即时落盘（每次询问 / 当前标签页 / 新标签页）。</summary>
@@ -372,6 +391,102 @@ public sealed partial class SettingsPanel : UserControl
 
         AppSettingsService.SetRemoteDeleteMode(DeleteServerCmdToggle.IsOn ? "exec" : "recursive");
         UpdateDeleteModeHint();
+    }
+
+    private void ResumeToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetResumeEnabled(ResumeToggle.IsOn);
+        UpdateResumeThresholdCardState();
+    }
+
+    private void ResumeThresholdSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetResumeThresholdKb((int)ResumeThresholdSlider.Value);
+        UpdateSliderValueTexts();
+    }
+
+    /// <summary>tar 文件数阈值拖动即时落盘（10~10000 个文件）。</summary>
+    private void TarThresholdSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetTarAccelMinFiles((int)TarThresholdSlider.Value);
+        UpdateSliderValueTexts();
+    }
+
+    /// <summary>断点续传关闭时置灰阈值卡（续传本身不生效, 阈值无从谈起）。</summary>
+    private void UpdateResumeThresholdCardState()
+    {
+        var on = ResumeToggle.IsOn;
+        ResumeThresholdSlider.IsEnabled = on;
+        ResumeThresholdCard.Opacity = on ? 1 : 0.4;
+    }
+
+    /// <summary>tar 加速关闭时置灰阈值卡（加速不生效, 阈值无从谈起）。</summary>
+    private void UpdateTarThresholdCardState()
+    {
+        var on = TarAccelToggle.IsOn;
+        TarThresholdSlider.IsEnabled = on;
+        TarThresholdCard.Opacity = on ? 1 : 0.4;
+    }
+
+    /// <summary>校验关闭时置灰算法卡（不校验则算法无从谈起）。</summary>
+    private void UpdateVerifyAlgorithmCardState()
+    {
+        var on = VerifyToggle.IsOn;
+        VerifyAlgorithmBox.IsEnabled = on;
+        VerifyAlgorithmCard.Opacity = on ? 1 : 0.4;
+    }
+
+    private void TarAccelToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetTarAccelEnabled(TarAccelToggle.IsOn);
+        UpdateTarThresholdCardState();
+    }
+
+    private void VerifyToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetVerifyAfterTransfer(VerifyToggle.IsOn);
+        UpdateVerifyAlgorithmCardState();
+    }
+
+    private void VerifyAlgorithmBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetVerifyAlgorithm(VerifyAlgorithmBox.SelectedIndex switch
+        {
+            1 => "SHA256",
+            2 => "SHA512",
+            3 => "SM3",
+            _ => "Auto",
+        });
     }
 
     /// <summary>按开关状态刷新删除方式说明文字（语言切换时经 ApplyResources 重刷）。</summary>
@@ -565,6 +680,22 @@ public sealed partial class SettingsPanel : UserControl
         OpenModeNewItem.Content = LocalizationService.GetString("OpenModeNew");
         DeleteModeLabel.Text = LocalizationService.GetString("DeleteModeLabel");
         UpdateDeleteModeHint();
+        ResumeLabel.Text = LocalizationService.GetString("ResumeLabel");
+        ResumeHint.Text = LocalizationService.GetString("ResumeHint");
+        ResumeThresholdLabel.Text = LocalizationService.GetString("ResumeThresholdLabel");
+        ResumeThresholdHint.Text = LocalizationService.GetString("ResumeThresholdHint");
+        TarAccelLabel.Text = LocalizationService.GetString("TarAccelLabel");
+        TarAccelHint.Text = LocalizationService.GetString("TarAccelHint");
+        TarThresholdLabel.Text = LocalizationService.GetString("TarThresholdLabel");
+        TarThresholdHint.Text = LocalizationService.GetString("TarThresholdHint");
+        VerifyLabel.Text = LocalizationService.GetString("VerifyAfterLabel");
+        VerifyHint.Text = LocalizationService.GetString("VerifyAfterHint");
+        VerifyAlgoLabel.Text = LocalizationService.GetString("VerifyAlgoLabel");
+        VerifyAlgoDesc.Text = LocalizationService.GetString("VerifyAlgoDesc");
+        VerifyAlgoAutoItem.Content = LocalizationService.GetString("VerifyAlgoAuto");
+        VerifyAlgoSha256Item.Content = LocalizationService.GetString("VerifyAlgoSha256");
+        VerifyAlgoSha512Item.Content = LocalizationService.GetString("VerifyAlgoSha512");
+        VerifyAlgoSm3Item.Content = LocalizationService.GetString("VerifyAlgoSm3");
         ConcurrentLabel.Text = LocalizationService.GetString("ConcurrentTransfers");
         ConcurrentHint.Text = LocalizationService.GetString("ConcurrentTransfersHint");
         FileEditCatBtn.Content = LocalizationService.GetString("CategoryFileEdit");
@@ -623,6 +754,9 @@ public sealed partial class SettingsPanel : UserControl
         EditorModeDesc.Text = LocalizationService.GetString("EditorModeDesc");
         UpdateKeepAliveIntervalEnabled();
         UpdateEditorPathCardState();
+        UpdateResumeThresholdCardState();
+        UpdateTarThresholdCardState();
+        UpdateVerifyAlgorithmCardState();
         UpdateSliderValueTexts();
         UpdateRegistrationUi();
     }

@@ -211,7 +211,7 @@
                         <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Hidden">
                             <Grid Margin="20,16">
                                 <!-- 外观页: 主题 + 语言 -->
-                                <StackPanel x:Name="AppearancePanel" Spacing="4">
+                                <StackPanel x:Name="AppearancePanel" Spacing="8">
                                     <TextBlock
                                         x:Name="AppearanceTitle"
                                         Margin="0,0,0,12"
@@ -289,7 +289,7 @@
                                 </StackPanel>
 
                                 <!-- 连接页: 全局连接默认值 (超时/重试/重试延迟/打开方式/操作超时) -->
-                                <StackPanel x:Name="ConnectionPanel" Spacing="4" Visibility="Collapsed">
+                                <StackPanel x:Name="ConnectionPanel" Spacing="8" Visibility="Collapsed">
                                     <TextBlock
                                         x:Name="ConnectionTitle"
                                         Margin="0,0,0,12"
@@ -438,16 +438,19 @@
                                         </Grid>
                                     </Border>
 
-                                    <!-- 保活连接: 开关 = 统一贴右 ToggleSwitch 样式
+                                    <!-- 保活连接(母) + 保活间隔(子) = 母子组: 组内 StackPanel Spacing 1
+                                         子项贴住母项 (组间由外层面板 Spacing 8 分隔)。
+                                         开关 = 统一贴右 ToggleSwitch 样式
                                          (On/Off/Header 均 {x:Null} 清空占位 + Width 46 负 margin 贴右缘) -->
-                                    <Border Style="{StaticResource SettingsCardStyle}">
-                                        <Grid ColumnSpacing="16">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
-                                                <TextBlock x:Name="KeepAliveLabel" FontSize="13" />
+                                    <StackPanel Spacing="1">
+                                        <Border Style="{StaticResource SettingsCardStyle}">
+                                            <Grid ColumnSpacing="16">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                    <TextBlock x:Name="KeepAliveLabel" FontSize="13" />
                                                 <TextBlock x:Name="KeepAliveDesc" Style="{StaticResource SettingsDescStyle}" />
                                             </StackPanel>
                                             <ToggleSwitch
@@ -466,8 +469,11 @@
                                         </Grid>
                                     </Border>
 
-                                    <!-- 保活间隔: 开关关闭时整卡禁用 -->
-                                    <Border x:Name="KeepAliveIntervalCard" Style="{StaticResource SettingsCardStyle}">
+                                    <!-- 保活间隔: 保活开关的子项 (左缩进表达从属), 开关关闭时整卡灰显禁用 -->
+                                    <Border
+                                        x:Name="KeepAliveIntervalCard"
+                                        Margin="24,0,0,0"
+                                        Style="{StaticResource SettingsCardStyle}">
                                         <Grid ColumnSpacing="16">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -495,16 +501,20 @@
                                                     VerticalAlignment="Center" />
                                             </StackPanel>
                                         </Grid>
-                                    </Border>
+                                        </Border>
+                                    </StackPanel>
                                 </StackPanel>
 
                                 <!-- 文件编辑页: 编辑方式 (内置/外部) + 外部编辑器路径 -->
-                                <StackPanel x:Name="FileEditPanel" Spacing="4" Visibility="Collapsed">
+                                <StackPanel x:Name="FileEditPanel" Spacing="8" Visibility="Collapsed">
                                     <TextBlock
                                         x:Name="FileEditTitle"
                                         Margin="0,0,0,12"
                                         FontSize="20"
                                         FontWeight="SemiBold" />
+                                    <!-- 编辑方式(母) + 编辑器路径(子) = 母子组: 组内 StackPanel Spacing 1
+                                         子项贴住母项 (组间由外层面板 Spacing 8 分隔) -->
+                                    <StackPanel Spacing="1">
                                     <Border Style="{StaticResource SettingsCardStyle}">
                                         <Grid ColumnSpacing="16">
                                             <Grid.ColumnDefinitions>
@@ -527,8 +537,12 @@
                                         </Grid>
                                     </Border>
                                     <!-- hint 作为卡片描述 (官方排版: 描述随设置名在左, 值控件在右);
-                                         内置编辑器时整卡变灰禁用 (同保活间隔卡片联动效果) -->
-                                    <Border x:Name="EditorPathCard" Style="{StaticResource SettingsCardStyle}">
+                                         路径卡是编辑方式的子项 (左缩进表达从属), 内置编辑器时整卡变灰
+                                         禁用 (同保活间隔卡片联动效果) -->
+                                    <Border
+                                        x:Name="EditorPathCard"
+                                        Margin="24,0,0,0"
+                                        Style="{StaticResource SettingsCardStyle}">
                                         <Grid ColumnSpacing="16">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -563,10 +577,11 @@
                                             </Grid>
                                         </Grid>
                                     </Border>
+                                    </StackPanel>
                                 </StackPanel>
 
                                 <!-- 传输页: 并发传输数 + 远程删除方式 -->
-                                <StackPanel x:Name="TransferPanel" Spacing="4" Visibility="Collapsed">
+                                <StackPanel x:Name="TransferPanel" Spacing="8" Visibility="Collapsed">
                                     <TextBlock
                                         x:Name="TransferTitle"
                                         Margin="0,0,0,12"
@@ -613,9 +628,9 @@
                                                 <TextBlock x:Name="DeleteModeLabel" FontSize="13" />
                                                 <TextBlock x:Name="DeleteModeHint" Style="{StaticResource SettingsDescStyle}" />
                                             </StackPanel>
-                                            <!-- 开=服务端命令优先 (失败自动回退 SFTP 递归), 关=纯 SFTP 递归;
+                                    <!-- 开=服务端命令优先 (失败自动回退 SFTP 递归), 关=纯 SFTP 递归;
                                                  隐藏 On/Off 文字, 状态语义由描述行说明 -->
-                                            <ToggleSwitch x:Name="DeleteServerCmdToggle"
+                                    <ToggleSwitch x:Name="DeleteServerCmdToggle"
               Grid.Column="1"
               VerticalAlignment="Center"
               HorizontalAlignment="Right"
@@ -629,12 +644,200 @@
               Toggled="DeleteServerCmdToggle_Toggled" />
                                         </Grid>
                                     </Border>
+                                    <!-- 断点续传: 默认开启。仅"目标严格小于源"才追加,
+                                         相等/更大一律全量重传——同名旧文件先弹窗确认, 选"覆盖"即
+                                         全量重传, 不会把旧内容缝进新文件 -->
+                                    <!-- 断点续传(母) + 续传阈值(子) = 母子组: 组内 StackPanel Spacing 1
+                                         子项贴住母项 (组间由外层面板 Spacing 8 分隔) -->
+                                    <StackPanel Spacing="1">
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="ResumeLabel" FontSize="13" />
+                                                <TextBlock x:Name="ResumeHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ToggleSwitch x:Name="ResumeToggle"
+              Grid.Column="1"
+              VerticalAlignment="Center"
+              HorizontalAlignment="Right"
+              OnContent="{x:Null}"
+              OffContent="{x:Null}"
+              Header="{x:Null}"
+              Padding="0"
+              MinWidth="0"
+              Width="46"
+              Margin="0,0,-2,0"
+              Toggled="ResumeToggle_Toggled" />
+                                        </Grid>
+                                    </Border>
+                                    <!-- 续传阈值: 断点续传的子项 (左缩进表达从属), 低于阈值的小文件
+                                         全量重传不续传——重传代价可忽略、续传收益趋零, 阈值宜取大
+                                         不取小 (200KB-1MB); 开关关闭时整卡灰显禁用 -->
+                                    <Border
+                                        x:Name="ResumeThresholdCard"
+                                        Margin="24,0,0,0"
+                                        Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="ResumeThresholdLabel" FontSize="13" />
+                                                <TextBlock x:Name="ResumeThresholdHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                                                <Slider
+                                                    x:Name="ResumeThresholdSlider"
+                                                    Width="140"
+                                                    Minimum="200"
+                                                    Maximum="1024"
+                                                    StepFrequency="8"
+                                                    SnapsTo="StepValues"
+                                                    TickPlacement="Outside"
+                                                    VerticalAlignment="Center"
+                                                    ValueChanged="ResumeThresholdSlider_ValueChanged" />
+                                                <TextBlock
+                                                    x:Name="ResumeThresholdValueText"
+                                                    MinWidth="36"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    </StackPanel>
+                                    <!-- 传输后校验(母) + 校验算法(子) = 母子组: 组内 StackPanel Spacing 1
+                                         子项贴住母项 (组间由外层面板 Spacing 8 分隔)。
+                                         校验完成后 exec 通道比对本地/远端杂凑, 坏文件当场暴露;
+                                         exec 不可用/算法缺失自动"校验跳过", 不影响传输结果 -->
+                                    <StackPanel Spacing="1">
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="VerifyLabel" FontSize="13" />
+                                                <TextBlock x:Name="VerifyHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ToggleSwitch x:Name="VerifyToggle"
+              Grid.Column="1"
+              VerticalAlignment="Center"
+              HorizontalAlignment="Right"
+              OnContent="{x:Null}"
+              OffContent="{x:Null}"
+              Header="{x:Null}"
+              Padding="0"
+              MinWidth="0"
+              Width="46"
+              Margin="0,0,-2,0"
+              Toggled="VerifyToggle_Toggled" />
+                                        </Grid>
+                                    </Border>
+                                    <!-- 校验算法: 校验开关的子项 (左缩进表达从属), 校验关闭时灰显禁用;
+                                         自动 = 按服务端支持情况选最强算法, 固定算法不可用则校验跳过 -->
+                                    <Border
+                                        x:Name="VerifyAlgorithmCard"
+                                        Margin="24,0,0,0"
+                                        Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="VerifyAlgoLabel" FontSize="13" />
+                                                <TextBlock x:Name="VerifyAlgoDesc" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ComboBox x:Name="VerifyAlgorithmBox"
+                                                Grid.Column="1"
+                                                Width="110"
+                                                FontSize="13"
+                                                VerticalAlignment="Center"
+                                                SelectionChanged="VerifyAlgorithmBox_SelectionChanged">
+                                                <ComboBoxItem x:Name="VerifyAlgoAutoItem" />
+                                                <ComboBoxItem x:Name="VerifyAlgoSha256Item" />
+                                                <ComboBoxItem x:Name="VerifyAlgoSha512Item" />
+                                                <ComboBoxItem x:Name="VerifyAlgoSm3Item" />
+                                            </ComboBox>
+                                        </Grid>
+                                    </Border>
+                                    </StackPanel>
+                                    <!-- tar 打包加速(母) + tar 文件数阈值(子) = 母子组: 组内 StackPanel
+                                         Spacing 1 子项贴住母项 (组间由外层面板 Spacing 8 分隔)。
+                                         目录传输文件数达阈值时单流打包替代逐文件 SFTP;
+                                         本地/服务端无 tar、Windows 服务器、空间不足、命令失败均自动
+                                         回退逐文件, 不改变结果语义 -->
+                                    <StackPanel Spacing="1">
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="TarAccelLabel" FontSize="13" />
+                                                <TextBlock x:Name="TarAccelHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ToggleSwitch x:Name="TarAccelToggle"
+              Grid.Column="1"
+              VerticalAlignment="Center"
+              HorizontalAlignment="Right"
+              OnContent="{x:Null}"
+              OffContent="{x:Null}"
+              Header="{x:Null}"
+              Padding="0"
+              MinWidth="0"
+              Width="46"
+              Margin="0,0,-2,0"
+              Toggled="TarAccelToggle_Toggled" />
+                                        </Grid>
+                                    </Border>
+                                    <!-- tar 文件数阈值: tar 打包加速的子项 (左缩进表达从属), 加速关闭时
+                                         灰显禁用; 跨度 10~10000 大, 不设刻度线 (与短程 slider 区分) -->
+                                    <Border
+                                        x:Name="TarThresholdCard"
+                                        Margin="24,0,0,0"
+                                        Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="TarThresholdLabel" FontSize="13" />
+                                                <TextBlock x:Name="TarThresholdHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                                                <Slider
+                                                    x:Name="TarThresholdSlider"
+                                                    Width="140"
+                                                    Minimum="10"
+                                                    Maximum="10000"
+                                                    StepFrequency="10"
+                                                    SnapsTo="StepValues"
+                                                    VerticalAlignment="Center"
+                                                    ValueChanged="TarThresholdSlider_ValueChanged" />
+                                                <TextBlock
+                                                    x:Name="TarThresholdValueText"
+                                                    MinWidth="56"
+                                                    FontSize="13"
+                                                    VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    </StackPanel>
                                 </StackPanel>
 
                                 <!-- 注册页: 注册状态 + 勋章 / 注册码激活 / 远程公告。
                                      勋章 = 本地金色胶囊 (激活即显), 远程可下发文字或整体关闭;
                                      注册与免费版功能无差别, 勋章纯荣誉 -->
-                                <StackPanel x:Name="RegistrationPanel" Spacing="4" Visibility="Collapsed">
+                                <StackPanel x:Name="RegistrationPanel" Spacing="8" Visibility="Collapsed">
                                     <TextBlock
                                         x:Name="RegistrationTitle"
                                         Margin="0,0,0,12"
@@ -750,7 +953,7 @@
                                      闭源核心组件分层说明, 见技术文档) + 版权。
                                      版本/构建日期由代码后置动态填充 (程序集版本 / exe 修改时间),
                                      官网域名 ifrees.top 已注册, GitHub 仓库与商店上架后链接由官网承载 -->
-                                <StackPanel x:Name="AboutPanel" Spacing="4" Visibility="Collapsed">
+                                <StackPanel x:Name="AboutPanel" Spacing="8" Visibility="Collapsed">
                                     <TextBlock
                                         x:Name="AboutTitle"
                                         Margin="0,0,0,12"

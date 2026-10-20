@@ -21,6 +21,88 @@ public interface IRemoteTransferOps
 
     /// <summary>上传本地文件覆盖远端路径。progress = 累计已传输字节回调（任意线程，可为空）。</summary>
     Task UploadAsync(string localPath, string remotePath, Action<long>? progress = null);
+
+    /// <summary>查询远端文件大小（字节）；不存在返回 -1（SftpPathNotFoundException 归一）。</summary>
+    Task<long> TryGetSizeAsync(string remotePath);
+
+    /// <summary>断点续传上传: 本地源 seek 到 offset, 远端定位续写（不截断）。
+    /// offset 必须等于远端当前大小。progress = 含 offset 的累计字节。</summary>
+    Task UploadResumeAsync(string localPath, string remotePath, long offset, Action<long>? progress = null);
+
+    /// <summary>断点续传下载: 远端读流 seek 到 offset, 本地追加写（不截断）。
+    /// offset 必须等于本地半成品当前大小。progress = 含 offset 的累计字节。</summary>
+    Task DownloadResumeAsync(string remotePath, string localPath, long offset, Action<long>? progress = null);
+
+    /// <summary>把本地流写入远端文件（覆盖创建）。tar 加速: 本地 tar 进程 stdout
+    /// 直写远端临时文件, 免去"先落本地临时 tar 再整文件上传"的一道磁盘往返。</summary>
+    Task UploadStreamAsync(Stream source, string remotePath, Action<long>? progress = null);
+
+    /// <summary>远端重命名（POSIX rename, 文件与目录通用）。tar 加速: 临时目录原子切换。</summary>
+    Task RenameAsync(string oldPath, string newPath);
+}
+
+/// <summary>
+/// 队列任务暂停请求异常：暂停检查点在传输块边界抛出，中止当前文件并留下断点。
+/// 必须继承 <see cref="OperationCanceledException"/>——续传包装层的失败兜底 catch
+/// 过滤 OCE（当取消而非失败），本异常才能穿透直达 RunOneAsync 按重跑处理，
+/// 而不是被当成传输失败立刻触发全量重传。
+/// </summary>
+public sealed class PauseRequestedException : OperationCanceledException
+{
+}
+
+/// <summary>
+/// 队列任务停止/取消请求异常：全局停止或单任务取消在块边界检查点抛出，
+/// 中止当前文件并留下断点（续传包装层按断点结算）。必须继承
+/// <see cref="OperationCanceledException"/>——理由同 <see cref="PauseRequestedException"/>，
+/// 穿透续传包装层的失败兜底 catch 直达 RunOneAsync 按"已取消"结算。
+/// </summary>
+public sealed class StopRequestedException : OperationCanceledException
+{
+}
+
+/// <summary>
+/// 可暂停中断的传输操作装饰器（仅队列传输路径使用）：把进度回调统一包装为
+/// "先过暂停检查点再转发"。SSH.NET Upload/Download 每传输一块（≤缓冲区大小）触发
+/// 一次回调，自写续传循环每块同样触发——暂停置位后下一块内抛
+/// <see cref="PauseRequestedException"/>，当前文件中止且对端半成品留作断点。
+/// 瞬时操作（建目录/列举/查大小/重命名）直通不包——不构成可感知的传输时长。
+/// </summary>
+public sealed class PauseInterruptibleOps : IRemoteTransferOps
+{
+    private readonly IRemoteTransferOps _inner;
+
+    public PauseInterruptibleOps(IRemoteTransferOps inner) => _inner = inner;
+
+    private static Action<long>? Wrap(Action<long>? progress)
+        => b =>
+        {
+            ConcurrentTransferService.ThrowIfCheckpoint();
+            progress?.Invoke(b);
+        };
+
+    public Task CreateDirectoryAsync(string path) => _inner.CreateDirectoryAsync(path);
+
+    public Task<IReadOnlyList<FileEntry>> ListDirectoryAsync(string path) => _inner.ListDirectoryAsync(path);
+
+    public Task DownloadAsync(string remotePath, string localPath, Action<long>? progress = null)
+        => _inner.DownloadAsync(remotePath, localPath, Wrap(progress));
+
+    public Task UploadAsync(string localPath, string remotePath, Action<long>? progress = null)
+        => _inner.UploadAsync(localPath, remotePath, Wrap(progress));
+
+    public Task<long> TryGetSizeAsync(string remotePath) => _inner.TryGetSizeAsync(remotePath);
+
+    public Task UploadResumeAsync(string localPath, string remotePath, long offset, Action<long>? progress = null)
+        => _inner.UploadResumeAsync(localPath, remotePath, offset, Wrap(progress));
+
+    public Task DownloadResumeAsync(string remotePath, string localPath, long offset, Action<long>? progress = null)
+        => _inner.DownloadResumeAsync(remotePath, localPath, offset, Wrap(progress));
+
+    public Task UploadStreamAsync(Stream source, string remotePath, Action<long>? progress = null)
+        => _inner.UploadStreamAsync(source, remotePath, Wrap(progress));
+
+    public Task RenameAsync(string oldPath, string newPath) => _inner.RenameAsync(oldPath, newPath);
 }
 
 /// <summary>
@@ -69,33 +151,131 @@ public sealed class TransferConnection : IRemoteTransferOps, IDisposable
             return (IReadOnlyList<FileEntry>)entries;
         });
 
+    // 注意: 不用 SftpClient.DownloadFile/UploadFile —— SSH.NET 2026.0.0 在内部经
+    // ThreadPool.QueueUserWorkItem 调度进度回调, 回调里抛 PauseRequestedException
+    // 会逃逸出 await 链成为 AppDomain 未处理异常直接崩进程, 且传输循环收不到暂停
+    // 信号。检查点必须在自有调用栈内抛: 自写读写循环, 每块内联调用 progress,
+    // 异常沿本方法返回的 Task 传播到 RunOneAsync 的 catch, 暂停/停止语义才完整。
+
     public Task DownloadAsync(string remotePath, string localPath, Action<long>? progress = null)
         => Task.Run(() =>
         {
-            using var stream = File.Create(localPath);
-            if (progress is null)
+            // OpenRead 对不存在文件抛 SftpPathNotFoundException, 与 DownloadFile 语义一致。
+            using var input = _client.OpenRead(remotePath);
+            using var output = File.Create(localPath);
+            var buffer = new byte[BufferSize];
+            long total = 0;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
             {
-                _client.DownloadFile(remotePath, stream);
-            }
-            else
-            {
-                _client.DownloadFile(remotePath, stream, b => progress((long)b));
+                output.Write(buffer, 0, read);
+                total += read;
+                progress?.Invoke(total);
             }
         });
 
     public Task UploadAsync(string localPath, string remotePath, Action<long>? progress = null)
         => Task.Run(() =>
         {
-            using var stream = File.OpenRead(localPath);
-            if (progress is null)
+            using var input = File.OpenRead(localPath);
+            // FileMode.Create 存在即截断, 与 UploadFile 语义一致。
+            using var output = _client.Open(remotePath, FileMode.Create, FileAccess.Write);
+            var buffer = new byte[BufferSize];
+            long total = 0;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
             {
-                _client.UploadFile(stream, remotePath);
+                output.Write(buffer, 0, read);
+                total += read;
+                progress?.Invoke(total);
             }
-            else
+
+            output.Flush();
+        });
+
+    public Task<long> TryGetSizeAsync(string remotePath)
+        => Task.Run(() =>
+        {
+            try
             {
-                _client.UploadFile(stream, remotePath, b => progress((long)b));
+                return _client.GetAttributes(remotePath).Size;
+            }
+            catch (Renci.SshNet.Common.SftpPathNotFoundException)
+            {
+                return -1L; // 不存在: 归一为 -1 (ResumePolicy 判 Overwrite)
             }
         });
+
+    public Task UploadResumeAsync(string localPath, string remotePath, long offset, Action<long>? progress = null)
+        => Task.Run(() =>
+        {
+            using var input = File.OpenRead(localPath);
+            input.Seek(offset, SeekOrigin.Begin);
+            // OpenOrCreate + 显式定位续写: 不依赖 SSH_FXF_APPEND 标志（SftpFileStream 的
+            // FileMode.Append 映射该标志, 部分老服务器不实现）; SFTP 协议无 FSEEK,
+            // SftpFileStream 的 Seek 为客户端位置记账, READ/WRITE 均按位置发起, 是协议基线。
+            using var output = _client.Open(remotePath, FileMode.OpenOrCreate, FileAccess.ReadWrite);
+            if (output.Length > offset)
+            {
+                output.SetLength(offset); // 防御: 远端半成品比 offset 长（调用方保证相等, 与下载方向对称）
+            }
+
+            output.Seek(offset, SeekOrigin.Begin);
+            var buffer = new byte[BufferSize];
+            long total = offset;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, read);
+                total += read;
+                progress?.Invoke(total);
+            }
+
+            output.Flush();
+        });
+
+    public Task DownloadResumeAsync(string remotePath, string localPath, long offset, Action<long>? progress = null)
+        => Task.Run(() =>
+        {
+            using var output = new FileStream(localPath, FileMode.OpenOrCreate, FileAccess.ReadWrite);
+            if (output.Length > offset)
+            {
+                output.SetLength(offset); // 防御: 本地半成品比 offset 长（调用方保证相等）
+            }
+
+            output.Seek(offset, SeekOrigin.Begin);
+            using var input = _client.OpenRead(remotePath);
+            input.Seek(offset, SeekOrigin.Begin);
+            var buffer = new byte[BufferSize];
+            long total = offset;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, read);
+                total += read;
+                progress?.Invoke(total);
+            }
+        });
+
+    public Task UploadStreamAsync(Stream source, string remotePath, Action<long>? progress = null)
+        => Task.Run(() =>
+        {
+            using var output = _client.Open(remotePath, FileMode.Create, FileAccess.Write);
+            var buffer = new byte[BufferSize];
+            long total = 0;
+            int read;
+            while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, read);
+                total += read;
+                progress?.Invoke(total);
+            }
+
+            output.Flush();
+        });
+
+    public Task RenameAsync(string oldPath, string newPath)
+        => Task.Run(() => _client.RenameFile(oldPath, newPath));
 
     public void Dispose() => _client.Dispose();
 }
@@ -103,30 +283,20 @@ public sealed class TransferConnection : IRemoteTransferOps, IDisposable
 /// <summary>
 /// 一次批量传输的传输连接池：每路并发各自持有一条独立连接（SftpClient 非线程安全，
 /// 单连接内并发无收益且必挂），任务用毕归还复用（避免每条文件重做 SSH 握手），
-/// 批次结束统一关闭。并发数为 1 时直接复用主会话（其内部 _sshLock 串行），不额外建连接。
+/// 批次结束统一关闭。一律独立于主会话建连（含并发数为 1）：传输生命周期独立于
+/// 标签页, 关 tab（主会话销毁）后传输照常跑完——关 tab 三选"后台继续"依赖此行为。
 /// </summary>
 public sealed class TransferBatchConnections : IDisposable
 {
-    private readonly int _max;
     private readonly SemaphoreSlim _gate = new(1, 1);
     // 按远端会话分组的空闲连接（借出即移出, 归还即放回）
     private readonly Dictionary<SftpSessionService, List<TransferConnection>> _idle = new();
     // 本批次打开过的全部连接（结束时统一关闭）
     private readonly List<TransferConnection> _all = new();
 
-    public TransferBatchConnections(int maxConcurrent)
-    {
-        _max = Math.Max(1, maxConcurrent);
-    }
-
-    /// <summary>借一条该侧远端的传输连接（空闲复用，无空闲则新建）；串行模式直接返回主会话。</summary>
+    /// <summary>借一条该侧远端的传输连接（空闲复用，无空闲则新建）。一律独立于主会话建连。</summary>
     public async Task<IRemoteTransferOps> AcquireAsync(SftpSessionService session)
     {
-        if (_max <= 1)
-        {
-            return session;
-        }
-
         TransferConnection? conn = null;
         await _gate.WaitAsync();
         try
@@ -160,7 +330,7 @@ public sealed class TransferBatchConnections : IDisposable
         return conn;
     }
 
-    /// <summary>归还连接回空闲池（串行模式传回主会话时为空操作）。</summary>
+    /// <summary>归还连接回空闲池。</summary>
     public void Release(SftpSessionService session, IRemoteTransferOps ops)
     {
         if (ops is not TransferConnection conn)
@@ -201,12 +371,37 @@ public sealed class TransferBatchConnections : IDisposable
 /// 冲突决策阶段完成后整批提交；Begin/Complete/Fail 由执行器统一推进——入队后保持
 /// "等待"直到 worker 领取，单项失败不影响其余任务（失败项进"传输失败"页签）。
 /// 全局控制（队列右键菜单，跨窗格/跨批次共享单例语义）：暂停 = 取走暂停门许可，
-/// worker 在门上挂起（非轮询），不领取新任务（正在传输的让其传完）；继续 = 归还
-/// 许可；停止 = 归还许可 + 取消令牌，未领取的任务按"已停止"记失败，正在传输的
-/// 让其传完（SSH.NET 同步 API 无法安全中断）。
+/// worker 在门上挂起（非轮询），不领取新任务；正在传输的任务经
+/// <see cref="PauseInterruptibleOps"/> 的块边界检查点抛 <see cref="PauseRequestedException"/>
+/// 中止（半成品留断点），任务回"等待"，继续后重跑同一任务自动断点续传；继续 = 归还
+/// 许可；停止 = 置位停止标志 + 归还许可 + 取消令牌，传输中的任务在下一个块边界
+/// 检查点抛 <see cref="StopRequestedException"/> 按"已取消"结算（半成品留断点，
+/// 可重试续传），未领取的任务经取消令牌唤醒同样按"已取消"结算。
 /// </summary>
 public static class ConcurrentTransferService
 {
+    /// <summary>传输检查点：由 PauseInterruptibleOps 的进度回调按块边界调用，
+    /// 依次检查全局暂停、全局停止、单任务取消，命中即抛对应异常中断当前传输
+    /// （半成品留断点）。仅队列传输路径经过；远程编辑等非队列路径不感知。</summary>
+    internal static void ThrowIfCheckpoint()
+    {
+        if (_paused)
+        {
+            throw new PauseRequestedException();
+        }
+
+        if (_stopRequested)
+        {
+            throw new StopRequestedException();
+        }
+
+        var taskId = CurrentTaskId.Value;
+        if (taskId.HasValue && TransferQueueService.IsCancelRequested(taskId.Value))
+        {
+            throw new StopRequestedException();
+        }
+    }
+
     /// <summary>暂停门（全局）：开放态持有 1 个许可。暂停时取走，worker 挂起在
     /// 门上（0 CPU 空转）；worker 通过检查点后立即归还，一次仅串行通过一个
     /// （检查点只有几条指令，不构成吞吐瓶颈）。</summary>
@@ -216,13 +411,23 @@ public static class ConcurrentTransferService
     /// UI 线程串行调用，标志本身无竞态）。暂停/停止入口按此防重复取还许可。</summary>
     private static volatile bool _paused;
 
+    /// <summary>全局停止标志（volatile 保证 worker 在块边界检查点可见）。批次开始时
+    /// 重置——批次串行（RunAsync 全量等待后才返回），重置不影响未跑完的检查点判定。</summary>
+    private static volatile bool _stopRequested;
+
+    /// <summary>当前 worker 正在执行的任务 id（AsyncLocal 随 ExecutionContext 流入
+    /// Task.Run 闭包与进度回调）：单任务取消的检查点判定依据，RunOneAsync 领取后
+    /// 设置、结算前清理。</summary>
+    internal static readonly AsyncLocal<Guid?> CurrentTaskId = new();
+
     /// <summary>停止令牌：批次开始时快照，停止时换新 CTS 并取消旧的（跨批次全局）。</summary>
     private static CancellationTokenSource _cts = new();
 
     /// <summary>是否处于暂停（队列右键菜单"继续传输"判定用）。</summary>
     public static bool Paused => _paused;
 
-    /// <summary>暂停：正在传输的任务传完，等待中的在门上挂起不开始。</summary>
+    /// <summary>暂停：传输中的任务在下一个块边界检查点中止（半成品留断点，任务回
+    /// "等待"），等待中的在门上挂起不开始。</summary>
     public static void Pause()
     {
         if (_paused)
@@ -246,10 +451,12 @@ public static class ConcurrentTransferService
         _gate.Release();
     }
 
-    /// <summary>停止：解除暂停（归还门让挂起 worker 醒来）并取消后续任务
-    /// （正在传输的让其传完；挂起的 worker 经取消令牌唤醒后按"已停止"记失败）。</summary>
+    /// <summary>停止：置位停止标志，解除暂停（归还门让挂起 worker 醒来）并取消
+    /// 令牌唤醒未领取任务。传输中的任务在下一个块边界检查点抛停止异常按
+    /// "已取消"结算（半成品留断点，可重试续传）。</summary>
     public static void RequestStop()
     {
+        _stopRequested = true;
         if (_paused)
         {
             _paused = false;
@@ -274,7 +481,8 @@ public static class ConcurrentTransferService
         IReadOnlyList<(Guid QueueId, Func<TransferBatchConnections, Task> Run)> items,
         int maxConcurrency, TransferBatchConnections connections)
     {
-        var token = _cts.Token; // 批次开始时快照, 之后 RequestStop 不影响本批已领取判定
+        _stopRequested = false; // 批次开始时重置停止标志（上一批已全量结束, 串行无重入）
+        var token = _cts.Token; // 批次开始时快照, 之后 RequestStop 经检查点/令牌影响本批
         var failed = 0;
         using var throttle = new SemaphoreSlim(Math.Max(1, maxConcurrency));
         var workers = new Task[items.Count];
@@ -296,27 +504,59 @@ public static class ConcurrentTransferService
         await throttle.WaitAsync();
         try
         {
-            // 暂停门: 挂起等待而非轮询——暂停期间不领取新任务 (正在传输的让其传完)，
-            // 恢复/停止时经许可归还或取消令牌唤醒。循环仅覆盖"暂停置位与取门之间"
-            // 的边界竞态 (worker 已归还门但 Pause 尚未取走)，常态一次通过。
             while (true)
             {
-                await _gate.WaitAsync(token);
-                _gate.Release();
-                if (!_paused)
+                // 暂停门: 挂起等待而非轮询——暂停期间不领取新任务，恢复/停止时经
+                // 许可归还或取消令牌唤醒。循环仅覆盖"暂停置位与取门之间"
+                // 的边界竞态 (worker 已归还门但 Pause 尚未取走)，常态一次通过。
+                while (true)
                 {
+                    await _gate.WaitAsync(token);
+                    _gate.Release();
+                    if (!_paused)
+                    {
+                        break;
+                    }
+                }
+
+                token.ThrowIfCancellationRequested();
+                if (!TransferQueueService.Begin(queueId))
+                {
+                    // 领取前已被取消或移除（Begin 锁内原子判定, 消除 UI 标取消与
+                    // worker 领取之间的竞态窗口）
+                    return;
+                }
+
+                CurrentTaskId.Value = queueId;
+                try
+                {
+                    await run(connections);
+                    TransferQueueService.SettleAfterRun(queueId); // T2: 有校验 hook 时转"校验中"异步比对, 不阻塞后续传输
                     break;
                 }
+                catch (PauseRequestedException)
+                {
+                    // 块边界检查点中断: 任务回"等待"(显示"已暂停")，继续后重跑同一
+                    // 任务——ResumePolicy 按对端半成品大小自动从断点续传。
+                    TransferQueueService.RequeueAfterPause(queueId);
+                }
+                finally
+                {
+                    CurrentTaskId.Value = null;
+                }
             }
-
-            token.ThrowIfCancellationRequested();
-            TransferQueueService.Begin(queueId);
-            await run(connections);
-            TransferQueueService.Complete(queueId);
+        }
+        catch (StopRequestedException)
+        {
+            // 全局停止或单任务取消经块边界检查点触发: 按"已取消"结算（半成品留
+            // 断点, 可重试续传）。
+            TransferQueueService.Cancel(queueId);
+            onFailed();
         }
         catch (OperationCanceledException)
         {
-            TransferQueueService.Fail(queueId, LocalizationService.GetString("QStoppedReason"));
+            // 停止令牌取消: 未领取的等待任务经令牌唤醒走此分支, 同样按"已取消"结算。
+            TransferQueueService.Cancel(queueId);
             onFailed();
         }
         catch (Exception ex)

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using iFreeSftp.Core.Abstractions;
 using iFreeSftp.Models;
@@ -52,7 +51,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
         if (!string.IsNullOrEmpty(fingerprint))
         {
             TerminalLogService.Log(string.Format(
-                LocalizationService.GetString("LogTrustApplied"), fingerprint));
+                LocalizationService.GetString("LogTrustApplied"), fingerprint), LogScope);
         }
     }
 
@@ -73,6 +72,10 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
     /// <summary>本次连接中用户确认过的指纹（连接成功后由调用方持久化到主机档案）。</summary>
     public string? ConfirmedFingerprint { get; private set; }
 
+    /// <summary>本会话日志归属的 tab scope（承载它的 FileView 创建会话时注入;
+    /// null = 全局广播, 如"测试连接"的临时会话）。</summary>
+    public string? LogScope { get; set; }
+
     /// <summary>用户在确认框拒绝了主机指纹（视为放弃, 重试循环不再继续）。</summary>
     private bool _fingerprintRejected;
 
@@ -92,6 +95,9 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
     private bool? _hasSha256Sum;
     private bool? _hasSha512Sum;
     private bool? _hasOpensslSm3;
+    // 服务端平台探测缓存: null=未探测 (重连/换主机时清空)。true=POSIX shell
+    // (sh/bash), false=Windows (PowerShell/cmd 登录 shell, /tmp 等不存在, 命令语法不同)
+    private bool? _isPosixServer;
 
     /// <summary>
     /// 建立连接：按登录方式取密钥文件或密码构造凭据，SSH.NET 真实连接。
@@ -109,6 +115,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
         DisconnectExec();
         _lastProfile = profile;
         _hasSha256Sum = _hasSha512Sum = _hasOpensslSm3 = null;
+        _isPosixServer = null;
 
         var info = BuildConnectionInfo(profile);
 
@@ -157,7 +164,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
                 var delay = Math.Max(0, AppSettingsService.RetryDelaySeconds);
                 TerminalLogService.Log(string.Format(
                     LocalizationService.GetString("LogRetry"),
-                    ex.Message, delay, attempt, AppSettingsService.MaxRetries));
+                    ex.Message, delay, attempt, AppSettingsService.MaxRetries), LogScope);
                 if (delay > 0)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(delay));
@@ -194,7 +201,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             else
             {
                 _fingerprintRejected = true;
-                TerminalLogService.Log(LocalizationService.GetString("LogFingerprintRejected"));
+                TerminalLogService.Log(LocalizationService.GetString("LogFingerprintRejected"), LogScope);
             }
 
             return;
@@ -206,7 +213,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             // 拒绝时把两个指纹都打出来: 存档 ≠ 本次 → 服务器密钥变更或档案过期 (如卡片改了 IP)
             TerminalLogService.Log(string.Format(
                 LocalizationService.GetString("LogFingerprintMismatch"),
-                TrustedFingerprint, fingerprint));
+                TrustedFingerprint, fingerprint), LogScope);
 
             // 变更确认兜底 (服务器重装/换机): 用户确认后更新信任, ConfirmedFingerprint
             // 会随连接成功由调用方写回主机档案 (复用首次确认的持久化链路)
@@ -218,12 +225,12 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
                 if (reConfirm)
                 {
                     ConfirmedFingerprint = fingerprint;
-                    TerminalLogService.Log(LocalizationService.GetString("LogFingerprintChangedTrusted"));
+                    TerminalLogService.Log(LocalizationService.GetString("LogFingerprintChangedTrusted"), LogScope);
                 }
                 else
                 {
                     _fingerprintRejected = true;
-                    TerminalLogService.Log(LocalizationService.GetString("LogFingerprintRejected"));
+                    TerminalLogService.Log(LocalizationService.GetString("LogFingerprintRejected"), LogScope);
                 }
             }
         }
@@ -420,7 +427,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
                 return true; // 迟到删净: rm 已完成, 只是回执丢失/超时
             }
 
-            TerminalLogService.Log(LocalizationService.GetString("LogDeleteFallback"));
+            TerminalLogService.Log(LocalizationService.GetString("LogDeleteFallback"), LogScope);
         }
         catch
         {
@@ -508,6 +515,89 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
                 client.UploadFile(stream, remotePath, b => progress((long)b));
             }
 
+            return null;
+        });
+
+    /// <summary>查询远端文件大小；不存在返回 -1（SftpPathNotFoundException 归一,
+    /// 权限等真实错误照常上抛——后续传输同样会失败, 不掩盖问题）。</summary>
+    public Task<long> TryGetSizeAsync(string remotePath)
+        => RunAsync(client =>
+        {
+            try
+            {
+                return client.GetAttributes(remotePath).Size;
+            }
+            catch (Renci.SshNet.Common.SftpPathNotFoundException)
+            {
+                return -1L;
+            }
+        });
+
+    /// <summary>断点续传上传（主会话实现: 与全部 SFTP 操作同经 _sshLock 串行）。
+    /// OpenOrCreate + 显式定位续写, 不截断远端半成品。</summary>
+    public Task UploadResumeAsync(string localPath, string remotePath, long offset, Action<long>? progress = null)
+        => RunAsync<object?>(client =>
+        {
+            using var input = File.OpenRead(localPath);
+            input.Seek(offset, SeekOrigin.Begin);
+            using var output = client.Open(remotePath, FileMode.OpenOrCreate, FileAccess.ReadWrite);
+            output.Seek(offset, SeekOrigin.Begin);
+            var buffer = new byte[32768];
+            long total = offset;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, read);
+                total += read;
+                progress?.Invoke(total);
+            }
+
+            output.Flush();
+            return null;
+        });
+
+    /// <summary>断点续传下载（主会话实现）。远端读流定位, 本地追加写（不截断）。</summary>
+    public Task DownloadResumeAsync(string remotePath, string localPath, long offset, Action<long>? progress = null)
+        => RunAsync<object?>(client =>
+        {
+            using var output = new FileStream(localPath, FileMode.OpenOrCreate, FileAccess.ReadWrite);
+            if (output.Length > offset)
+            {
+                output.SetLength(offset);
+            }
+
+            output.Seek(offset, SeekOrigin.Begin);
+            using var input = client.OpenRead(remotePath);
+            input.Seek(offset, SeekOrigin.Begin);
+            var buffer = new byte[32768];
+            long total = offset;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, read);
+                total += read;
+                progress?.Invoke(total);
+            }
+
+            return null;
+        });
+
+    /// <summary>把本地流写入远端文件（覆盖创建）。tar 加速上传直写远端临时文件。</summary>
+    public Task UploadStreamAsync(Stream source, string remotePath, Action<long>? progress = null)
+        => RunAsync<object?>(client =>
+        {
+            using var output = client.Open(remotePath, FileMode.Create, FileAccess.Write);
+            var buffer = new byte[32768];
+            long total = 0;
+            int read;
+            while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, read);
+                total += read;
+                progress?.Invoke(total);
+            }
+
+            output.Flush();
             return null;
         });
 
@@ -641,20 +731,15 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             return serverHex;
         }
 
-        // 临时诊断插桩: "请求→锁→拉流→完成"链条断点即挂点, 定位后移除
-        TerminalLogService.Log($"[校验码] 请求 {algorithm} {path}");
         await _sshLock.WaitAsync();
         try
         {
             // 取消标志必须在锁内复位: 锁外复位会把仍在跑的旧计算"去取消"成完整双份下载
             _checksumCancel = false;
-            var sw = Stopwatch.StartNew();
             return await Task.Run(() =>
             {
-                using var sink = new HashSinkStream(this, algorithm, sw);
+                using var sink = new HashSinkStream(this, algorithm);
                 client.DownloadFile(path, sink);
-                TerminalLogService.Log(string.Format(
-                    "[校验码] 完成 {0:F1}MB 耗时 {1:F1}s", sink.Length / 1048576.0, sw.Elapsed.TotalSeconds));
                 return sink.GetHashHex();
             });
         }
@@ -664,13 +749,13 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
         }
     }
 
-    /// <summary>POSIX shell 单引号转义（关闭-转义-重开）, 防路径含空格/引号/分号时被注入或截断。</summary>
-    private static string ShellQuote(string arg) => "'" + arg.Replace("'", "'\\''") + "'";
+    /// <summary>POSIX shell 单引号转义（关闭-转义-重开）, 防路径含空格/引号/分号时被注入或截断。
+    /// 实现集中在 <see cref="Models.ShellQuote"/>（可单测）, 此处仅作短名转发。</summary>
+    private static string ShellQuote(string arg) => Models.ShellQuote.Quote(arg);
 
     /// <summary>服务端 sha256sum/sha512sum 计算哈希: 输出形如 "hex␣␣path", 取首段十六进制串并校验长度。</summary>
     private async Task<string?> ComputeServerHashAsync(string path, string tool, int hexLength)
     {
-        var sw = Stopwatch.StartNew();
         var (exit, output, error) = await RunCommandAsync($"{tool} {ShellQuote(path)}");
         if (exit != 0)
         {
@@ -685,14 +770,12 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             throw new InvalidOperationException("服务端哈希输出无法解析: " + output.Trim());
         }
 
-        TerminalLogService.Log($"[校验码] 服务端 {tool} 完成 ({sw.ElapsedMilliseconds}ms)");
         return hex.ToLowerInvariant();
     }
 
     /// <summary>服务端 openssl dgst -sm3 计算哈希: 输出形如 "SM3(path)= hex", 取最后一个 "=" 之后段并校验。</summary>
     private async Task<string?> ComputeServerSm3Async(string path)
     {
-        var sw = Stopwatch.StartNew();
         var (exit, output, error) = await RunCommandAsync($"openssl dgst -sm3 {ShellQuote(path)}");
         if (exit != 0)
         {
@@ -708,8 +791,28 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             throw new InvalidOperationException("服务端 SM3 输出无法解析: " + output.Trim());
         }
 
-        TerminalLogService.Log($"[校验码] 服务端 openssl SM3 完成 ({sw.ElapsedMilliseconds}ms)");
         return hex.ToLowerInvariant();
+    }
+
+    /// <summary>传输后校验专用（T2）: 按 exec 探测位路由服务端杂凑命令。仅走 exec
+    /// 通道——不回退本机拉流（等价把文件再传一遍且占 _sshLock 阻塞浏览）;
+    /// exec 不可用/命令失败/探测未完成一律返回 null, 调用方按"校验跳过"处理。</summary>
+    public async Task<string?> TryComputeServerHashAsync(string path, string algorithm)
+    {
+        try
+        {
+            return algorithm switch
+            {
+                "SHA256" when _hasSha256Sum == true => await ComputeServerHashAsync(path, "sha256sum", 64),
+                "SHA512" when _hasSha512Sum == true => await ComputeServerHashAsync(path, "sha512sum", 128),
+                "SM3" when _hasOpensslSm3 == true => await ComputeServerSm3Async(path),
+                _ => null,
+            };
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -719,16 +822,13 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
     private sealed class HashSinkStream : Stream
     {
         private readonly SftpSessionService _owner;
-        private readonly Stopwatch _sw;
         private readonly IncrementalHash? _incremental;
         private readonly Sm3? _sm3;
         private long _total;
-        private long _mark = 16L * 1024 * 1024;
 
-        public HashSinkStream(SftpSessionService owner, string algorithm, Stopwatch sw)
+        public HashSinkStream(SftpSessionService owner, string algorithm)
         {
             _owner = owner;
-            _sw = sw;
             if (algorithm == "SM3")
             {
                 _sm3 = new Sm3();
@@ -755,7 +855,6 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             // 分块间隙检查取消标志: 弹框关闭/切换算法尽快让出 SSH 通道
             if (_owner._checksumCancel)
             {
-                TerminalLogService.Log("[校验码] 已取消");
                 throw new OperationCanceledException("校验码计算已取消");
             }
 
@@ -769,15 +868,6 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             }
 
             _total += count;
-            if (_total >= _mark)
-            {
-                // 临时诊断插桩: 每 16MB 一条拉流进度
-                var sec = Math.Max(0.1, _sw.Elapsed.TotalSeconds);
-                TerminalLogService.Log(string.Format(
-                    "[校验码] 已读 {0:F0}MB / {1:F1}s ({2:F1}MB/s)",
-                    _total / 1048576.0, sec, _total / 1048576.0 / sec));
-                _mark += 16L * 1024 * 1024;
-            }
         }
 
         public string GetHashHex()
@@ -932,14 +1022,11 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
     {
         try
         {
-            // 先辨平台: PowerShell 双引号内插输出 "Windows_NT"; cmd 不认识 $env 语法,
-            // 输出字面 "$env:OS"; POSIX 下 $env 未定义展开为空, 输出字面 ":OS"
-            var (_, osOut, _) = await RunCommandAsync("echo $env:OS");
-            var os = osOut.Trim();
-            if (os.Contains("Windows_NT") || os.Contains("$env"))
+            // 先辨平台 (缓存, 与 tar 加速共用): Windows 服务器命令语法/路径均不同
+            if (!await IsPosixServerAsync())
             {
                 _hasSha256Sum = _hasSha512Sum = _hasOpensslSm3 = false;
-                TerminalLogService.Log("[命令通道] Windows 服务器, 暂不支持服务端哈希, 校验码菜单已禁用");
+                TerminalLogService.Log("[命令通道] Windows 服务器, 暂不支持服务端哈希, 校验码菜单已禁用", LogScope);
                 return;
             }
 
@@ -954,16 +1041,43 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             _hasOpensslSm3 = parsed && flag[2] == '1';
             TerminalLogService.Log(string.Format(
                 "[命令通道] 服务端哈希探测: sha256sum={0} sha512sum={1} SM3(openssl)={2}",
-                YesNo(_hasSha256Sum.Value), YesNo(_hasSha512Sum.Value), YesNo(_hasOpensslSm3.Value)));
+                YesNo(_hasSha256Sum.Value), YesNo(_hasSha512Sum.Value), YesNo(_hasOpensslSm3.Value)), LogScope);
         }
         catch (Exception ex)
         {
             _hasSha256Sum = _hasSha512Sum = _hasOpensslSm3 = false;
-            TerminalLogService.Log($"[命令通道] 不可用, 服务端哈希将回退本机拉流: {ex.Message}");
+            TerminalLogService.Log($"[命令通道] 不可用, 服务端哈希将回退本机拉流: {ex.Message}", LogScope);
         }
     }
 
     private static string YesNo(bool value) => value ? "可用" : "不可用";
+
+    /// <summary>
+    /// 服务端是否 POSIX shell（缓存一条 echo 探测, 重连/换主机清空）。
+    /// PowerShell 双引号内插输出 "Windows_NT"; cmd 不认识 $env 语法, 输出字面
+    /// "$env:OS"; POSIX 下 $env 未定义展开为空, 输出字面 ":OS"。探测失败
+    /// （Exec 通道不可用）时按 false 处理——命令类功能各自回退, 不猜平台。
+    /// </summary>
+    public async Task<bool> IsPosixServerAsync()
+    {
+        if (_isPosixServer is { } cached)
+        {
+            return cached;
+        }
+
+        try
+        {
+            var (_, osOut, _) = await RunCommandAsync("echo $env:OS");
+            var os = osOut.Trim();
+            _isPosixServer = !os.Contains("Windows_NT") && !os.Contains("$env");
+        }
+        catch
+        {
+            _isPosixServer = false;
+        }
+
+        return _isPosixServer.Value;
+    }
 
     /// <summary>服务端哈希命令支持快照 (探测未完成或均不可用时均为 false): 远程右键
     /// 校验码菜单可用性与弹窗算法过滤的判定源。ComputeChecksumAsync 另有本机拉流兜底。</summary>
