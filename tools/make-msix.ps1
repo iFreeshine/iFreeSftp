@@ -1,4 +1,4 @@
-﻿# iFreeSftp MSIX packaging script (Microsoft Store submission / local test install)
+# iFreeSftp MSIX packaging script (Microsoft Store submission / local test install)
 # Usage:
 #   .\tools\make-msix.ps1                              # stub build, unsigned msix (Store accepts unsigned, signs on submission)
 #   .\tools\make-msix.ps1 -Core official               # official build (requires core\iFreeSftp.Core.dll)
@@ -12,9 +12,10 @@ param(
     # Package version, defaults to <Version> parsed from the main csproj (e.g. 0.8.0 -> 0.8.0.0)
     [string]$Version,
 
-    # Package identity from Partner Center "App identity" page (placeholders fine for local test install)
-    [string]$IdentityName = '17739B12-7C1F-45C9-894C-46B43951093D',
-    [string]$Publisher = 'CN=AppPublisher',
+    # Package identity from Partner Center "App identity" page (0.8.3 提交时
+    # Partner Center 校验报错拿到的真实值, 两者必须与账户完全一致)
+    [string]$IdentityName = 'iFrees.iFreeSftp',
+    [string]$Publisher = 'CN=029857DD-BD5B-48BB-BC40-43193DDB2DE9',
 
     # Self-sign the msix with a throwaway cert for local Add-AppxPackage smoke testing
     [switch]$Sign
@@ -71,13 +72,35 @@ if ((Get-Item $pri).Length -lt 1KB) { throw "iFreeSftp.pri is suspiciously small
 # --- Supplement payload with files the MSIX shell needs at rest ---
 # Package-level PRI (shell tile/icon resolution): reuse the app PRI as a starting point
 Copy-Item $pri (Join-Path $PayloadDir 'resources.pri') -Force
-# Manifest-referenced tile/splash assets: copy the icon set from project Assets
+# Tile/splash assets: copy the WHOLE project Assets folder, not a hand-picked subset.
+# The PRI indexes every asset in the project (including qualifier variants such as
+# targetsize-*/altform-*), so any file left out of the payload leaves the shell
+# resolving to a dead path. Symptom: Start menu / taskbar shortcut icon renders as a
+# grey broken-image placeholder while the app itself works fine (Store page icon is
+# uploaded separately to Partner Center, so it stays intact). 0.8.5 shipped without
+# Square44x44Logo.targetsize-48_altform-unplated.png and hit exactly this.
 $assetsSrc = Join-Path $RepoRoot 'src\iFreeSftp\Assets'
-foreach ($asset in @('Square44x44Logo.scale-200.png', 'Square44x44Logo.targetsize-24_altform-unplated.png', 'Square44x44Logo.targetsize-48_altform-lightunplated.png', 'Square150x150Logo.scale-200.png', 'Wide310x150Logo.scale-200.png', 'SplashScreen.scale-200.png', 'StoreLogo.png', 'LockScreenLogo.scale-200.png')) {
-    $src = Join-Path $assetsSrc $asset
-    if (-not (Test-Path $src)) { throw "project asset missing: $src" }
-    Copy-Item $src (Join-Path $PayloadDir "Assets\$asset") -Force
+if (-not (Test-Path $assetsSrc)) { throw "project assets folder missing: $assetsSrc" }
+New-Item -ItemType Directory -Force (Join-Path $PayloadDir 'Assets') | Out-Null
+Get-ChildItem $assetsSrc -File -Recurse | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $PayloadDir "Assets\$($_.Name)") -Force
 }
+
+# --- PRI/asset integrity gate ---
+# Every icon resource the PRI advertises must physically exist in the payload; a
+# registered-but-missing file is what turns into the broken-icon placeholder. Only
+# icon-family resources are asserted (NoiseAsset_256X256_PNG.png comes from the WinUI
+# template index and is not used by this app's UI).
+$priBytes = [IO.File]::ReadAllBytes((Join-Path $PayloadDir 'resources.pri'))
+$priText = [Text.Encoding]::UTF8.GetString($priBytes)
+$iconRes = [regex]::Matches($priText,
+    'Assets\\(?:Square44x44Logo|Square150x150Logo|Wide310x150Logo|SplashScreen|StoreLogo|LockScreenLogo|TitleBarLogo|AppIcon)[A-Za-z0-9_\-\.]*') |
+    ForEach-Object { $_.Value } | Sort-Object -Unique
+$missing = @($iconRes | Where-Object { -not (Test-Path (Join-Path $PayloadDir $_)) })
+if ($missing.Count -gt 0) {
+    throw "PRI registers icon assets missing from payload (would render as broken icon):`n  $($missing -join "`n  ")"
+}
+Write-Host "==> icon assets OK ($($iconRes.Count) PRI-registered files present)" -ForegroundColor DarkGray
 
 # --- Write injected AppxManifest ---
 $manifestSrc = Join-Path $PSScriptRoot 'msix\AppxManifest.xml'
@@ -88,6 +111,15 @@ $manifestDst = Join-Path $PayloadDir 'AppxManifest.xml'
 
 # --- Locate MakeAppx.exe / signtool.exe ---
 function Find-SdkTool([string]$name) {
+    # Green setup first: D:\dev\winsdk holds a manually extracted
+    # Microsoft.Windows.SDK.BuildTools nupkg (survives OS reinstalls; no
+    # Windows SDK installer needed). Layout matches the NuGet package.
+    $green = 'D:\dev\winsdk'
+    if (Test-Path $green) {
+        $tool = Get-ChildItem (Join-Path $green "bin\*\x64\$name") -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($tool) { return $tool.FullName }
+    }
     # Prefer the Microsoft.Windows.SDK.BuildTools NuGet package already pulled by the
     # project (ships the full SDK toolset; no separate Windows SDK install needed).
     # NOTE: put the tool name in the wildcarded path itself - in PS 5.1 -Filter is

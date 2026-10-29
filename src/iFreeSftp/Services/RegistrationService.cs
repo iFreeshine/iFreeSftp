@@ -375,8 +375,9 @@ public static class RegistrationService
 
         try
         {
-            // LocalApplicationData: 与主机配置/设置 (HostStoreService/AppSettingsService) 同目录同命运;
-            // 不用 Roaming — 域环境漫游同步过去的数据 DPAPI 也解不开, 徒增垃圾
+            // LocalApplicationData: 裸 exe 下与主机配置/设置 (HostStoreService/AppSettingsService) 同目录;
+            // 但 MSIX 包身份下走上面的 LocalFolder, 而 HostStoreService 恒用本目录, 两者会分离
+            // (互不依赖, 不影响功能)。不用 Roaming — 域环境漫游同步过去的数据 DPAPI 也解不开, 徒增垃圾
             return Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "iFreeSftp");
         }

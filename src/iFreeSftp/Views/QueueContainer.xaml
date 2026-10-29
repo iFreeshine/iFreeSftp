@@ -85,11 +85,13 @@
             <MenuFlyoutItem x:Name="RetryAllItem" FontSize="12" Click="RetryAllItem_Click" />
         </MenuFlyout>
 
-        <!-- 行右键菜单: 取消(等待/传输中) / 重试(失败/已取消) / 移除(已完结),
-             显隐由 Row_RightTapped 按行任务状态决定 -->
+        <!-- 行右键菜单: 取消(等待/传输中) / 重试(失败/已取消) / 重连(失败/已取消,
+             仅断开时可点) / 移除(任意状态, 僵死行唯一逃生口),
+             显隐与启用由 Row_RightTapped 按行任务状态决定 -->
         <MenuFlyout x:Name="RowMenuFlyout">
             <MenuFlyoutItem x:Name="RowCancelItem" FontSize="12" Click="RowCancelItem_Click" />
             <MenuFlyoutItem x:Name="RowRetryItem" FontSize="12" Click="RowRetryItem_Click" />
+            <MenuFlyoutItem x:Name="RowReconnectItem" FontSize="12" Click="RowReconnectItem_Click" />
             <MenuFlyoutItem x:Name="RowRemoveItem" FontSize="12" Click="RowRemoveItem_Click" />
         </MenuFlyout>
     </UserControl.Resources>

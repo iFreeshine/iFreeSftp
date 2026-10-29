@@ -6,6 +6,25 @@ All notable, user-visible changes will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`).
 
+## [0.8.6] - 2026-10-25
+
+Modification-time preservation, per-host last-visited directory memory, and faster large-folder transfers.
+
+### Added
+- Preserve modification time after transfer (Settings → Transfer, on by default): both upload and download restore the source file's mtime on the target, using UTC end to end so daylight-saving transitions cannot shift timestamps. Resumed and appended transfers end with the source file's mtime rather than the append time.
+- Remember the last visited remote directory per host: connecting returns to the directory you were browsing instead of always landing on the login home. Sync folder still takes priority over the remembered path.
+- Delete operations are now recorded in the terminal log: one line per remote item deleted, one per local item moved to the Recycle Bin, and a line naming the failing path when a delete fails.
+
+### Improved
+- Large-folder transfers: file counting for the tar decision now stops as soon as the threshold is reached and no longer blocks the window; the status bar reports the preparation phase, and tar tasks show whether the server is packing or unpacking.
+- Resumable downloads no longer issue a second round trip per file to read its mtime (size and mtime are fetched in one request).
+- The remote breadcrumb appears as soon as the session is confirmed, even before the first directory listing finishes.
+
+### Fixed
+- tar-accelerated directory transfers could stay "transferring" forever when the link died mid-stream; a stalled transfer now fails after 60 seconds without progress, and the connection used by the failed stream is discarded instead of being reused.
+- The failed-stream watchdog no longer leaves the abandoned stream running on a connection that was just returned to the pool.
+- Stalled or half-open transfers no longer leave stuck queue rows behind: a row can be removed in any state, and a disconnected row offers a right-click "Reconnect" that restores the session without restarting the task.
+
 ## [0.8.5] - 2026-10-18
 
 Resumable transfer enhancements, post-transfer verification and tar-accelerated directory transfer.
@@ -87,7 +106,8 @@ First public release.
 - Language dictionaries moved to an external locales folder; user-created language files are discovered automatically
 - Synchronized browsing, file comparison, rubber-band selection, cross-pane drag-and-drop transfer
 
-[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.5...HEAD
+[Unreleased]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.6...HEAD
+[0.8.6]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.3...v0.8.5
 [0.8.3]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/iFreeshine/iFreeSftp/compare/v0.8.1...v0.8.2

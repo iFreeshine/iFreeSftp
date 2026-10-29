@@ -264,6 +264,41 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
         IsConnected = false;
     }
 
+    /// <summary>用上次连接参数重建会话（队列行右键"重连"专用）：**只处理连接本身**，
+    /// 不触发任何传输、不改队列状态。已连接时直接返回 true（无需重建）；从未连过
+    /// （无参数）返回 false。失败写终端日志并返回 false，不向调用方抛异常——重连
+    /// 是用户手动动作，失败只该提示，不该炸掉队列面板。</summary>
+    public async Task<bool> ReconnectAsync()
+    {
+        if (IsConnected)
+        {
+            return true;
+        }
+
+        if (_lastProfile is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var ok = await ConnectAsync(_lastProfile);
+            if (ok)
+            {
+                TerminalLogService.Log(string.Format(
+                    LocalizationService.GetString("LogReconnectOk"), $"{Host}:{Port}"), LogScope);
+            }
+
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            TerminalLogService.Log(string.Format(
+                LocalizationService.GetString("LogReconnectFailed"), ex.Message), LogScope);
+            return false;
+        }
+    }
+
     /// <summary>启动保活定时器：周期性发送 NOOP 包维持长连接，避免被中间网关断开。</summary>
     public void StartKeepAlive()
     {
@@ -533,6 +568,25 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             }
         });
 
+    /// <summary>一次 STAT 同时取大小与修改时间（UTC）: 供续传决策与传输后 mtime 回写
+    /// 共用（单文件两次查询会多付一个往返）；不存在时 Size=-1、MtimeUtc=null。</summary>
+    public Task<(long Size, DateTimeOffset? MtimeUtc)> TryGetFileInfoAsync(string remotePath)
+        => RunAsync(client =>
+        {
+            try
+            {
+                var attrs = client.GetAttributes(remotePath);
+                var utc = attrs.LastWriteTimeUtc;
+                return (attrs.Size, utc.Year > 1601
+                    ? new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc))
+                    : (DateTimeOffset?)null);
+            }
+            catch (Renci.SshNet.Common.SftpPathNotFoundException)
+            {
+                return (-1L, null);
+            }
+        });
+
     /// <summary>断点续传上传（主会话实现: 与全部 SFTP 操作同经 _sshLock 串行）。
     /// OpenOrCreate + 显式定位续写, 不截断远端半成品。</summary>
     public Task UploadResumeAsync(string localPath, string remotePath, long offset, Action<long>? progress = null)
@@ -601,7 +655,7 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             return null;
         });
 
-    /// <summary>远端文件最后修改时间（远程编辑 mtime 冲突比对）。</summary>
+    /// <summary>远端文件最后修改时间（远程编辑 mtime 冲突比对 / 传输后 mtime 同步）。</summary>
     public Task<DateTimeOffset> GetLastWriteTimeAsync(string path)
         => RunAsync(client => new DateTimeOffset(client.GetAttributes(path).LastWriteTime));
 
@@ -678,8 +732,9 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
         });
 
     /// <summary>远程 chmod：逐位回写 9 位属主/属组/其他的 rwx（布尔位只动各自位, suid/sgid/sticky
-    /// 在属性字段中保持原值）。SSH.NET 属性对象自带变更跟踪, SetAttributes 只发送变更过的字段,
-    /// 不会误写大小/时间。权限无变化时不产生任何 SETSTAT 请求。</summary>
+    /// 保持原值）。一律 Get 后改再 Set——复用服务器返回的属性实例, 避免新建对象把
+    /// size/uid/gid/atime 一并带上而被误写。实际下发哪些字段由 SSH.NET 内部决定, 本仓
+    /// 未验证其"只发变更字段"的行为, 因此不把该行为当作安全前提。</summary>
     public Task SetPermissionsAsync(string path, int mode)
         => RunAsync<object?>(client =>
         {
@@ -696,6 +751,25 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             client.SetAttributes(path, attrs);
             return null;
         });
+
+    /// <summary>远程改 mtime：Get+改+SetAttributes 模式（同 SetPermissionsAsync）, 复用服务器
+    /// 返回的属性实例以降低误写其他字段的风险（下发字段集由 SSH.NET 决定, 未在本仓验证）。
+    /// 入参为 UTC——SFTP ATTRS/SETSTAT 的时间戳本就是 UTC 秒, 直写 LastWriteTimeUtc
+    /// 绕开本地时区换算, 无夏令时歧义（WinSCP 文档提过的 DST 坑）。</summary>
+    public Task SetLastWriteTimeUtcAsync(string path, DateTime mtimeUtc)
+        => RunAsync<object?>(client =>
+        {
+            var attrs = client.GetAttributes(path);
+            attrs.LastWriteTimeUtc = mtimeUtc;
+            client.SetAttributes(path, attrs);
+            return null;
+        });
+
+    /// <summary>远端 mtime (UTC)：供下载方向把远端时间戳原样落到本地文件系统
+    /// （配套 File.SetLastWriteTimeUtc, 全程不碰本地时区换算）。远程编辑器比对用的
+    /// 本地时区形态走 GetLastWriteTimeAsync。</summary>
+    public Task<DateTime> GetLastWriteTimeUtcAsync(string path)
+        => RunAsync(client => client.GetAttributes(path).LastWriteTimeUtc);
 
     // 校验码计算取消标记: 弹框关闭/切换算法时置位, 分块循环逐块检查, 尽快让出 SSH 通道
     private volatile bool _checksumCancel;
@@ -907,6 +981,9 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
             ?? throw new InvalidOperationException(LocalizationService.GetString("StatusDisconnected"));
         _execClient?.Dispose();
         var client = new SshClient(BuildConnectionInfo(profile));
+        // exec 通道与主连接同间隔自动保活: 命令通道半开会导致 RunCommandAsync
+        // 挂到 CommandTimeout 才自愈, 保活让断链更快显形。
+        client.KeepAliveInterval = KeepAliveInterval;
         // 懒连接发生在 SFTP 正式连接成功之后: 指纹已被档案预填或确认回填, 直接精确匹配。
         if (TrustedFingerprint is null && ConfirmedFingerprint is not null)
         {
@@ -988,6 +1065,9 @@ public sealed class SftpSessionService : IDisposable, IRemoteTransferOps, IRemot
         }
 
         client.HostKeyReceived += OnExecHostKeyReceived;
+        // 传输连接同样开自动保活: 批次虽短命, 但 tar 单流可跑很久, TCP 半开/服务端
+        // 挂死时无保活则写操作无限阻塞（与 TarAccelService 看门狗双保险）。
+        client.KeepAliveInterval = KeepAliveInterval;
         try
         {
             var timeoutSeconds = AppSettingsService.ConnectTimeoutSeconds;

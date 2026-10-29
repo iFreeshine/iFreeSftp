@@ -105,6 +105,7 @@ public static class HostStoreService
         MaxRetries = h.MaxRetries,
         RetryDelaySeconds = h.RetryDelaySeconds,
         HostKeyFingerprint = h.HostKeyFingerprint,
+        LastRemotePath = h.LastRemotePath,
     };
 
     /// <summary>
@@ -145,11 +146,12 @@ public static class HostStoreService
     }
 
     /// <summary>
-    /// 单条落盘：只把该主机确认过的指纹写回存档中对应记录，不动工作集里其他未保存修改，
-    /// 也不动该记录的其他字段（端口/密码等未保存编辑仍只存在于内存，随显式 Save 落盘）。
+    /// 单条落盘：只把该主机"会话过程产生的持久状态"（确认过的指纹、上次浏览的远程
+    /// 目录）写回存档中对应记录，不动工作集里其他未保存修改，也不动该记录的其他字段
+    /// （端口/密码等未保存编辑仍只存在于内存，随显式 Save 落盘）。
     /// 以 Host+Port+Username 在盘上定位记录（与连接路径的匹配口径一致）；
     /// 盘上找不到（新增未保存 / 关键字段已改未保存）或存档读取失败时不落盘返回 false，
-    /// 指纹保留在内存工作集，随下次显式保存一起落盘。盘上密文原样流转，不经 Protect/Unprotect。
+    /// 指纹与目录记忆保留在内存工作集，随下次显式保存一起落盘。盘上密文原样流转，不经 Protect/Unprotect。
     /// </summary>
     public static bool SaveSingle(HostProfile host)
     {
@@ -174,6 +176,7 @@ public static class HostStoreService
                 }
 
                 target.HostKeyFingerprint = host.HostKeyFingerprint;
+                target.LastRemotePath = host.LastRemotePath;
                 File.WriteAllText(StorePath, JsonSerializer.Serialize(new HostStore { hosts = stored }, JsonOptions));
                 return true;
             }

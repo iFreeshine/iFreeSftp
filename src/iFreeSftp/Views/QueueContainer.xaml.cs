@@ -191,11 +191,12 @@ public sealed partial class QueueContainer : UserControl
     private void RetryAllItem_Click(object sender, RoutedEventArgs e)
         => _ = TransferQueueService.RerunAllAsync();
 
-    // —— 行右键菜单: 按行任务状态显隐 (取消/重试/移除) ——
+    // —— 行右键菜单: 按行任务状态显隐 (取消/重试/重连/移除) ——
 
-    /// <summary>行右键弹出菜单前按行任务状态刷新菜单项可见性：取消 = 等待/传输中；
-    /// 重试 = 失败/已取消；移除 = 已完结（完成/失败/已取消）。三项均不可用（校验中）
-    /// 不弹出。点击处理经 RowMenuFlyout.Target 取行任务（ShowAt 的目标元素）。</summary>
+    /// <summary>行右键弹出菜单前按行任务状态刷新菜单项：取消 = 等待/传输中；重试 =
+    /// 失败/已取消；重连 = 失败/已取消（**只在会话断开时可点**，已连接则置灰——没有
+    /// 需要重建的线路；重连只恢复连接，不重跑任务）；移除 = 任意状态（僵死行到不了
+    /// 终态，这是唯一逃生口）。点击处理经 RowMenuFlyout.Target 取行任务。</summary>
     private void Row_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: TransferTask task } row)
@@ -206,15 +207,17 @@ public sealed partial class QueueContainer : UserControl
         var status = task.Status;
         var cancel = status is TransferStatus.Waiting or TransferStatus.Transferring;
         var retry = status is TransferStatus.Failed or TransferStatus.Cancelled;
-        var remove = status is TransferStatus.Done or TransferStatus.Failed or TransferStatus.Cancelled;
-        RowCancelItem.Visibility = cancel ? Visibility.Visible : Visibility.Collapsed;
-        RowRetryItem.Visibility = retry ? Visibility.Visible : Visibility.Collapsed;
-        RowRemoveItem.Visibility = remove ? Visibility.Visible : Visibility.Collapsed;
-        if (!cancel && !retry && !remove)
+        var reconnect = retry && task.Reconnect is not null;
+        if (reconnect)
         {
-            return; // 校验中: 三项均不可用, 不弹菜单
+            // 探针为 null 视为已连接（无远端侧 / 状态未知），不提供重连入口
+            RowReconnectItem.IsEnabled = !(task.IsConnectedProbe?.Invoke() ?? true);
         }
 
+        RowCancelItem.Visibility = cancel ? Visibility.Visible : Visibility.Collapsed;
+        RowRetryItem.Visibility = retry ? Visibility.Visible : Visibility.Collapsed;
+        RowReconnectItem.Visibility = reconnect ? Visibility.Visible : Visibility.Collapsed;
+        RowRemoveItem.Visibility = Visibility.Visible;
         RowMenuFlyout.ShowAt(row, e.GetPosition(row));
         e.Handled = true;
     }
@@ -232,6 +235,29 @@ public sealed partial class QueueContainer : UserControl
         if (RowMenuFlyout.Target is FrameworkElement { DataContext: TransferTask task })
         {
             _ = TransferQueueService.RerunOneAsync(task.Id);
+        }
+    }
+
+    /// <summary>行右键"重连"：只重建 SSH 会话，不重跑任务、不改队列状态。执行期间
+    /// 菜单项文案改为"正在重连…"并禁用；完成后恢复文案（下次右键重读启用状态）。</summary>
+    private async void RowReconnectItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (RowMenuFlyout.Target is not FrameworkElement { DataContext: TransferTask task }
+            || task.Reconnect is null)
+        {
+            return;
+        }
+
+        RowReconnectItem.IsEnabled = false;
+        RowReconnectItem.Text = LocalizationService.GetString("QMenuRowReconnecting");
+        try
+        {
+            await task.Reconnect();
+        }
+        finally
+        {
+            RowReconnectItem.Text = LocalizationService.GetString("QMenuRowReconnect");
+            RowReconnectItem.IsEnabled = true;
         }
     }
 
@@ -391,6 +417,7 @@ public sealed partial class QueueContainer : UserControl
         RetryAllItem.Text = LocalizationService.GetString("QMenuRetryAll");
         RowCancelItem.Text = LocalizationService.GetString("QMenuRowCancel");
         RowRetryItem.Text = LocalizationService.GetString("QMenuRowRetry");
+        RowReconnectItem.Text = LocalizationService.GetString("QMenuRowReconnect");
         RowRemoveItem.Text = LocalizationService.GetString("QMenuRowRemove");
     }
 

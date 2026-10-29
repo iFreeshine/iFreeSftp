@@ -94,6 +94,13 @@ public sealed class HostProfile
     /// </summary>
     public string HostKeyFingerprint { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 上次浏览的远程目录（WinSCP 式记忆）。目录列举成功后由 FileView 更新并单字段落盘，
+    /// 下次连接直接落到该目录，消除"每次都落在空主目录"的误判；目录已失效时
+    /// 连接后自动回退登录主目录。空 = 从未浏览过。同步目录（SyncEnabled）优先于本字段。
+    /// </summary>
+    public string LastRemotePath { get; set; } = string.Empty;
+
     /// <summary>IP:端口 展示副标题（仅 UI 展示, 不序列化; 卡片用）。</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string Subtitle => string.IsNullOrEmpty(Host) ? string.Empty : $"{Host}:{Port}";

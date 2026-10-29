@@ -25,6 +25,11 @@ public interface IRemoteTransferOps
     /// <summary>查询远端文件大小（字节）；不存在返回 -1（SftpPathNotFoundException 归一）。</summary>
     Task<long> TryGetSizeAsync(string remotePath);
 
+    /// <summary>一次 STAT 同时取大小与修改时间（UTC）: 续传决策与传输后 mtime 回写
+    /// 共用同一结果——两者分别查询会为每个文件多付一个往返（高延迟链路上放大明显）。
+    /// 不存在时返回 Size=-1、MtimeUtc=null。</summary>
+    Task<(long Size, DateTimeOffset? MtimeUtc)> TryGetFileInfoAsync(string remotePath);
+
     /// <summary>断点续传上传: 本地源 seek 到 offset, 远端定位续写（不截断）。
     /// offset 必须等于远端当前大小。progress = 含 offset 的累计字节。</summary>
     Task UploadResumeAsync(string localPath, string remotePath, long offset, Action<long>? progress = null);
@@ -92,6 +97,9 @@ public sealed class PauseInterruptibleOps : IRemoteTransferOps
         => _inner.UploadAsync(localPath, remotePath, Wrap(progress));
 
     public Task<long> TryGetSizeAsync(string remotePath) => _inner.TryGetSizeAsync(remotePath);
+
+    public Task<(long Size, DateTimeOffset? MtimeUtc)> TryGetFileInfoAsync(string remotePath)
+        => _inner.TryGetFileInfoAsync(remotePath);
 
     public Task UploadResumeAsync(string localPath, string remotePath, long offset, Action<long>? progress = null)
         => _inner.UploadResumeAsync(localPath, remotePath, offset, Wrap(progress));
@@ -203,6 +211,24 @@ public sealed class TransferConnection : IRemoteTransferOps, IDisposable
             catch (Renci.SshNet.Common.SftpPathNotFoundException)
             {
                 return -1L; // 不存在: 归一为 -1 (ResumePolicy 判 Overwrite)
+            }
+        });
+
+    public Task<(long Size, DateTimeOffset? MtimeUtc)> TryGetFileInfoAsync(string remotePath)
+        => Task.Run<(long, DateTimeOffset?)>(() =>
+        {
+            try
+            {
+                var attrs = _client.GetAttributes(remotePath);
+                var utc = attrs.LastWriteTimeUtc;
+                // 服务器未回传 mtime 位时 SSH.NET 落到 epoch, 按"未知"处理
+                return (attrs.Size, utc.Year > 1601
+                    ? new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc))
+                    : null);
+            }
+            catch (Renci.SshNet.Common.SftpPathNotFoundException)
+            {
+                return (-1L, null);
             }
         });
 
@@ -352,6 +378,32 @@ public sealed class TransferBatchConnections : IDisposable
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>丢弃一条传输连接（不还池）：连接上可能仍有被放弃的流操作, 直接关闭
+    /// 以中断底层会话, 防止下个任务借到半死的连接。幂等, 批次 Dispose 时不会重复关闭。</summary>
+    public void Discard(SftpSessionService session, IRemoteTransferOps ops)
+    {
+        if (ops is not TransferConnection conn)
+        {
+            return;
+        }
+
+        _gate.Wait();
+        try
+        {
+            _all.Remove(conn);
+            if (_idle.TryGetValue(session, out var list))
+            {
+                list.Remove(conn);
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        conn.Dispose();
     }
 
     public void Dispose()

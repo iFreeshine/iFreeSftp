@@ -50,8 +50,9 @@ public enum QueueChangeKind
 /// 单条传输任务（队列行模型）：源/目标路径、大小与第四列状态文案。
 /// 第四列 = 状态语义：等待→"等待中"，传输中→实时速度（无进度回报时"传输中"），
 /// 完成→"传输完成"，失败→"传输失败"。
-/// 实现 INotifyPropertyChanged：状态/速度/时刻变化只推单行属性通知（{Binding}
-/// 经引擎自动封送到 UI 线程），列表结构与其余行完全不动——这是队列窗口不闪烁的关键。
+/// 实现 INotifyPropertyChanged：状态/速度/时刻变化只推单行属性通知（通知经
+/// UiDispatcher 强制封送到 UI 线程；{Binding} 不会自动封送），列表结构与其余行
+/// 完全不动——这是队列窗口不闪烁的关键。
 /// </summary>
 public sealed class TransferTask : INotifyPropertyChanged
 {
@@ -188,6 +189,48 @@ public sealed class TransferTask : INotifyPropertyChanged
         }
     }
 
+    private bool _isTarPacking;
+
+    /// <summary>tar 下载方向的服务端打包阶段（打包流尚未产生字节）: 第四列显示
+    /// "打包中"——此前该阶段与传输同文案, 大目录在服务端打包的长耗时完全无反馈,
+    /// 观感等同卡死。非结构性状态, 每次领取任务时复位。</summary>
+    public bool IsTarPacking
+    {
+        get => _isTarPacking;
+        internal set
+        {
+            if (_isTarPacking == value)
+            {
+                return;
+            }
+
+            _isTarPacking = value;
+            Raise();
+            Raise(nameof(StatusText));
+        }
+    }
+
+    private bool _isTarUnpacking;
+
+    /// <summary>tar 解包阶段（打包流已传完, 转入服务端/本地解包）: 第四列显示
+    /// "解包中"——解包在 600 秒上限内无任何进度回报, 与传输共用文案会让人误判
+    /// 卡死。非结构性状态, 每次领取任务时复位。</summary>
+    public bool IsTarUnpacking
+    {
+        get => _isTarUnpacking;
+        internal set
+        {
+            if (_isTarUnpacking == value)
+            {
+                return;
+            }
+
+            _isTarUnpacking = value;
+            Raise();
+            Raise(nameof(StatusText));
+        }
+    }
+
     private VerifyResultKind _verifyResult = VerifyResultKind.None;
 
     /// <summary>传输后校验结果（T2）：None = 未校验；变化时第四列文案随之重算——
@@ -226,6 +269,15 @@ public sealed class TransferTask : INotifyPropertyChanged
     /// 本地算杂凑 + exec 通道算远端杂凑 + 比对。null = 无校验, 结算直接完成。</summary>
     internal Func<Task<VerifyOutcome>>? VerifyHook { get; set; }
 
+    /// <summary>远端会话连接状态探针（FileView 入队时注入, 行右键"重连"的启用判定）：
+    /// 跨主机中转有两侧远端, 全部已连接才返回 true。null = 无远端侧（不应出现）。</summary>
+    internal Func<bool>? IsConnectedProbe { get; set; }
+
+    /// <summary>重连执行体（FileView 注入）：逐个远端侧按上次连接参数重建 SSH 会话。
+    /// **只重连, 不重跑任务、不改队列状态**——用户要的是"把线路接回来"，不是重传。
+    /// 返回 false = 有远端侧未能连上（失败原因已写终端日志）。null = 无远端侧。</summary>
+    internal Func<Task<bool>>? Reconnect { get; set; }
+
     /// <summary>"时间"列文本（完成/失败时刻，时分秒）。</summary>
     public string TimeText => FinishTime?.ToString("HH:mm:ss") ?? string.Empty;
 
@@ -244,6 +296,8 @@ public sealed class TransferTask : INotifyPropertyChanged
         TransferStatus.Transferring when IsResumed && SpeedText.Length > 0 =>
             ResumeLabel() + " " + SpeedText,
         TransferStatus.Transferring when IsResumed => ResumeLabel(),
+        TransferStatus.Transferring when IsTarPacking => LocalizationService.GetString("QStateTarPacking"),
+        TransferStatus.Transferring when IsTarUnpacking => LocalizationService.GetString("QStateTarUnpacking"),
         TransferStatus.Transferring when IsTarMode && SpeedText.Length > 0 =>
             LocalizationService.GetString("QStateTarMode") + " " + SpeedText,
         TransferStatus.Transferring when IsTarMode => LocalizationService.GetString("QStateTarMode"),
@@ -304,7 +358,7 @@ public sealed class TransferTask : INotifyPropertyChanged
 /// 供主面板左下 QueueContainer 按"队列中（等待+传输中）/ 传输失败 / 传输完成"
 /// 页签展示。任意线程可调用。刷新机制分两层（防闪烁）：
 /// ① 行内变化（状态/速度/时刻）经 <see cref="TransferTask"/> 的 INPC 直接推送到
-///   所在行（{Binding} 自动封送 UI 线程），列表结构与其余行不动；
+///   所在行（通知经 UiDispatcher 封送 UI 线程），列表结构与其余行不动；
 /// ② 结构变化（入队/完成转出/失败转出/清空/重置）经 <see cref="Changed"/> 广播
 ///   （携带变更类型与任务），UI 侧对三个页签集合做增量增删——不再整体替换视图。
 /// 速度统计：SSH.NET 进度回调上报累计字节，≥400ms 窗口计算增量速度（节流）。
@@ -354,6 +408,9 @@ public static class TransferQueueService
             }
 
             task.Status = TransferStatus.Transferring; // 行内状态变化, INPC 直达所在行
+            // 阶段标记随每次领取复位: 重跑/重试时不能沿用上一轮的"解包中"文案
+            task.IsTarPacking = false;
+            task.IsTarUnpacking = false;
             return true;
         }
     }
@@ -448,15 +505,21 @@ public static class TransferQueueService
         }
     }
 
+    /// <summary>校验结算的客户端兜底时限：会话已死时校验 hook 内部的 exec 调用可能永不
+    /// 返回（底层 socket 读无超时），泛等会让行永远停在"校验中"。超时按跳过结算——
+    /// 校验本身失败不得连累已完成的传输。</summary>
+    private const int VerifyTimeoutSeconds = 120;
+
     /// <summary>跑校验并结算：不匹配 → 先记结果再失败（时序保证 StatusText 读取时
     /// 结果已就位，原因带两侧杂凑）；一致/跳过 → 记结果后完成。校验执行体抛异常
-    /// 视同跳过（校验本身失败不得连累传输结果）。</summary>
+    /// 或超过 <see cref="VerifyTimeoutSeconds"/> 视同跳过。</summary>
     private static async Task RunVerifyAsync(Guid id, Func<Task<VerifyOutcome>> hook)
     {
         VerifyOutcome outcome;
         try
         {
-            outcome = await hook().ConfigureAwait(false);
+            outcome = await hook().WaitAsync(TimeSpan.FromSeconds(VerifyTimeoutSeconds))
+                .ConfigureAwait(false);
         }
         catch
         {
@@ -636,14 +699,16 @@ public static class TransferQueueService
         }
     }
 
-    /// <summary>清除已完结任务（完成/失败/已取消）：排队与传输中的保留。UI 收到
-    /// Reset 后全量重填三个页签集合（手动低频操作）。</summary>
+    /// <summary>清除已完结（含"校验中"）：Done/Failed/Cancelled 之外，Verifying 行也一并
+    /// 清掉——校验 hook 卡住（会话已死、exec 不返回）时它不会自行结算，否则会长期占据
+    /// 列表并让"重置并重新请求所有"一直禁用。传输中（Transferring）不在此列，交给
+    /// 行右键"移除"强制摘除。</summary>
     public static void ClearAll()
     {
         lock (Lock)
         {
             Tasks.RemoveAll(t => t.Status is TransferStatus.Done or TransferStatus.Failed
-                or TransferStatus.Cancelled);
+                or TransferStatus.Cancelled or TransferStatus.Verifying);
         }
 
         RaiseChanged(QueueChangeKind.Reset, null);
@@ -666,7 +731,7 @@ public static class TransferQueueService
     /// 停止传输：置位停止标志 + 解除暂停 + 取消令牌（ConcurrentTransferService.RequestStop），
     /// 等待中任务立即标"已取消"（行留"队列中"页签，可重试）。传输中的任务在下一个
     /// 块边界检查点自行中止并结算"已取消"（半成品留断点，可重试续传）；校验中的
-    /// 不干预，exec 10s 超时兜底自结算。行内状态变化，无结构事件。
+    /// 不干预，RunVerifyAsync 的 120 秒客户端时限兜底自结算。行内状态变化，无结构事件。
     /// </summary>
     public static void StopAll()
     {
@@ -744,22 +809,22 @@ public static class TransferQueueService
         }
     }
 
-    /// <summary>移除单条已完结任务（行右键）：等待/传输中不允许（UI 菜单显隐控制，
-    /// 此处再防御）。UI 收到 Removed 后从三个页签集合各删除一次。</summary>
+    /// <summary>移除单条任务（行右键）：**任意状态均可**。僵死行（传输卡在半开 TCP、
+    /// 校验 hook 不返回、Begin 拒绝后留在"等待"）永远到不了终态，状态守卫会把唯一
+    /// 的逃生口关掉——因此统一按强制移除处理：先置取消请求，再从工作集摘除。
+    /// worker 下个检查点查不到任务即按"已取消"自行退出（见 IsCancelRequested），
+    /// 结算对已删任务无害。卡在非检查点 await 的 worker 只能等断开后自行结束，
+    /// 但它已不在队列里，不影响新一轮传输。</summary>
     public static void Remove(Guid id)
     {
         TransferTask? removed;
         lock (Lock)
         {
             removed = Tasks.FirstOrDefault(t => t.Id == id);
-            if (removed is not null && removed.Status is TransferStatus.Done
-                or TransferStatus.Failed or TransferStatus.Cancelled)
+            if (removed is not null)
             {
+                removed.CancelRequested = true;
                 Tasks.Remove(removed);
-            }
-            else
-            {
-                removed = null;
             }
         }
 

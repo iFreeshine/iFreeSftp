@@ -768,6 +768,33 @@
                                         </Grid>
                                     </Border>
                                     </StackPanel>
+                                    <!-- 传输后保留修改时间: 逐文件传输成功时把源 mtime 同步到目标侧,
+                                         与 tar 打包路径 (打包流隐式继承 mtime) 行为统一; 只做文件
+                                         mtime, 目录时间戳不做, 同步失败只记日志不影响传输结果 -->
+                                    <Border Style="{StaticResource SettingsCardStyle}">
+                                        <Grid ColumnSpacing="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock x:Name="PreserveMtimeLabel" FontSize="13" />
+                                                <TextBlock x:Name="PreserveMtimeHint" Style="{StaticResource SettingsDescStyle}" />
+                                            </StackPanel>
+                                            <ToggleSwitch x:Name="PreserveMtimeToggle"
+              Grid.Column="1"
+              VerticalAlignment="Center"
+              HorizontalAlignment="Right"
+              OnContent="{x:Null}"
+              OffContent="{x:Null}"
+              Header="{x:Null}"
+              Padding="0"
+              MinWidth="0"
+              Width="46"
+              Margin="0,0,-2,0"
+              Toggled="PreserveMtimeToggle_Toggled" />
+                                        </Grid>
+                                    </Border>
                                     <!-- tar 打包加速(母) + tar 文件数阈值(子) = 母子组: 组内 StackPanel
                                          Spacing 1 子项贴住母项 (组间由外层面板 Spacing 8 分隔)。
                                          目录传输文件数达阈值时单流打包替代逐文件 SFTP;

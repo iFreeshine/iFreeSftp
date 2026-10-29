@@ -232,6 +232,7 @@ public sealed partial class SettingsPanel : UserControl
         TarAccelToggle.IsOn = AppSettingsService.TarAccelEnabled;
         TarThresholdSlider.Value = AppSettingsService.TarAccelMinFiles; // 越界旧档自动 coerce 到边界
         VerifyToggle.IsOn = AppSettingsService.VerifyAfterTransfer;
+        PreserveMtimeToggle.IsOn = AppSettingsService.PreserveMtimeEnabled;
         VerifyAlgorithmBox.SelectedIndex = AppSettingsService.VerifyAlgorithm switch
         {
             "SHA256" => 1,
@@ -473,6 +474,16 @@ public sealed partial class SettingsPanel : UserControl
         UpdateVerifyAlgorithmCardState();
     }
 
+    private void PreserveMtimeToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (!_initialized || _syncing)
+        {
+            return;
+        }
+
+        AppSettingsService.SetPreserveMtimeEnabled(PreserveMtimeToggle.IsOn);
+    }
+
     private void VerifyAlgorithmBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_initialized || _syncing)
@@ -690,6 +701,8 @@ public sealed partial class SettingsPanel : UserControl
         TarThresholdHint.Text = LocalizationService.GetString("TarThresholdHint");
         VerifyLabel.Text = LocalizationService.GetString("VerifyAfterLabel");
         VerifyHint.Text = LocalizationService.GetString("VerifyAfterHint");
+        PreserveMtimeLabel.Text = LocalizationService.GetString("PreserveMtimeLabel");
+        PreserveMtimeHint.Text = LocalizationService.GetString("PreserveMtimeHint");
         VerifyAlgoLabel.Text = LocalizationService.GetString("VerifyAlgoLabel");
         VerifyAlgoDesc.Text = LocalizationService.GetString("VerifyAlgoDesc");
         VerifyAlgoAutoItem.Content = LocalizationService.GetString("VerifyAlgoAuto");

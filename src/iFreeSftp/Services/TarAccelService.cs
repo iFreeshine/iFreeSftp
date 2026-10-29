@@ -28,6 +28,21 @@ public static class TarAccelService
     /// <summary>远端文件计数 / 清理命令超时。</summary>
     private const int ExecQuickTimeoutSeconds = 60;
 
+    /// <summary>流式传输无进展看门狗（0.8.6）: 连续无字节进展超过该秒数判定链路
+    /// 僵死并中止任务——TCP 半开/服务端 SFTP 挂死时 SSH.NET 写操作可能无限阻塞，
+    /// 无看门狗则任务滞留"传输中"永不结算，行右键重试/移除全部失效。</summary>
+    private const int StallTimeoutSeconds = 60;
+
+    /// <summary>看门狗判定的毫秒值。</summary>
+    private const int StallTimeoutMs = StallTimeoutSeconds * 1000;
+
+    /// <summary>看门狗轮询间隔。</summary>
+    private const int StallPollMs = 1000;
+
+    /// <summary>本地 tar 进程上传完成后等待退出的上限（正常毫秒级退出; 卡死须杀掉
+    /// 解除管道阻塞, 否则 WaitForExit 无限等同样导致任务永不结算）。</summary>
+    private const int LocalTarExitWaitMs = 30_000;
+
     /// <summary>远端临时 tar 存放目录（POSIX 标准临时目录; 不可写时命令失败自动回退）。</summary>
     private const string RemoteTempDir = "/tmp";
 
@@ -64,8 +79,10 @@ public static class TarAccelService
     /// <summary>
     /// 统计远端目录文件数（一条 find | wc -l; 探测失败/非 POSIX/解析失败返回 -1）。
     /// 下载方向的 tar 判定用: 避免为"一个大文件"白付打包与双倍磁盘开销。
+    /// limit &gt; 0 时管道套 head 提前截断（find 收 SIGPIPE 退出, 流水线退出码取
+    /// wc）——海量小文件目录不必等整棵树走完, 返回值语义变为"至少 limit"。
     /// </summary>
-    public static async Task<int> CountRemoteFilesAsync(SftpSessionService session, string remoteDir)
+    public static async Task<int> CountRemoteFilesAsync(SftpSessionService session, string remoteDir, int limit = 0)
     {
         if (!await session.IsPosixServerAsync())
         {
@@ -74,8 +91,10 @@ public static class TarAccelService
 
         try
         {
-            var (exit, output, _) = await session.RunCommandAsync(
-                $"find {ShellQuote.Quote(remoteDir)} -type f | wc -l", ExecQuickTimeoutSeconds);
+            var countCmd = limit > 0
+                ? $"find {ShellQuote.Quote(remoteDir)} -type f | head -n {limit} | wc -l"
+                : $"find {ShellQuote.Quote(remoteDir)} -type f | wc -l";
+            var (exit, output, _) = await session.RunCommandAsync(countCmd, ExecQuickTimeoutSeconds);
             if (exit != 0)
             {
                 return -1;
@@ -95,7 +114,8 @@ public static class TarAccelService
     /// </summary>
     public static async Task<bool> UploadDirAsync(
         SftpSessionService remoteSession, IRemoteTransferOps ops,
-        string localDir, string remoteDir, Action<long>? progress, string[]? logScopes = null)
+        string localDir, string remoteDir, Action<long>? progress, string[]? logScopes = null,
+        Action? onUnpacking = null)
     {
         if (!IsLocalTarAvailable())
         {
@@ -121,15 +141,35 @@ public static class TarAccelService
 
         try
         {
-            // 本地 tar stdout 直写远端临时文件（不在本地落临时 tar）
+            // 本地 tar stdout 直写远端临时文件（不在本地落临时 tar）。
+            // 看门狗: 进度回调每块刷新最近进展时刻, 轮询侧超时判僵死——此前
+            // 无任何超时/检查点, 链路僵死时任务滞留"传输中"永不结算。
+            var lastTick = Environment.TickCount64;
+            var watched = progress is null
+                ? null
+                : (Action<long>)(b =>
+                {
+                    Volatile.Write(ref lastTick, Environment.TickCount64);
+                    progress(b);
+                });
+
             using (var process = StartLocalTarPack(localDir))
             {
                 var stderrTask = process.StandardError.ReadToEndAsync();
                 try
                 {
-                    await ops.UploadStreamAsync(process.StandardOutput.BaseStream, tarPath, progress);
+                    await AwaitWithStallWatchdogAsync(
+                        ops.UploadStreamAsync(process.StandardOutput.BaseStream, tarPath, watched),
+                        watched is null ? null : () => Volatile.Read(ref lastTick));
+                    // 先等进程退出（带超时）再收 stderr——进程退出后管道关闭,
+                    // stderr 必然就绪; 反序会在 tar 卡死时 ReadToEndAsync 跟着无限挂
+                    if (!process.WaitForExit(LocalTarExitWaitMs))
+                    {
+                        throw new InvalidOperationException(string.Format(
+                            LocalizationService.GetString("LogTarProcessHang"), LocalTarExitWaitMs / 1000));
+                    }
+
                     var stderr = await stderrTask;
-                    process.WaitForExit();
                     if (process.ExitCode != 0)
                     {
                         throw new InvalidOperationException(
@@ -144,6 +184,9 @@ public static class TarAccelService
                 }
             }
 
+            // 打包流已全部写达, 转入服务端解包（长耗时且无进度回报, 通知队列行
+            // 切"解包中"文案, 避免用户误判任务卡死）
+            onUnpacking?.Invoke();
             if (!destExists)
             {
                 // 先解到同级隐藏临时目录, 再 rename —— 目标位置要么原样要么完整新目录
@@ -177,7 +220,8 @@ public static class TarAccelService
     /// </summary>
     public static async Task<bool> DownloadDirAsync(
         SftpSessionService srcSession, IRemoteTransferOps ops,
-        string remoteDir, string localDir, Action<long>? progress, string[]? logScopes = null)
+        string remoteDir, string localDir, Action<long>? progress, string[]? logScopes = null,
+        Action? onPacking = null, Action? onUnpacking = null)
     {
         if (!IsLocalTarAvailable())
         {
@@ -204,12 +248,26 @@ public static class TarAccelService
         try
         {
             // 服务端打包成单文件（exec 通道; /tmp 不可写或磁盘不足则失败回退）
+            // 打包期间 SFTP 侧零字节, 先切队列行"打包中"文案
+            onPacking?.Invoke();
             await ExecAsync(srcSession, TarPlan.BuildPackCommand(remoteTar, remoteDir));
 
             Directory.CreateDirectory(localTmpDir);
-            await ops.DownloadAsync(remoteTar, localTar, progress);
+            // 看门狗同上传方向: 单文件 tar 的 SFTP 下载同样可能因链路僵死无限阻塞
+            var lastTick = Environment.TickCount64;
+            var watched = progress is null
+                ? null
+                : (Action<long>)(b =>
+                {
+                    Volatile.Write(ref lastTick, Environment.TickCount64);
+                    progress(b);
+                });
+            await AwaitWithStallWatchdogAsync(
+                ops.DownloadAsync(remoteTar, localTar, watched),
+                watched is null ? null : () => Volatile.Read(ref lastTick));
 
             // 本地解包到临时目录, 再 rename/合并 —— 目标位置要么原样要么完整
+            onUnpacking?.Invoke();
             RunLocalTarExtract(localTar, localTmpDir);
             if (!Directory.Exists(localDir))
             {
@@ -240,6 +298,43 @@ public static class TarAccelService
                 LocalizationService.GetString("LogTarExecFail"),
                 command, exit, string.IsNullOrWhiteSpace(error) ? "-" : error.Trim()));
         }
+    }
+
+    /// <summary>tar 链路僵死专用异常（连续 <see cref="StallTimeoutSeconds"/> 无进展）。
+    /// 调用方据此丢弃该连接而非归还连接池——被放弃的流可能仍在连接上运行。</summary>
+    public sealed class TarStalledException : InvalidOperationException
+    {
+        public TarStalledException(string message) : base(message)
+        {
+        }
+    }
+
+    /// <summary>
+    /// 等待流式传输任务完成, 期间监控进度回调的最近触发时刻: 超过
+    /// <see cref="StallTimeoutSeconds"/> 无任何进展即判定链路僵死, 抛
+    /// <see cref="TarStalledException"/> 终结任务（0.8.6）。<paramref name="lastTickMs"/> 为 null
+    /// （无进度回调）时退化为只等完成, 不判超时。传输任务若因检查点（暂停/停止/单任务
+    /// 取消）或任何异常结束, 在此原样重抛, 沿调用链传播到 RunOneAsync 正常结算。
+    /// </summary>
+    private static async Task AwaitWithStallWatchdogAsync(Task transfer, Func<long>? lastTickMs)
+    {
+        while (!transfer.IsCompleted)
+        {
+            await Task.Delay(StallPollMs);
+            if (lastTickMs is not null && !transfer.IsCompleted
+                && Environment.TickCount64 - lastTickMs() > StallTimeoutMs)
+            {
+                // 放弃等待不等于流已停止: 底层 SFTP 写操作可能仍卡在内核侧。挂一个
+                // 观察者吞掉它的迟到异常（否则成未观察异常）, 并由调用方据异常类型
+                // 丢弃该连接——绝不能把还跑着废弃流的连接还回池里给下个任务复用。
+                _ = transfer.ContinueWith(static t => _ = t.Exception, CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                throw new TarStalledException(string.Format(
+                    LocalizationService.GetString("LogTarStalled"), StallTimeoutSeconds));
+            }
+        }
+
+        await transfer;
     }
 
     /// <summary>清理远端临时 tar / 临时目录（幂等; 失败只记日志, 不影响传输结果）。</summary>

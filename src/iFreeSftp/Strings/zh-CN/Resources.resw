@@ -249,6 +249,9 @@
   <data name="StatusDeletedCount" xml:space="preserve">
     <value>已删除 {0} 项</value>
   </data>
+  <data name="StatusPreparingTransfer" xml:space="preserve">
+    <value>正在准备传输（探测目标/统计文件）…</value>
+  </data>
   <data name="RemoteEditNotText" xml:space="preserve">
     <value>非文本文件，已取消打开</value>
   </data>
@@ -944,6 +947,18 @@
   <data name="QMenuRowRemove" xml:space="preserve">
     <value>移除</value>
   </data>
+  <data name="QMenuRowReconnect" xml:space="preserve">
+    <value>重连</value>
+  </data>
+  <data name="QMenuRowReconnecting" xml:space="preserve">
+    <value>正在重连…</value>
+  </data>
+  <data name="LogReconnectOk" xml:space="preserve">
+    <value>已重新连接：{0}</value>
+  </data>
+  <data name="LogReconnectFailed" xml:space="preserve">
+    <value>重连失败：{0}</value>
+  </data>
   <data name="TabCloseTitle" xml:space="preserve">
     <value>关闭标签页</value>
   </data>
@@ -982,6 +997,18 @@
   </data>
   <data name="LogDeleteFallback" xml:space="preserve">
     <value>服务端命令删除失败，已回退 SFTP 递归删除</value>
+  </data>
+  <data name="LogRemoteDeleted" xml:space="preserve">
+    <value>远程删除：{0}</value>
+  </data>
+  <data name="LogLocalDeleted" xml:space="preserve">
+    <value>已移入回收站：{0}</value>
+  </data>
+  <data name="LogDeleteFailed" xml:space="preserve">
+    <value>删除失败：{0}（{1}）</value>
+  </data>
+  <data name="LogBatchDeleteFailed" xml:space="preserve">
+    <value>批量删除失败（{0} 项，首项 {1}）：{2}</value>
   </data>
   <!-- —— 会话导入向导 (0.8.2) —— -->
   <data name="ImportDialogTitle" xml:space="preserve">
@@ -1105,6 +1132,12 @@
   <data name="VerifyAfterHint" xml:space="preserve">
     <value>传输完成后自动比对本地与远端文件杂凑（经 exec 通道，不占传输链路），不一致的任务标记失败，尽早暴露损坏文件；命令通道不可用时跳过校验，不影响传输结果。默认关闭。</value>
   </data>
+  <data name="PreserveMtimeLabel" xml:space="preserve">
+    <value>传输后保留修改时间</value>
+  </data>
+  <data name="PreserveMtimeHint" xml:space="preserve">
+    <value>逐文件传输成功时把源文件的修改时间同步到目标侧，与 tar 打包传输的行为统一；仅同步文件本身，目录时间戳不做。同步失败只记日志，不影响传输结果。默认开启。</value>
+  </data>
   <data name="VerifyAlgoAuto" xml:space="preserve">
     <value>自动</value>
   </data>
@@ -1156,11 +1189,17 @@
   <data name="QStateTarMode" xml:space="preserve">
     <value>tar 加速</value>
   </data>
+  <data name="QStateTarPacking" xml:space="preserve">
+    <value>服务端打包中</value>
+  </data>
+  <data name="QStateTarUnpacking" xml:space="preserve">
+    <value>解包中</value>
+  </data>
   <data name="QTarFailHint" xml:space="preserve">
     <value>tar 模式为整体传输，失败只能整体重试（无文件级续传）：</value>
   </data>
   <data name="LogTarMode" xml:space="preserve">
-    <value>[tar 加速] {0}（{1} 个文件，单流打包）</value>
+    <value>[tar 加速] {0}（文件数 ≥ {1}，单流打包）</value>
   </data>
   <data name="LogTarNoLocalTar" xml:space="preserve">
     <value>[tar 加速] 本机没有 tar 命令，回退逐文件传输</value>
@@ -1177,11 +1216,20 @@
   <data name="LogTarCleanupFailed" xml:space="preserve">
     <value>[tar 加速] 临时文件清理失败（不影响传输结果）：{0}（{1}）</value>
   </data>
+  <data name="LogTarProcessHang" xml:space="preserve">
+    <value>[tar 加速] 本地 tar 进程 {0} 秒未退出，已终止</value>
+  </data>
+  <data name="LogTarStalled" xml:space="preserve">
+    <value>[tar 加速] 传输 {0} 秒无进展，判定链路僵死已中止</value>
+  </data>
   <data name="LogResumeConflict" xml:space="preserve">
     <value>[续传] 目标大于源（内容可能已变），全量重传：{0}（目标 {1} 字节 / 源 {2} 字节）</value>
   </data>
   <data name="LogResumeFallback" xml:space="preserve">
     <value>[续传] 追加失败，回退全量传输：{0}（{1}）</value>
+  </data>
+  <data name="LogMtimePreserveFailed" xml:space="preserve">
+    <value>[mtime] 保留修改时间失败（不影响传输结果）：{0}（{1}）</value>
   </data>
   <data name="LogVerifyMatch" xml:space="preserve">
     <value>[校验] 校验通过：{0}（{1}）</value>

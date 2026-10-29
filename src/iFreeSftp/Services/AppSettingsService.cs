@@ -67,8 +67,8 @@ public static class AppSettingsService
     /// <summary>连接打开方式: "ask" 每次询问（默认）| "current" 当前标签页 | "new" 新建标签页。</summary>
     public static string ConnectOpenMode { get; private set; } = "ask";
 
-    /// <summary>传输-并发传输数（1-3），默认 2。1 = 串行并复用当前连接；
-    /// &gt;1 时每个任务使用独立 SFTP 连接（SftpClient 非线程安全，单连接内并发无收益）。</summary>
+    /// <summary>传输-并发传输数（1-3），默认 2。每个任务一律使用独立 SFTP 连接
+    /// （含并发为 1；SftpClient 非线程安全），连接在批次内归还复用，不复用主会话。</summary>
     public static int ConcurrentTransfers { get; private set; } = 2;
 
     /// <summary>文件编辑器模式: "wpf" 应用内置编辑器（WPF AvalonEdit，代码高亮，默认）| "external" 外部编辑器。</summary>
@@ -105,8 +105,8 @@ public static class AppSettingsService
 
     /// <summary>传输-断点续传阈值（KB, 200-1024），默认 1024。文件小于该值时只能
     /// 全量重传不续传——小文件重传代价可忽略、续传收益趋零（阈值宜取大不取小,
-    /// 避免为省少量字节引入缝合风险）。当前版本设置面板不暴露该项（属有意收窄,
-    /// 避免与断点续传开关叠加造成语义困惑）, 仅可通过配置文件 resumeThresholdKb 调整。</summary>
+    /// 避免为省少量字节引入缝合风险）。设置页以"断点续传 / 续传阈值"母子卡滑块
+    /// 暴露（断点续传关闭时置灰）。</summary>
     public static int ResumeThresholdKb { get; private set; } = 1024;
 
     /// <summary>传输-tar 打包加速开关，默认开启。目录传输（本地→远程 / 远程→本地）
@@ -127,6 +127,12 @@ public static class AppSettingsService
     /// <summary>校验算法: "Auto"（按服务端可用性 SHA256→SHA512→SM3 顺位回退, 默认）|
     /// "SHA256" | "SHA512" | "SM3"（显式指定不可用时校验跳过, 不擅自换算法）。</summary>
     public static string VerifyAlgorithm { get; private set; } = "Auto";
+
+    /// <summary>传输-保留修改时间开关，默认**开启**。开启后逐文件传输成功时把源文件
+    /// mtime 同步到目标侧（上传=远端 SetAttributes、下载=本地 File.SetLastWriteTime），
+    /// 与 tar 路径（打包流隐式继承 mtime）行为统一；只做文件 mtime，目录时间戳不做。
+    /// mtime 同步失败只记日志，不影响传输结果。</summary>
+    public static bool PreserveMtimeEnabled { get; private set; } = true;
 
     /// <summary>任一设置变更后触发 (跨面板联动, 如更新提醒开关 → 标题徽标重算;
     /// 订阅方需自行 marshal 到 UI 线程并保证处理幂等)。</summary>
@@ -268,6 +274,12 @@ public static class AppSettingsService
                 {
                     VerifyAlgorithm = algo;
                 }
+            }
+
+            if (doc.TryGetProperty("preserveMtimeEnabled", out var preserveMtime)
+                && preserveMtime.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                PreserveMtimeEnabled = preserveMtime.GetBoolean();
             }
         }
         catch
@@ -425,6 +437,13 @@ public static class AppSettingsService
         Save();
     }
 
+    /// <summary>记录传输后保留修改时间开关并落盘。</summary>
+    public static void SetPreserveMtimeEnabled(bool enabled)
+    {
+        PreserveMtimeEnabled = enabled;
+        Save();
+    }
+
     private static void Save()
     {
         Interlocked.Exchange(ref _savePending, 1);
@@ -480,6 +499,7 @@ public static class AppSettingsService
                 tarAccelMinFiles = TarAccelMinFiles,
                 verifyAfterTransfer = VerifyAfterTransfer,
                 verifyAlgorithm = VerifyAlgorithm,
+                preserveMtimeEnabled = PreserveMtimeEnabled,
             }, JsonOptions));
     }
 }

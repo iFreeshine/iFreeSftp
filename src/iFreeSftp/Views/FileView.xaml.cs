@@ -497,9 +497,16 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         _connectedHost = host;
         _sftp.Dispose(); // 弃用自带的未使用会话 (未连接, 释放无害)
         _sftp = session;
-        // 同步浏览: 主机开启同步且填了远程目录时, 从该目录开始浏览 (归一化为绝对
-        // 路径, 根保留 "/"); 否则清空路径, 远程从登录主目录开始。
+        // 初始目录优先级: 同步目录 > 上次浏览目录 (WinSCP 式记忆) > 登录主目录。
+        // 同步浏览: 主机开启同步且填了远程目录时, 从该目录开始浏览; 否则落上次浏览
+        // 目录, 消除"每次连接都停在空主目录"的误判。均归一化为绝对路径, 根保留 "/"。
         var remoteStart = host.SyncEnabled ? host.RemoteSyncPath?.Trim() : null;
+        var fromSync = !string.IsNullOrEmpty(remoteStart); // 同步目录显式配置, 失效报错不回退
+        if (!fromSync)
+        {
+            remoteStart = host.LastRemotePath?.Trim();
+        }
+        _restoreRemotePath = false;
         if (!string.IsNullOrEmpty(remoteStart))
         {
             if (!remoteStart.StartsWith('/'))
@@ -507,6 +514,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 remoteStart = "/" + remoteStart;
             }
             _currentPath = remoteStart == "/" ? "/" : remoteStart.TrimEnd('/');
+            // 记忆目录来自上次会话, 本次可能已失效 (改名/删除/权限收紧): 列举失败时回退登录主目录。
+            _restoreRemotePath = !fromSync;
         }
         else
         {
@@ -536,6 +545,12 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     /// <summary>远程加载防重入标志 (连接后 UpdateModeUI 会双触发, 后续调用直接跳过)。</summary>
     private bool _loadingRemote;
 
+    /// <summary>
+    /// 初始路径来自主机档案的"上次浏览目录"记忆 (AttachConnectedSession 置位): 首次
+    /// 列举失败说明记忆目录已失效, 回退登录主目录重试一次; 之后的导航失败照常报错。
+    /// </summary>
+    private bool _restoreRemotePath;
+
     /// <summary>待探测服务端哈希: 连接置位, 首个远程列表显示完成后消费一次。</summary>
     private bool _hashProbePending;
 
@@ -556,6 +571,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             if (_currentPath is not { Length: > 0 })
             {
                 _currentPath = await _sftp.GetWorkingDirectoryAsync();
+                // 主目录一到就亮面包屑: 列举慢/空目录时不再长时间空白, 避免误判未连接
+                UpdateBreadcrumb();
             }
 
             var baseDir = _currentPath;
@@ -587,6 +604,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             UpdateStatus();
             SyncTreeIfVisible(); // 列表→树同步: 高亮当前目录
             NotifySyncNavigation(); // 路径相对上次变化 (导航而非刷新) 时镜像对侧
+            _restoreRemotePath = false; // 首次定位已成功: 之后导航失败不再回退主目录
+            PersistLastRemotePath(baseDir); // 记忆"上次浏览目录"并单字段落盘 (WinSCP 式)
             // 列表已显示: 此刻才做服务端哈希命令探测 (每次连接一次, 结果缓存进会话,
             // 供校验码菜单/弹窗过滤; fire-and-forget 不阻塞交互)
             if (_hashProbePending)
@@ -599,6 +618,16 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         }
         catch (Exception ex)
         {
+            // 初始定位的记忆目录已失效 (改名/删除/权限收紧): 清路径回退登录主目录重试
+            // 一次, 不清档案记忆 (挂载未就绪等暂态失效下次连接仍值得重试)。
+            if (_restoreRemotePath)
+            {
+                _restoreRemotePath = false;
+                _currentPath = string.Empty;
+                _loadingRemote = false; // 递归调用被防重入挡住, 先解除本层标志
+                return await LoadRemoteAsync();
+            }
+
             // 服务器无响应 (连接配额被占/sftp 子系统挂起) 时操作超时抛
             // SshOperationTimeoutException —— 原始消息无上下文, 换成带处置建议的提示
             var message = ex is Renci.SshNet.Common.SshOperationTimeoutException or TimeoutException
@@ -613,6 +642,31 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         {
             _loadingRemote = false;
         }
+    }
+
+    /// <summary>
+    /// 目录列举成功后记忆"上次浏览的远程目录"（WinSCP 式）: 更新工作集记录并单字段落盘
+    /// （SaveSingle 只写指纹+目录两字段, 不连带提交工作集其他未保存修改）。路径未变化
+    /// （刷新/重进同目录）时免落盘; 记录已从工作集删除（面板关闭回滚/移除）时无处落盘即跳过。
+    /// </summary>
+    private void PersistLastRemotePath(string path)
+    {
+        if (_connectedHost is null || string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        var target = HostStoreService.Hosts.FirstOrDefault(h => ReferenceEquals(h, _connectedHost))
+            ?? HostStoreService.Hosts.FirstOrDefault(h =>
+                h.Host == _connectedHost.Host && h.Port == _connectedHost.Port
+                && h.Username == _connectedHost.Username);
+        if (target is null || string.Equals(target.LastRemotePath, path, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        target.LastRemotePath = path;
+        HostStoreService.SaveSingle(target);
     }
 
     /// <summary>进入本地根（驱动器列表）。</summary>
@@ -2533,13 +2587,20 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         {
             return;
         }
+
+        // 删除属不可逆操作 (远程永久删除), 逐项记终端日志留痕; 失败也记一条带路径的日志
+        var localBatch = Mode != FileViewMode.Remote;
+        var logTarget = items[0].FullPath;
         try
         {
             if (Mode == FileViewMode.Remote)
             {
                 foreach (var it in items)
                 {
+                    logTarget = it.FullPath;
                     await _sftp.DeleteAsync(it.FullPath, it.IsDirectory);
+                    TerminalLogService.Log(string.Format(
+                        LocalizationService.GetString("LogRemoteDeleted"), it.FullPath), LogScope);
                 }
             }
             else
@@ -2549,6 +2610,12 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 {
                     throw new InvalidOperationException(LocalizationService.GetString("ErrRecycleDelete"));
                 }
+
+                foreach (var it in items)
+                {
+                    TerminalLogService.Log(string.Format(
+                        LocalizationService.GetString("LogLocalDeleted"), it.FullPath), LogScope);
+                }
             }
 
             RefreshListKeepingPath();
@@ -2556,6 +2623,12 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         }
         catch (Exception ex)
         {
+            // 本地是整批一次进回收站, 失败时无"当前项"可指——点明批量与首项, 防误读为单项失败
+            TerminalLogService.Log(localBatch && items.Count > 1
+                ? string.Format(LocalizationService.GetString("LogBatchDeleteFailed"),
+                    items.Count, logTarget, ex.Message)
+                : string.Format(LocalizationService.GetString("LogDeleteFailed"), logTarget, ex.Message),
+                LogScope);
             UpdateStatus(ex.Message);
         }
     }
@@ -2991,6 +3064,9 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
 
         bool destRemote = opp.Mode == FileViewMode.Remote;
         _transferring = true;
+        // 入队前的冲突探测/文件计数没有任何任务行承载 (队列要等展开完才建),
+        // 先给状态栏一句明确进度, 避免"点了没反应"的观感
+        UpdateStatus(LocalizationService.GetString("StatusPreparingTransfer"));
         // 跨窗格传输日志双发: 本 tab 与对侧 tab 的日志池都记 (硬拆会丢上下文)。
         var transferScopes = TransferScopes(opp);
         try
@@ -3064,6 +3140,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 {
                     var queueTask = TransferQueueService.Enqueue(item.FullPath, dest, NonEmpty(item.DisplaySize), item.Size);
                     queueTask.LogScopes = transferScopes;
+                    AttachReconnect(queueTask, RemoteSessions(opp));
                     var progress = new Action<long>(b => TransferQueueService.Report(queueTask.Id, b));
                     queueTask.Run = BuildTransferRunner(opp, item, dest, destExists, forceOverwrite, progress,
                         () => queueTask.IsResumed = true, transferScopes);
@@ -3080,6 +3157,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 {
                     var treeTask = TransferQueueService.Enqueue(item.FullPath, dest, NonEmpty(item.DisplaySize));
                     treeTask.LogScopes = transferScopes;
+                    AttachReconnect(treeTask, RemoteSessions(opp));
                     treeTask.Run = BuildServerTreeRunner(opp, item, dest, destExists);
                     workItems.Add((treeTask.Id, treeTask.Run));
                     continue;
@@ -3087,21 +3165,38 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
 
                 // tar 打包加速 (T12): 本地→远程 / 远程→本地 的目录传输, 文件数达阈值
                 // 时走"单流打包"替代逐文件展开——整目录单任务 (队列单行, 无逐文件进度)。
-                // 远程→远程不走 (cp -a / 中转已覆盖); 本地枚举廉价, 远端探一条 find
-                // 计数; 判定不可用或执行失败都回退下面的逐文件展开, 结果语义不变。
-                if ((destRemote && Mode == FileViewMode.Local)
-                    || (!destRemote && Mode == FileViewMode.Remote))
+                // 远程→远程不走 (cp -a / 中转已覆盖)。判定不可用或执行失败都回退下面的
+                // 逐文件展开, 结果语义不变。
+                // 计数只为"够不够阈值"服务: 达到阈值即停, 不把整棵树走完; 本地侧放
+                // 线程池执行——此前同步递归跑在 UI 线程上, 大目录入队前整段窗口无响应
+                // (观感"卡住", 实际是在数文件)。tar 开关关闭时连计数都不做。
+                if (AppSettingsService.TarAccelEnabled
+                    && ((destRemote && Mode == FileViewMode.Local)
+                        || (!destRemote && Mode == FileViewMode.Remote)))
                 {
+                    var minFiles = AppSettingsService.TarAccelMinFiles;
                     var fileCount = Mode == FileViewMode.Local
-                        ? CountLocalFiles(item.FullPath)
-                        : await TarAccelService.CountRemoteFilesAsync(_sftp, item.FullPath);
+                        ? await Task.Run(() => CountLocalFiles(item.FullPath, minFiles))
+                        : await TarAccelService.CountRemoteFilesAsync(_sftp, item.FullPath, minFiles);
                     if (TarAccelService.ShouldUse(fileCount))
                     {
                         var tarTask = TransferQueueService.Enqueue(item.FullPath, dest, NonEmpty(item.DisplaySize));
                         tarTask.LogScopes = transferScopes;
                         tarTask.IsTarMode = true;
-                        var tarProgress = new Action<long>(b => TransferQueueService.Report(tarTask.Id, b));
-                        tarTask.Run = BuildTarRunner(opp, item, dest, destRemote, tarProgress, transferScopes);
+                        AttachReconnect(tarTask, RemoteSessions(opp));
+                        // 检查点接入（0.8.6）: 进度回调每块（32KB）触发一次, 先过暂停/
+                        // 停止/单任务取消检查点再上报。tar 的上传/下载均为自写读写循环,
+                        // 回调在自有调用栈内抛（技术文档 4.2 禁穿透第三方回调）, 异常沿
+                        // Task 正常传播到 RunOneAsync 结算——此前 tar 路径无检查点, 卡死后
+                        // 取消无效、任务永不结算, 行右键重试/移除因此全部失效。
+                        var tarProgress = new Action<long>(b =>
+                        {
+                            ConcurrentTransferService.ThrowIfCheckpoint();
+                            TransferQueueService.Report(tarTask.Id, b);
+                        });
+                        tarTask.Run = BuildTarRunner(opp, item, dest, destRemote, tarProgress, transferScopes,
+                            onPacking: () => tarTask.IsTarPacking = true,
+                            onUnpacking: () => tarTask.IsTarUnpacking = true);
                         workItems.Add((tarTask.Id, tarTask.Run));
                         TerminalLogService.Log(string.Format(
                             LocalizationService.GetString("LogTarMode"), item.Name, fileCount), transferScopes);
@@ -3114,9 +3209,11 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 List<(string RelPath, long Length)> subFiles;
                 try
                 {
+                    // 本地枚举含逐文件 stat + 建表, 移出 UI 线程——否则大树展开期间
+                    // 窗口同样无响应 (与上面的计数同因)
                     (subDirs, subFiles) = Mode == FileViewMode.Remote
                         ? await EnumerateRemoteDirTreeAsync(_sftp, item.FullPath)
-                        : EnumerateLocalDirTree(item.FullPath);
+                        : await Task.Run(() => EnumerateLocalDirTree(item.FullPath));
                 }
                 catch (Exception ex)
                 {
@@ -3137,6 +3234,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                     var parentRel = ParentRel(rel);
                     var qt = TransferQueueService.Enqueue(src, dst, FileEntry.FormatSize(length), length);
                     qt.LogScopes = transferScopes;
+                    AttachReconnect(qt, RemoteSessions(opp));
                     var p = new Action<long>(b => TransferQueueService.Report(qt.Id, b));
                     qt.Run = BuildExpandedFileRunner(
                         opp, src, dst, parentRel.Length == 0 ? dest : JoinRemotePath(dest, parentRel),
@@ -3153,6 +3251,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                     var dst = JoinRemotePath(dest, dirRel);
                     var qt = TransferQueueService.Enqueue(src, dst, NonEmpty(string.Empty));
                     qt.LogScopes = transferScopes;
+                    AttachReconnect(qt, RemoteSessions(opp));
                     qt.Run = BuildEnsureDirRunner(opp, dst, destRemote, dirTasks);
                     workItems.Add((qt.Id, qt.Run));
                 }
@@ -3378,7 +3477,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 try
                 {
                     await TransferFileWithResumeAsync(new PauseInterruptibleOps(ops), item.FullPath, dest,
-                        upload: true, forceOverwrite, progress, onResumed, transferScopes);
+                        upload: true, forceOverwrite, progress, onResumed, transferScopes, opp.SftpService);
                 }
                 finally
                 {
@@ -3396,7 +3495,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 try
                 {
                     await TransferFileWithResumeAsync(new PauseInterruptibleOps(ops), item.FullPath, dest,
-                        upload: false, forceOverwrite, progress, onResumed, transferScopes);
+                        upload: false, forceOverwrite, progress, onResumed, transferScopes, _sftp);
                 }
                 finally
                 {
@@ -3453,6 +3552,50 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         {
             task.VerifyHook = BuildVerifyHook(sftp, localPath, remotePath);
         }
+    }
+
+    /// <summary>本视图与对侧视图中所有"远端侧"会话（本视图远端 / 对侧远端），供队列行
+    /// 重连与连接探针使用。本地↔本地为零个。</summary>
+    private SftpSessionService[] RemoteSessions(FileView opp)
+    {
+        var list = new List<SftpSessionService>(2);
+        if (Mode == FileViewMode.Remote)
+        {
+            list.Add(_sftp);
+        }
+
+        if (opp.Mode == FileViewMode.Remote)
+        {
+            list.Add(opp.SftpService);
+        }
+
+        return list.ToArray();
+    }
+
+    /// <summary>给队列行挂"重连"能力（行右键）：探针 = 所有远端侧均已连接（决定菜单项
+    /// 可点/置灰），执行体 = 逐个按上次连接参数重建 SSH 会话（SftpSessionService.
+    /// ReconnectAsync）。**只重连, 不重跑任务、不改队列状态**——行仍是失败态，用户
+    /// 自行决定要不要再点"重试"。</summary>
+    private static void AttachReconnect(TransferTask task, SftpSessionService[] remotes)
+    {
+        if (remotes.Length == 0)
+        {
+            return;
+        }
+
+        task.IsConnectedProbe = () => remotes.All(s => s.IsConnected);
+        task.Reconnect = async () =>
+        {
+            foreach (var session in remotes)
+            {
+                if (!await session.ReconnectAsync())
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        };
     }
 
     private Func<Task<VerifyOutcome>> BuildVerifyHook(
@@ -3541,34 +3684,50 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     /// </summary>
     private Func<TransferBatchConnections, Task> BuildTarRunner(
         FileView opp, FileItemViewModel item, string dest, bool destRemote, Action<long> progress,
-        string[]? transferScopes = null)
+        string[]? transferScopes = null, Action? onPacking = null, Action? onUnpacking = null)
     {
         if (destRemote && Mode == FileViewMode.Local)
         {
             return async connections =>
             {
                 var ops = await connections.AcquireAsync(opp.SftpService);
+                // 看门狗判僵死时流可能仍在连接上跑: 该连接必须丢弃, 不能还池复用
+                var discard = false;
                 try
                 {
                     bool tarOk;
                     try
                     {
                         tarOk = await TarAccelService.UploadDirAsync(
-                            opp.SftpService, ops, item.FullPath, dest, progress, transferScopes);
+                            opp.SftpService, ops, item.FullPath, dest, progress, transferScopes, onUnpacking);
                     }
-                    catch (Exception ex)
+                    catch (TarAccelService.TarStalledException ex)
+                    {
+                        discard = true;
+                        throw TarFailWrapped(ex);
+                    }
+                    // 暂停/停止/取消（含检查点抛出的暂停/停止异常）原样放行到
+                    // RunOneAsync 按对应语义结算, 不得包装成失败
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         throw TarFailWrapped(ex);
                     }
 
                     if (!tarOk)
                     {
-                        await UploadDirAsync(ops, item.FullPath, dest);
+                        await UploadDirAsync(ops, item.FullPath, dest, opp.SftpService);
                     }
                 }
                 finally
                 {
-                    connections.Release(opp.SftpService, ops);
+                    if (discard)
+                    {
+                        connections.Discard(opp.SftpService, ops);
+                    }
+                    else
+                    {
+                        connections.Release(opp.SftpService, ops);
+                    }
                 }
             };
         }
@@ -3576,15 +3735,21 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         return async connections =>
         {
             var ops = await connections.AcquireAsync(_sftp);
+            var discard = false;
             try
             {
                 bool tarOk;
                 try
                 {
                     tarOk = await TarAccelService.DownloadDirAsync(
-                        _sftp, ops, item.FullPath, dest, progress, transferScopes);
+                        _sftp, ops, item.FullPath, dest, progress, transferScopes, onPacking, onUnpacking);
                 }
-                catch (Exception ex)
+                catch (TarAccelService.TarStalledException ex)
+                {
+                    discard = true;
+                    throw TarFailWrapped(ex);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     throw TarFailWrapped(ex);
                 }
@@ -3596,7 +3761,14 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             }
             finally
             {
-                connections.Release(_sftp, ops);
+                if (discard)
+                {
+                    connections.Discard(_sftp, ops);
+                }
+                else
+                {
+                    connections.Release(_sftp, ops);
+                }
             }
         };
     }
@@ -3606,12 +3778,15 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         => new InvalidOperationException(
             LocalizationService.GetString("QTarFailHint") + " " + ex.Message, ex);
 
-    /// <summary>本地目录文件数（tar 判定用; 只数文件不建表, 失败返回 -1 不走 tar）。</summary>
-    private static int CountLocalFiles(string dir)
+    /// <summary>本地目录文件数（tar 判定用; 只数文件不建表, 失败返回 -1 不走 tar）。
+    /// limit &gt; 0 时数到 limit 即停——判定只需"够不够阈值", 不必走完整棵树
+    /// (海量小文件下完整遍历是入队前最大的耗时来源)。返回值语义变为"至少 limit"。</summary>
+    private static int CountLocalFiles(string dir, int limit)
     {
         try
         {
-            return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Count();
+            var seq = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories);
+            return limit > 0 ? seq.Take(limit).Count() : seq.Count();
         }
         catch
         {
@@ -3632,14 +3807,19 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     /// </summary>
     private static async Task TransferFileWithResumeAsync(
         IRemoteTransferOps ops, string sourcePath, string destPath, bool upload, bool forceOverwrite,
-        Action<long>? progress, Action? onResumed = null, string[]? logScopes = null)
+        Action<long>? progress, Action? onResumed = null, string[]? logScopes = null,
+        SftpSessionService? mtimeSftp = null)
     {
         if (!AppSettingsService.ResumeEnabled || forceOverwrite)
         {
             await TransferFilePlainAsync(ops, sourcePath, destPath, upload, progress);
+            await PreserveMtimeAfterTransferAsync(upload, sourcePath, destPath, mtimeSftp, logScopes);
             return;
         }
 
+        // 下载方向的续传探测 STAT 顺带带回源 mtime, 供后面回写本地——否则每个文件
+        // 还要再发一次 GETATTR (高延迟链路上逐文件往返是主要开销之一)
+        DateTimeOffset? knownSourceMtime = null;
         try
         {
             if (upload)
@@ -3665,6 +3845,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                     {
                         onResumed?.Invoke();
                         await ops.UploadResumeAsync(sourcePath, destPath, remoteSize, progress);
+                        await PreserveMtimeAfterTransferAsync(upload: true, sourcePath, destPath, mtimeSftp, logScopes);
                         return;
                     }
 
@@ -3677,7 +3858,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             }
             else
             {
-                var remoteSize = await ops.TryGetSizeAsync(sourcePath);
+                var (remoteSize, sourceMtime) = await ops.TryGetFileInfoAsync(sourcePath);
+                knownSourceMtime = sourceMtime;
                 long localSize = 0L;
                 if (File.Exists(destPath))
                 {
@@ -3699,6 +3881,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                     {
                         onResumed?.Invoke();
                         await ops.DownloadResumeAsync(sourcePath, destPath, localSize, progress);
+                        await PreserveMtimeAfterTransferAsync(upload: false, sourcePath, destPath, mtimeSftp, logScopes,
+                            knownSourceMtime);
                         return;
                     }
 
@@ -3718,6 +3902,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         }
 
         await TransferFilePlainAsync(ops, sourcePath, destPath, upload, progress);
+        await PreserveMtimeAfterTransferAsync(upload, sourcePath, destPath, mtimeSftp, logScopes,
+            upload ? null : knownSourceMtime);
     }
 
     /// <summary>无续传的普通单文件传输（续传关闭/目标不存在/续传失败兜底共用）。</summary>
@@ -3726,6 +3912,61 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
         => upload
             ? ops.UploadAsync(sourcePath, destPath, progress)
             : ops.DownloadAsync(sourcePath, destPath, progress);
+
+    /// <summary>传输成功后把源文件 mtime 同步到目标侧（设置-传输"保留修改时间"开关控制）:
+    /// 上传取本地源 mtime 写远端目标, 下载取远端源 mtime 写本地目标。tar 打包路径已
+    /// 隐式继承 mtime, 本方法补齐逐文件路径, 两条路径行为统一; 只做文件 mtime, 目录
+    /// 时间戳不做。内部统一 UTC（GetLastWriteTimeUtc / SetLastWriteTimeUtc /
+    /// 远端 LastWriteTimeUtc）, 不经本地时区换算, 无夏令时歧义（WinSCP 文档提过的
+    /// DST 坑）。knownRemoteMtime: 下载侧已随目录列举拿到源 mtime 时传入, 免一次
+    /// GETATTR 往返。</summary>
+    private static async Task PreserveMtimeAfterTransferAsync(
+        bool upload, string sourcePath, string destPath, SftpSessionService? mtimeSftp,
+        string[]? logScopes, DateTimeOffset? knownRemoteMtime = null)
+    {
+        if (!AppSettingsService.PreserveMtimeEnabled)
+        {
+            return;
+        }
+
+        try
+        {
+            if (upload)
+            {
+                if (mtimeSftp is null)
+                {
+                    return; // 目标为本地, 不属远端传输路径
+                }
+
+                var utc = File.GetLastWriteTimeUtc(sourcePath);
+                if (utc.Year > 1601) // 取不到时间戳 (MinValue) 时跳过
+                {
+                    await mtimeSftp.SetLastWriteTimeUtcAsync(destPath, utc);
+                }
+            }
+            else
+            {
+                // 下载: 列举自带 mtime 优先, 否则远端 GETATTR; 本地落盘走 SetLastWriteTimeUtc
+                DateTime? mtime = knownRemoteMtime?.UtcDateTime;
+                if (mtime is null && mtimeSftp is not null)
+                {
+                    mtime = await mtimeSftp.GetLastWriteTimeUtcAsync(sourcePath);
+                }
+
+                if (mtime is { } value && value.Year > 1601)
+                {
+                    File.SetLastWriteTimeUtc(destPath, value);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 失败降级优于 WinSCP: 文件内容已完整到达, 无权限等 setstat 失败只记
+            // 日志警示, 不判任务失败, 不让用户重传; 暂停/停止/取消异常原样上抛
+            TerminalLogService.Log(string.Format(
+                LocalizationService.GetString("LogMtimePreserveFailed"), destPath, ex.Message), logScopes);
+        }
+    }
 
     // —— 目录展开 (传输队列逐文件可见, 见阶段二) ——
 
@@ -3881,7 +4122,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 {
                     await EnsureRemoteDirReadyAsync(ops, destParentDir, dirTasks);
                     await TransferFileWithResumeAsync(new PauseInterruptibleOps(ops), src, dst,
-                        upload: true, forceOverwrite, progress, onResumed, transferScopes);
+                        upload: true, forceOverwrite, progress, onResumed, transferScopes, opp.SftpService);
                 }
                 finally
                 {
@@ -3900,7 +4141,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 {
                     Directory.CreateDirectory(destParentDir);
                     await TransferFileWithResumeAsync(new PauseInterruptibleOps(ops), src, dst,
-                        upload: false, forceOverwrite, progress, onResumed, transferScopes);
+                        upload: false, forceOverwrite, progress, onResumed, transferScopes, _sftp);
                 }
                 finally
                 {
@@ -4012,7 +4253,7 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 var dst = await connections.AcquireAsync(opp.SftpService);
                 try
                 {
-                    await UploadDirAsync(new PauseInterruptibleOps(dst), localPath, dstPath);
+                    await UploadDirAsync(new PauseInterruptibleOps(dst), localPath, dstPath, opp.SftpService);
                 }
                 finally
                 {
@@ -4031,7 +4272,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                     if (srcSize < 0 || LocalFileSize(localPath) != srcSize)
                     {
                         await TransferFileWithResumeAsync(srcOps, srcPath, localPath,
-                            upload: false, forceOverwrite: false, progress, logScopes: transferScopes);
+                            upload: false, forceOverwrite: false, progress, logScopes: transferScopes,
+                            mtimeSftp: _sftp);
                     }
                 }
                 finally
@@ -4046,7 +4288,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 try
                 {
                     await TransferFileWithResumeAsync(new PauseInterruptibleOps(dst), localPath, dstPath,
-                        upload: true, forceOverwrite, progress, logScopes: transferScopes);
+                        upload: true, forceOverwrite, progress, logScopes: transferScopes,
+                        mtimeSftp: opp.SftpService);
                 }
                 finally
                 {
@@ -4131,8 +4374,10 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     private static string JoinRemotePath(string dir, string name)
         => Models.RemotePath.Join(dir, name);
 
-    /// <summary>递归上传目录 (顶层同名已获覆盖许可; 递归内部同名直接合并/覆盖, 不再逐项询问)。</summary>
-    private static async Task UploadDirAsync(IRemoteTransferOps sftp, string localDir, string remoteDir)
+    /// <summary>递归上传目录 (顶层同名已获覆盖许可; 递归内部同名直接合并/覆盖, 不再逐项询问)。
+    /// mtimeSftp: 目标侧原始会话, 供逐文件回退路径补 mtime (与 tar 主路径隐式继承统一)。</summary>
+    private static async Task UploadDirAsync(IRemoteTransferOps sftp, string localDir, string remoteDir,
+        SftpSessionService? mtimeSftp = null)
     {
         await sftp.CreateDirectoryAsync(remoteDir);
         foreach (var sub in Directory.EnumerateFileSystemEntries(localDir))
@@ -4140,11 +4385,12 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
             var remote = JoinRemotePath(remoteDir, Path.GetFileName(sub));
             if (Directory.Exists(sub))
             {
-                await UploadDirAsync(sftp, sub, remote);
+                await UploadDirAsync(sftp, sub, remote, mtimeSftp);
             }
             else
             {
                 await sftp.UploadAsync(sub, remote);
+                await PreserveMtimeAfterTransferAsync(upload: true, sub, remote, mtimeSftp, null);
             }
         }
     }
@@ -4152,7 +4398,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
     /// <summary>递归下载目录 (目录合并, 同名文件覆盖; 递归内部不再逐项询问)。
     /// skipComplete 仅限中转 temp (任务私有): 已存在且大小一致的文件视为上次暂停
     /// 中断的完整下载成果, 跳过重下 (按文件粒度续传); 真实目标目录不传——目标可能
-    /// 本就有同名旧文件, 大小一致不代表内容一致, 照常覆盖下载。</summary>
+    /// 本就有同名旧文件, 大小一致不代表内容一致, 照常覆盖下载。列举项自带源 mtime,
+    /// 直接写本地目标 (免逐文件 GETATTR), 与 tar 主路径行为统一。</summary>
     private static async Task DownloadDirAsync(IRemoteTransferOps sftp, string remoteDir, string localDir,
         bool skipComplete = false)
     {
@@ -4172,6 +4419,8 @@ public sealed partial class FileView : UserControl, IDisposable, INotifyProperty
                 }
 
                 await sftp.DownloadAsync(JoinRemotePath(remoteDir, entry.Name), local);
+                await PreserveMtimeAfterTransferAsync(upload: false, JoinRemotePath(remoteDir, entry.Name),
+                    local, null, null, entry.LastModified);
             }
         }
     }
