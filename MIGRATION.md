@@ -111,12 +111,15 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 
 ## 6. 闭源隔离约束（official 门控）
 
-- `src\registration\core.rs` 的 `#[cfg(feature = "official")] #[path = "../../../ifree-core/src/lib.rs"]`
-  是**唯一**闭源引用点；社区构建不启用该 feature，`#[path]` 指向的目录在公开仓不存在也零编译。
+- `src\main.rs` 顶层的 `#[cfg(feature = "official")] #[path = "../../ifree-core/src/lib.rs"]`
+  （`pub(crate) mod ifree_core`）是**唯一**闭源并入点，registration 与 transfer 两层共用；
+  社区构建不启用该 feature，`#[path]` 指向的目录在公开仓不存在也零编译。
 - 公开仓 CI 只跑社区模式（`cargo build && cargo test`）；任何把 ifree-core 源码、私钥、
   keygen 引入本仓的改动都是违规，直接拒绝。
-- 即将移植的 core `ServerCopyAsync`（服务端 cp 直达）实现落在 `ifree-core\`（闭源）+ 主仓
-  传输队列的调用分支（公开）；公开仓 README 对应能力行在移植**发布后**才可改为「已支持」。
+- 服务端直达复制（core `ServerCopyAsync`，C# FullTransferCore）已移植：决策逻辑
+  （命令组装/CP_OK 判定/600s 超时）在 `ifree-core\`（闭源），trait/Stub/调度在主仓
+  （公开，`src\transfer\core.rs`）；社区构建显式提示「仅官方构建」，保底路径 = 本地
+  中转。公开仓 README 对应能力行在官方构建**发布后**才可改为「已支持」。
 
 ## 7. 未尽事宜（open items，处理一条勾一条）
 

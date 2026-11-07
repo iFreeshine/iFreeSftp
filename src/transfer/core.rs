@@ -99,20 +99,15 @@ pub fn make_transfer_core() -> Box<dyn TransferCore> {
 mod tests {
     use super::*;
 
+    /// 社区/官方通用：Stub 语义（社区构建下 make_transfer_core 必装 Stub）。
+    /// 不含任何官方命令字面量——社区源码/二进制零出现 cp 命令串。
     #[test]
     fn stub_gates_server_copy() {
         let core = make_transfer_core();
         if cfg!(feature = "official") {
             assert!(core.is_full());
-            assert_eq!(core.server_copy_timeout_secs(), 600);
-            assert_eq!(
-                core.server_copy_cmd("/a", "/b", true, false).unwrap(),
-                "cp -a -- '/a' '/b' && echo CP_OK"
-            );
-            assert!(core.server_copy_ok(0, "CP_OK"));
-            assert!(!core.server_copy_ok(0, ""));
         } else {
-            // Stub：显式门禁 + 恒不判定成功（调度侧据此走「仅官方构建」提示）
+            // 显式门禁 + 恒不判定成功（调度侧据此走「仅官方构建」提示）
             assert!(!core.is_full());
             assert_eq!(
                 core.server_copy_cmd("/a", "/b", true, false),
@@ -120,5 +115,20 @@ mod tests {
             );
             assert!(!core.server_copy_ok(0, "CP_OK"));
         }
+    }
+
+    /// 官方构建专用：装配层拿到的是闭源决策逻辑（C# FullTransferCore 委托）。
+    /// 社区编译整个 cfg 掉，命令串不出现在社区源码产物中。
+    #[cfg(feature = "official")]
+    #[test]
+    fn official_offers_server_copy() {
+        let core = make_transfer_core();
+        assert_eq!(core.server_copy_timeout_secs(), 600);
+        assert_eq!(
+            core.server_copy_cmd("/a", "/b", true, false).unwrap(),
+            "cp -a -- '/a' '/b' && echo CP_OK"
+        );
+        assert!(core.server_copy_ok(0, "CP_OK"));
+        assert!(!core.server_copy_ok(0, ""));
     }
 }

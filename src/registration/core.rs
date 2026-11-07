@@ -162,7 +162,8 @@ mod tests {
             URL_SAFE_NO_PAD.encode(&payload)
         );
         // 经 ifree-core 同一验签通路（公钥注入版），确认 include 装配可达
-        let raw = crate::ifree_core::verify_with_key(kp.public_key().as_ref(), &code, 3_000_000_000);
+        let raw =
+            crate::ifree_core::verify_with_key(kp.public_key().as_ref(), &code, 3_000_000_000);
         assert!(raw.ok);
         assert_eq!(raw.user_name, "tester");
         // make_core 走生产公钥（生成密钥与其不匹配 → Signature）
