@@ -52,6 +52,60 @@ pub struct Profile {
 /// 校验探测快照实时句柄（该侧主会话 hash 探测的共享状态；随任务固化，H2-c）。
 pub type Probe = Arc<Mutex<(u64, Option<crate::ssh::HashProbe>)>>;
 
+/// 任务归属（P3）：src/dst 各为 (侧, tab id)，UI 入队时按发起/目标两侧活动
+/// tab 盖章；随任务在队列全程保留（重试/目录展开子任务继承）。仅随行数据，
+/// 三层传输核心不解释——关闭确认计数 / 定向刷新 / 按归属取消消费它。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct TaskOwner {
+    pub src: (u8, u32),
+    pub dst: (u8, u32),
+}
+
+impl TaskOwner {
+    /// 零值（测试夹具 / 无上下文构造占位；主代码路径均带真实归属）。
+    #[allow(dead_code)]
+    pub const ZERO: Self = Self {
+        src: (0, 0),
+        dst: (0, 0),
+    };
+
+    /// 该任务是否归属 key（源或目标任一端命中即算）。
+    pub fn owned_by(&self, key: (u8, u32)) -> bool {
+        self.src == key || self.dst == key
+    }
+}
+
+/// P3 纯逻辑：活动任务（Waiting/Transferring）中归属 key（src/dst 任一端命中）
+/// 的条数。关闭确认门（request_close_tab）与按归属等待消费。
+pub fn count_owned_active<'a>(
+    rows: impl IntoIterator<Item = (&'a TaskOwner, Status)>,
+    key: (u8, u32),
+) -> usize {
+    rows.into_iter()
+        .filter(|(o, s)| o.owned_by(key) && matches!(s, Status::Waiting | Status::Transferring))
+        .count()
+}
+
+/// P3 纯逻辑：活动任务（含 Verifying——结算后仍需刷新目标视图）归属 tab 集合
+/// （src ∪ dst 去重升序）。忙→静沿定向刷新消费。
+pub fn collect_owner_tabs<'a>(
+    rows: impl IntoIterator<Item = (&'a TaskOwner, Status)>,
+) -> Vec<(u8, u32)> {
+    let mut v: Vec<(u8, u32)> = rows
+        .into_iter()
+        .filter(|(_, s)| {
+            matches!(
+                s,
+                Status::Waiting | Status::Transferring | Status::Verifying
+            )
+        })
+        .flat_map(|(o, _)| [o.src, o.dst])
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// UI 构造的入队任务。
 pub struct NewTask {
     pub source: String,
@@ -59,6 +113,7 @@ pub struct NewTask {
     pub size: u64,
     pub force: bool,
     pub kind: Kind,
+    pub owner: TaskOwner,
 }
 
 /// 任务种类（MVP 子集：本地↔远程 + 本地→本地；远程→远程中转与 tar 随后续任务）。
@@ -203,6 +258,8 @@ pub struct Item {
     pub verify_result: VerifyKind,
     pub reason: String,
     pub cancel_req: bool,
+    /// 任务归属（P3）：UI 入队时盖章，随任务全程保留（子任务继承）。
+    pub owner: TaskOwner,
     force: bool,
     kind: Kind,
     /// 任务自带连接档案（H2：入队时随任务固化，多路并发下批次被新入队覆盖
@@ -286,6 +343,7 @@ impl TransferQueue {
                 verify_result: VerifyKind::None,
                 reason: String::new(),
                 cancel_req: false,
+                owner: t.owner,
                 force: t.force,
                 kind: t.kind,
                 profile: profile.clone(),
@@ -311,20 +369,28 @@ impl TransferQueue {
         }
     }
 
-    /// 取消全部活动任务（G17「取消队列并关闭」；C# 只取消 Waiting/Transferring
-    /// ——Verifying 瞬态不在列，迟到结算照常落库，与 C# 50×100ms 轮询判据同口径）。
-    pub fn cancel_active(&self) {
+    /// 取消全部活动任务的全局版已由按归属取消取代（P3：G17 per-tab
+    /// LogScope 语义，见 cancel_owned；单任务取消见 cancel）。
+    /// 按归属取消（P3，G17 per-tab「取消队列并关闭」）：只取消 src/dst 任一端
+    /// 命中 key 的活动任务（C# per-tab LogScope 语义）。返回是否有取消动作。
+    pub fn cancel_owned(&self, key: (u8, u32)) -> bool {
         let mut st = self.shared.st.lock().unwrap();
-        for i in st.items.iter_mut() {
+        let mut any = false;
+        for i in st.items.iter_mut().filter(|i| i.owner.owned_by(key)) {
             match i.status {
                 Status::Waiting => {
                     i.status = Status::Cancelled;
                     i.time = local::now_hms();
+                    any = true;
                 }
-                Status::Transferring => i.cancel_req = true,
+                Status::Transferring => {
+                    i.cancel_req = true;
+                    any = true;
+                }
                 _ => {}
             }
         }
+        any
     }
 
     /// 重试：失败/已取消 → 回等待（半成品由续传决策接管）。
@@ -482,7 +548,13 @@ async fn step(shared: &Shared, conn: &mut Option<SftpConn>, conn_of: &mut Option
                 .find(|i| i.status == Status::Waiting && !i.cancel_req)
                 .map(|i| {
                     i.status = Status::Transferring;
-                    (i.id, i.kind.clone(), i.profile.clone(), i.probe.clone())
+                    (
+                        i.id,
+                        i.owner,
+                        i.kind.clone(),
+                        i.profile.clone(),
+                        i.probe.clone(),
+                    )
                 })
         };
         (idle, job)
@@ -494,7 +566,7 @@ async fn step(shared: &Shared, conn: &mut Option<SftpConn>, conn_of: &mut Option
         *conn_of = None;
         return;
     }
-    let Some((id, kind, profile, probe)) = job else {
+    let Some((id, owner, kind, profile, probe)) = job else {
         return; // 只剩带取消请求的等待行（等待 UI 结算）
     };
 
@@ -511,7 +583,7 @@ async fn step(shared: &Shared, conn: &mut Option<SftpConn>, conn_of: &mut Option
             settle(shared, conn, conn_of, id, kind.is_remote(), outcome);
             return;
         }
-        expand(shared, conn, conn_of, id, kind, &profile, &probe).await;
+        expand(shared, conn, conn_of, id, kind, &profile, &probe, owner).await;
         return;
     }
 
@@ -1171,6 +1243,8 @@ async fn copy_local(shared: &Shared, id: u64, from: &Path, to: &Path) -> Outcome
 // ── 目录展开（worker 领取时做，UI 不走树）──────────────────
 
 /// 展开：整目录任务 → 建目录 + 逐文件，插回原位置；展开失败按任务失败结算。
+/// 子任务继承父任务归属（P3：随行数据，关闭确认/定向刷新按父 tab 计）。
+#[allow(clippy::too_many_arguments)] // worker 领取上下文直传，拆结构体反增噪音
 async fn expand(
     shared: &Shared,
     conn: &mut Option<SftpConn>,
@@ -1179,6 +1253,7 @@ async fn expand(
     kind: Kind,
     profile: &Option<Profile>,
     probe: &Probe,
+    owner: TaskOwner,
 ) {
     let tasks: Result<Vec<NewTask>, String> = match &kind {
         Kind::UploadDir { local, remote } => {
@@ -1191,6 +1266,7 @@ async fn expand(
                     dest: remote.clone(),
                     size: 0,
                     force: false,
+                    owner,
                     kind: Kind::MakeDir {
                         remote: Some(remote.clone()),
                         local: None,
@@ -1207,6 +1283,7 @@ async fn expand(
                                     dest: r.clone(),
                                     size: 0,
                                     force: false,
+                                    owner,
                                     kind: Kind::MakeDir {
                                         remote: Some(r),
                                         local: None,
@@ -1218,6 +1295,7 @@ async fn expand(
                                     dest: r.clone(),
                                     size,
                                     force: false,
+                                    owner,
                                     kind: Kind::UploadFile {
                                         local: l,
                                         remote: r,
@@ -1241,6 +1319,7 @@ async fn expand(
                     dest: local.to_string_lossy().into_owned(),
                     size: 0,
                     force: false,
+                    owner,
                     kind: Kind::MakeDir {
                         remote: None,
                         local: Some(local.clone()),
@@ -1257,6 +1336,7 @@ async fn expand(
                                     dest: l.to_string_lossy().into_owned(),
                                     size: 0,
                                     force: false,
+                                    owner,
                                     kind: Kind::MakeDir {
                                         remote: None,
                                         local: Some(l),
@@ -1268,6 +1348,7 @@ async fn expand(
                                     dest: l.to_string_lossy().into_owned(),
                                     size,
                                     force: false,
+                                    owner,
                                     kind: Kind::DownloadFile {
                                         remote: r,
                                         local: l,
@@ -1287,6 +1368,7 @@ async fn expand(
                 dest: to.to_string_lossy().into_owned(),
                 size: 0,
                 force: false,
+                owner,
                 kind: Kind::MakeDir {
                     remote: None,
                     local: Some(to.clone()),
@@ -1303,6 +1385,7 @@ async fn expand(
                                 dest: t.to_string_lossy().into_owned(),
                                 size: 0,
                                 force: false,
+                                owner,
                                 kind: Kind::MakeDir {
                                     remote: None,
                                     local: Some(t),
@@ -1314,6 +1397,7 @@ async fn expand(
                                 dest: t.to_string_lossy().into_owned(),
                                 size,
                                 force: false,
+                                owner,
                                 kind: Kind::CopyLocal { from: f, to: t },
                             });
                         }
@@ -1339,6 +1423,7 @@ async fn expand(
                         dest: remote_dst.clone(),
                         size: 0,
                         force: false,
+                        owner,
                         // 目标端建源树根 + 本地 temp 根（MakeDir 两端同时建）。
                         kind: Kind::MakeDir {
                             remote: Some(remote_dst.clone()),
@@ -1356,6 +1441,7 @@ async fn expand(
                                         dest: l.to_string_lossy().into_owned(),
                                         size: 0,
                                         force: false,
+                                        owner,
                                         kind: Kind::MakeDir {
                                             remote: Some(r),
                                             local: Some(l),
@@ -1367,6 +1453,7 @@ async fn expand(
                                         dest: r.clone(),
                                         size,
                                         force: false,
+                                        owner,
                                         kind: Kind::RelayFile {
                                             src: src.clone(),
                                             dst: dst.clone(),
@@ -1419,6 +1506,7 @@ async fn expand(
                         verify_result: VerifyKind::None,
                         reason: String::new(),
                         cancel_req: false,
+                        owner: t.owner,
                         force: t.force,
                         kind: t.kind,
                         profile: profile.clone(),
@@ -1848,6 +1936,60 @@ async fn server_hash(conn: &Option<SftpConn>, path: &str, algo: usize) -> Option
 
 // ---- 用例（与 C# 一一对应） ------------------------------------------------
 
+// P3 归属纯逻辑：关闭确认计数 / 忙静沿定向刷新的集合收集。
+#[cfg(test)]
+mod owner_tests {
+    use super::{Status, TaskOwner, collect_owner_tabs, count_owned_active};
+
+    #[test]
+    fn count_src_or_dst_hit_waiting_transferring_only() {
+        let o_tab = TaskOwner {
+            src: (0, 7),
+            dst: (1, 9),
+        };
+        let o_other = TaskOwner {
+            src: (0, 8),
+            dst: (1, 8),
+        };
+        let rows = [
+            (&o_tab, Status::Waiting),
+            (&o_tab, Status::Transferring),
+            (&o_tab, Status::Verifying), // 瞬态不进关闭计数（与全局判据同口径）
+            (&o_tab, Status::Done),
+            (&o_other, Status::Waiting), // 非归属
+        ];
+        assert_eq!(count_owned_active(rows, (0, 7)), 2); // src 命中
+        assert_eq!(count_owned_active(rows, (1, 9)), 2); // dst 命中
+        assert_eq!(count_owned_active(rows, (1, 8)), 1);
+        assert_eq!(count_owned_active(rows, (0, 99)), 0);
+    }
+
+    #[test]
+    fn collect_dedup_sorted_includes_verifying() {
+        let a = TaskOwner {
+            src: (1, 5),
+            dst: (0, 2),
+        };
+        let b = TaskOwner {
+            src: (0, 2),
+            dst: (0, 2),
+        }; // 自传（src=dst）去重
+        let c = TaskOwner {
+            src: (0, 3),
+            dst: (1, 4),
+        };
+        let rows = [
+            (&a, Status::Transferring),
+            (&b, Status::Waiting),
+            (&c, Status::Done), // 已完结不计
+        ];
+        assert_eq!(collect_owner_tabs(rows), vec![(0, 2), (1, 5)]);
+        // Verifying 属活动态（结算后目标视图仍需刷新）。
+        let d = TaskOwner::ZERO;
+        assert_eq!(collect_owner_tabs([(&d, Status::Verifying)]), vec![(0, 0)]);
+    }
+}
+
 #[cfg(test)]
 mod resume_tests {
     use super::{ResumeDecision::*, resume_decision};
@@ -2156,6 +2298,7 @@ mod contract_tests {
                 dest: "/srv/a.bin".to_owned(),
                 size: 1,
                 force: false,
+                owner: TaskOwner::ZERO,
                 kind: Kind::UploadFile {
                     local: "C:/a.bin".into(),
                     remote: "/srv/a.bin".to_owned(),
@@ -2170,6 +2313,7 @@ mod contract_tests {
                 dest: "/srv/b.bin".to_owned(),
                 size: 1,
                 force: false,
+                owner: TaskOwner::ZERO,
                 kind: Kind::UploadFile {
                     local: "C:/b.bin".into(),
                     remote: "/srv/b.bin".to_owned(),

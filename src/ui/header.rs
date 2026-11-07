@@ -220,13 +220,16 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
     // 规则②（对称口径）：联动面未就绪（两侧非一本地一远程配对 / 远程侧无活动
     // 视图）→ 两钮禁用（C# 同款；C# 对侧恒本地，对称窗格后按 tab 类型判定）。
     let has_remote = super::sync::pair_ready(st);
+    // P4 活动对口径：挂接对切走（挂起，base 保留）→ 灯灭（切回自动复亮，
+    // 也可点击以当时活动对重新挂接）；sync_browse 状态位本身不销毁。
+    let synced = st.sync_browse && super::sync::pair_is_active(st);
     let sync = capsule_toggle(
         ui,
         tg_rect(0),
         st,
         p,
         "arrows-clockwise",
-        st.sync_browse,
+        synced,
         has_remote,
     );
     // tooltip（C# HeaderSyncBrowse）：禁用钮不参与命中测试 → 不挂。
@@ -236,7 +239,7 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
         sync
     };
     if sync.clicked() {
-        if st.sync_browse {
+        if synced {
             // 关闭联动：一并熄灭比对（C# ToggleSyncBrowse(false) 同语义）。
             st.sync_browse = false;
             if st.compare {
@@ -253,8 +256,8 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
             }
         }
     }
-    // 比对开关（依赖同步浏览；开启时按当前两侧列表立即重排，C# ApplyBoth）。
-    let cmp_ready = has_remote && st.sync_browse;
+    // 比对开关（依赖同步浏览活动对；开启时按挂接对两侧列表立即重排，C# ApplyBoth）。
+    let cmp_ready = has_remote && synced;
     let cmp = capsule_toggle(ui, tg_rect(1), st, p, "files", st.compare, cmp_ready);
     // tooltip（C# HeaderCompare）：禁用钮不参与命中测试 → 不挂。
     let cmp = if cmp_ready {

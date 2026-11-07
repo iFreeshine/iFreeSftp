@@ -423,15 +423,23 @@ const TAB_APPEAR_SECS: f32 = 0.25;
 /// 亮相动画起始下探 px（C# 视觉：新 tab 自条下方冒头上移至位 + 渐显）。
 const TAB_APPEAR_OFFSET: f32 = 10.0;
 
+/// tab 种类（双侧多标签 P1）：本地文件系统 tab / 远程主机 tab。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TabKind {
+    Local,
+    Remote,
+}
+
 /// 单个 tab 项（双窗格改造，对齐 C# 每 tab 独立 FileView 的感知层）：
-/// 标题 + 种类。左侧 = 「本地」tab 与远程主机 tab 并存（切换显示、会话保活）；
-/// 右侧 = 远程主机 tab。种类决定活动 tab 映射到哪个面板（本地 pane / 该侧
-/// 远程 pane）。
+/// 稳定 id（State 派发，绘制层不解释）+ 标题 + 种类。左侧 = 「本地」tab 与
+/// 远程主机 tab 并存（切换显示、会话保活）；右侧 = 远程主机 tab。种类决定
+/// 活动 tab 映射到哪个面板（本地 pane / 该侧远程 pane）。
 #[derive(Clone)]
 pub struct TabItem {
+    /// 稳定 id：State 侧以 id 寻址 tab（P1 由 mod.rs 合成 tab 条视图时填入）。
+    pub id: u32,
     pub title: String,
-    /// true = 本地文件系统 tab（左侧初始「本地」）；false = 远程主机 tab。
-    pub local: bool,
+    pub kind: TabKind,
 }
 
 /// IDE tab 条状态（C# IdeTabStrip 复刻）。
@@ -448,30 +456,13 @@ impl Default for Tabs {
     fn default() -> Self {
         Self {
             items: vec![TabItem {
+                id: 0,
                 title: t("本地").to_owned(),
-                local: true,
+                kind: TabKind::Local,
             }],
             active: 0,
             born: None,
         }
-    }
-}
-
-impl Tabs {
-    pub fn single(title: &str) -> Self {
-        Self {
-            items: vec![TabItem {
-                title: title.to_owned(),
-                local: false,
-            }],
-            active: 0,
-            born: None,
-        }
-    }
-
-    /// 活动项是否本地 tab（空项兜底 true——本地视图兜底）。
-    pub fn active_local(&self) -> bool {
-        self.items.get(self.active).map(|i| i.local).unwrap_or(true)
     }
 }
 
@@ -714,10 +705,11 @@ pub fn folder(
         hooks,
     ) {
         // G17（C# IdeTabStrip 移除标签后 TabCloseRequested 交使用方清理）：
-        // 非活动 tab 纯标题占位直接移除；活动 tab（承载连接/内容）交 root()
-        // 走确认门与资源清理。
+        // 关闭请求按 (侧, tab id) 上报交 root() 处置——活动 tab 走确认门与
+        // 资源清理，非活动 tab 在临时视图上直接移除标题（mod.rs 按 id 差集
+        // 映射回真实状态）。
         if i == tabs.active {
-            hooks.tab_close = Some(side);
+            hooks.tab_close = Some((side, tabs.items[i].id));
         } else {
             tabs.items.remove(i);
             if i < tabs.active {
@@ -2383,11 +2375,11 @@ pub fn terminal(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
     // C# busy 生命周期同构（dialogs 连接发起置位、Ev::Connected/Failed 复位）；
     // egui Spinner 自带匀速旋转且 paint_at 内部每帧 request_repaint 保活。
     // 任一侧会话处于连接中即显示（两侧各自连接过程独立驱动本侧圈）。
-    if st
-        .remotes
-        .iter()
-        .any(|r| matches!(r.state, super::RemoteState::Connecting))
-    {
+    if st.remotes.iter().any(|r| {
+        r.sessions
+            .iter()
+            .any(|s| matches!(s.state, super::RemoteState::Connecting))
+    }) {
         let ring = Rect::from_min_size(
             Pos2::new(rect.right() - 12.0 - 18.0, rect.top() + 9.0),
             egui::vec2(18.0, 18.0),

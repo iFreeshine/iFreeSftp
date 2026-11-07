@@ -423,8 +423,8 @@ pub fn t(zh: &'static str) -> &'static str {
         "正在检查…" => "Checking…",
         "正在连接 {0}:{1} …" => "Connecting to {0}:{1} …",
         "正在重连…" => "Reconnecting…",
-        "此标签页仍有进行中的传输任务，如何处理？" => {
-            "This tab still has active transfer tasks. What would you like to do?"
+        "此标签页仍有 {0} 个进行中的传输任务，如何处理？" => {
+            "This tab still has {0} active transfer tasks. What would you like to do?"
         }
         "此电脑" => "This PC",
         "每次询问" => "Ask every time",

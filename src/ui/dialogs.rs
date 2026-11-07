@@ -168,14 +168,20 @@ pub enum Dialog {
     SyncMismatch {
         msg: String,
     },
-    /// 关闭标签页确认（G17，C# OnTabCloseConfirming ContentDialog）：关哪侧活动 tab。
+    /// 关闭标签页确认（G17，C# OnTabCloseConfirming ContentDialog）：关哪侧哪个 tab。
     TabClose {
         side: usize,
+        /// 目标 tab id（State 派发；确认/取消/等待路径都以它定位）。
+        tab: u32,
+        /// 该 tab 归属的活动传输任务数（P3 per-tab 计数，弹窗正文显示）。
+        n: usize,
     },
     /// 外部编辑器缓存变化询问（C# ShowRemoteEditChangedAsync）：编辑器保存
     /// 落盘静默期满触发；「保存编辑结果」→ 先 STAT 探远端 mtime 冲突再回传。
     ExtEditChanged {
         side: usize,
+        /// 发起 tab id（ext_edits/ext_stat/ext_write 都挂靠在该 tab 上）。
+        tab: u32,
         name: String,
         remote_path: String,
     },
@@ -183,6 +189,8 @@ pub enum Dialog {
     /// 远端 mtime 与下载基准差 ≥1s；「覆盖」→ 直接回传。
     ExtEditConflict {
         side: usize,
+        /// 发起 tab id（ext_upload 定位该 tab 的会话与槽位）。
+        tab: u32,
         name: String,
         remote_path: String,
     },
@@ -406,14 +414,17 @@ pub struct Hooks<'a> {
     /// 文件夹选择在途槽（FV-01：open_dir 发起后台 STA 线程弹框；root() 轮询
     /// 回执跳转。Some = 在途，工具栏按钮此间禁用防重复弹框）。
     pub pick: &'a mut Option<crate::local::PickJob>,
-    /// G17 活动标签关闭请求（侧；root() 走确认门与资源清理，C#
+    /// G17 活动标签关闭请求（(侧, tab id)；root() 走确认门与资源清理，C#
     /// Tabs_TabCloseRequested → TabCloseRequested 事件）。
-    pub tab_close: Option<usize>,
+    pub tab_close: Option<(usize, u32)>,
 }
 
-/// 任一侧存在待决指纹确认（含测试连接槽）——覆盖层挂载 / Esc 抑制判定共用。
+/// 任一侧会话池存在待决指纹确认（含测试连接槽）——覆盖层挂载 / Esc 抑制判定共用。
 fn fp_ask_pending(st: &State) -> bool {
-    st.remotes.iter().any(|r| r.fp_ask.is_some()) || st.fp_ask_test.is_some()
+    st.remotes
+        .iter()
+        .any(|rs| rs.sessions.iter().any(|s| s.fp_ask.is_some()))
+        || st.fp_ask_test.is_some()
 }
 
 // ── 每帧入口 ────────────────────────────────────────────────
@@ -955,10 +966,10 @@ fn other_view(st: &State, pane: usize) -> &super::panes::FilePane {
 }
 
 /// 传输就绪（C# CanTransferToOpposite 单侧口径）：本地视图要求路径非空；远程
-/// 视图要求该侧已连接。
+/// 视图要求该侧活动远程 tab 已挂会话。
 fn view_ready(st: &State, pane: usize) -> bool {
     match menu_side(st, pane) {
-        Some(side) => st.remotes[side].ssh.is_some(),
+        Some(side) => super::active_remote_session(st, side).is_some(),
         None => pane_view(st, pane).path.is_some(),
     }
 }
@@ -1108,32 +1119,58 @@ fn apply_delete(st: &mut State) {
         return;
     };
     // 远程：Cmd::Delete（目录 SFTP 递归），逐项日志走 Ev::Log，完成计数回零后刷新。
-    // 顺序借用：先收齐待删条目，再借该侧 Ssh 发 delete，最后写侧计数（互不重叠）。
-    let dir = st.remotes[side].pane.remote_path.clone();
+    // 顺序借用：先收齐待删条目并定路径，再发号记 inflight（Ev::Deleted 按其定位
+    // 重列 tab），最后借该 tab 挂靠会话发 delete。
+    let Some(tab) = super::active_remote_tab(st, side) else {
+        return;
+    };
+    let dir = tab.pane.remote_path.clone();
+    let tab_id = tab.id;
     let targets: Vec<(String, bool)> = if dir.is_some() {
         indices
             .iter()
-            .filter_map(|i| {
-                st.remotes[side]
-                    .pane
-                    .entries
-                    .get(*i)
-                    .map(|e| (e.name.clone(), e.is_dir))
+            .filter_map(|i| tab.pane.entries.get(*i).map(|e| (e.name.clone(), e.is_dir)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let sid = st.remotes[side]
+        .tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .map(|t| t.sid);
+    let has_session = sid.is_some_and(|sid| st.remotes[side].sessions.iter().any(|s| s.sid == sid));
+    let paths: Vec<(String, bool)> = if has_session {
+        targets
+            .iter()
+            .filter_map(|(name, is_dir)| {
+                dir.as_deref()
+                    .map(|d| (super::join_remote_path(d, name), *is_dir))
             })
             .collect()
     } else {
         Vec::new()
     };
+    // 发号 + 在途记录（&mut st 独占段；tab 关闭时随 finish_close_tab 清理）。
+    let tags: Vec<u64> = paths
+        .iter()
+        .map(|_| {
+            let tag = super::next_seq(st);
+            st.inflight.insert(tag, (side, tab_id));
+            tag
+        })
+        .collect();
     let mut sent = 0usize;
-    if let (Some(ssh), Some(d)) = (st.remotes[side].ssh.as_ref(), dir.as_deref()) {
-        for (name, is_dir) in &targets {
-            let path = super::join_remote_path(d, name);
-            ssh.delete(path, *is_dir);
+    if let Some(ss) = super::session_of_tab(st, side, tab_id) {
+        for ((path, is_dir), tag) in paths.iter().zip(tags.iter()) {
+            ss.ssh.delete(*tag, path.clone(), *is_dir);
             sent += 1;
         }
     }
-    st.remotes[side].pane.loading = sent > 0;
-    st.remotes[side].del_pending += sent as u64;
+    if let Some(tab) = super::active_remote_tab_mut(st, side) {
+        tab.pane.loading = sent > 0;
+        tab.del_pending += sent as u64;
+    }
 }
 
 // ── 校验码（420）────────────────────────────────────────────
@@ -1180,8 +1217,8 @@ fn checksum_start(st: &mut State, algo: usize, path: &str, remote_side: Option<u
         st.stat_seq += 1;
         let req = st.stat_seq;
         st.chk_pending = Some((req, algo));
-        if let Some(ssh) = st.remotes[side].ssh.as_ref() {
-            ssh.exec(req, cmd);
+        if let Some(ss) = super::active_remote_session(st, side) {
+            ss.ssh.exec(req, cmd);
         }
         st.chk_local = None;
     } else {
@@ -1264,8 +1301,8 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     );
     // G9：远程按该侧服务端探测快照置灰不可用算法；本地 / 未探测全可用。
     let hp = side
-        .and_then(|s| st.remotes[s].ssh.as_ref())
-        .and_then(|s| s.hash_probe());
+        .and_then(|s| super::active_remote_session(st, s))
+        .and_then(|s| s.ssh.hash_probe());
     let combo = egui::ComboBox::from_id_salt("chk-algo")
         .width(160.0 - 8.0)
         .selected_text(ALGOS.get(algo).copied().unwrap_or("SHA-256"));
@@ -1702,7 +1739,7 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         });
 
     if local_clicked {
-        open_target(st, t("本地"), target, new_tab);
+        open_target(st, target, new_tab);
         st.dialog = Dialog::None;
     } else if let Some(i) = picked {
         // 选主机即连（C# HostPicked → ConnectToHostAsync，不经编辑弹窗）；
@@ -1715,21 +1752,18 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 }
 
 /// 连接提交共用入口（HostPicker 选主机 / HostPanel 卡片 / 菜单重连）：
-/// 留存该侧传输档案 + exec 档案 + 会话主机，发 Connect 命令。
-/// 连接结果经 Ev::Connected / Ev::Failed 回流（root() apply_ssh_events 按发起侧分发）。
-/// `side` = 连接落位侧（0 左 / 1 右；两侧可各自连接同一主机，两份独立会话互不干扰）。
+/// tab 落定（追加 / 就地激活）→ 为目标 tab 建新会话并绑定（bind_session 发 Connect）。
+/// 连接结果经 Ev::Connected / Ev::Failed 回流（root() apply_ssh_events 按 sid 路由到
+/// 挂靠 tab）。`side` = 连接落位侧（0 左 / 1 右；两侧可各自连接同一主机，独立会话）。
 /// `new_tab`（tab 栏加号入口）：追加 tab 而非就地激活（C# HostPicked 强制
-/// TabIntent="new" 新标签页）。
+/// TabIntent="new" 新标签页）。P1 不做同主机共享会话（P2 池复用）：同主机第二
+/// tab 也 spawn 新 Ssh。
 pub(crate) fn connect_profile(
     st: &mut State,
     h: &crate::hosts::HostProfile,
     side: usize,
     new_tab: bool,
 ) {
-    let auth = match h.auth_mode {
-        crate::hosts::AuthMode::KeyFile => crate::ssh::Auth::KeyFile(h.key_file_path.clone()),
-        crate::hosts::AuthMode::Password => crate::ssh::Auth::Password(h.password.clone()),
-    };
     let label = host_tab_naming(&h.name, &h.host);
     // L4：端口显式校验（不再静默钳成 0 —— 0 端口必连不上且无任何提示）。
     if !(1..=65535).contains(&h.port) {
@@ -1742,63 +1776,183 @@ pub(crate) fn connect_profile(
         ));
         return;
     }
-    let port = h.port as u16;
     // G17-ANIM：C# 标签先行即 AddNewTabGetView → TabItems.Add 播系统亮相动画。
-    // 两侧同款：加号入口追加远程 tab；就地连接激活既有远程 tab 原位换标题，
-    // 无则追加（右侧空态占位 tab 为 local:false，命中就地改名分支 = 旧「替换单
-    // tab」效果）。
-    let tabs = if side == 0 {
-        &mut st.left_tabs
+    // 加号入口（new_tab）或该侧尚无远程 tab → 追加远程 tab（亮相恒播）；否则就地
+    // 激活既有远程 tab 原位换标题（活动远程 tab 优先，无则首个——现状
+    // position(!local) 口径；右侧重连播亮相，左侧 tab 常显不重播）。
+    let tab_id = if new_tab || st.remotes[side].tabs.is_empty() {
+        let id = st.next_tab_id;
+        st.next_tab_id += 1;
+        st.remotes[side].tabs.push(super::RemoteTab {
+            id,
+            sid: 0,
+            title: label.clone(),
+            pane: super::panes::FilePane {
+                empty: true,
+                ..Default::default()
+            },
+            wait: None,
+            fallback: None,
+            del_pending: 0,
+            new_pending: 0,
+            pending_ed: None,
+            ext_edits: Vec::new(),
+            ext_stat: None,
+            ext_write: None,
+            ext_poll: std::time::Instant::now(),
+        });
+        activate_remote_tab(st, side, id);
+        st.tab_born[side] = Some((id, std::time::Instant::now()));
+        id
     } else {
-        &mut st.right_tabs
-    };
-    let existing = tabs.items.iter().position(|i| !i.local);
-    match (new_tab, existing) {
-        (false, Some(idx)) => {
-            tabs.items[idx].title = label.clone();
-            tabs.active = idx;
-            // 右侧空态占位 tab 就地改名 = 空态引导消失、标签条首现，补亮相动画
-            //（左侧重连场景 tab 常显，不重播）。
-            if side == 1 {
-                tabs.born = Some((idx, std::time::Instant::now()));
-            }
+        let tid = match st.remotes[side].active {
+            Some(a) if st.remotes[side].tabs.iter().any(|t| t.id == a) => a,
+            _ => st.remotes[side].tabs[0].id,
+        };
+        activate_remote_tab(st, side, tid);
+        // 右侧空态占位 tab 就地改名 = 空态引导消失、标签条首现，补亮相动画
+        //（左侧重连场景 tab 常显，不重播）。
+        if side == 1 {
+            st.tab_born[side] = Some((tid, std::time::Instant::now()));
         }
-        _ => {
-            tabs.items.push(super::panes::TabItem {
-                title: label.clone(),
-                local: false,
-            });
-            tabs.active = tabs.items.len() - 1;
-            tabs.born = Some((tabs.active, std::time::Instant::now()));
+        tid
+    };
+    // P2 会话池复用（SPEC §3.1）：追加 tab 分支先按 SessionKey{host,port,user}
+    // 查该侧会话池——命中即复用既有会话（refs+=1，不 spawn / 不重发 Connect，
+    // 指纹确认等随之天然单次）；未命中走「断旧建新」。就地重连（new_tab=false
+    // 且该侧已有 tab）维持重连语义，不复用。
+    if new_tab || st.remotes[side].tabs.is_empty() {
+        let key = super::SessionKey {
+            host: h.host.clone(),
+            port: h.port as u16,
+            user: h.username.clone(),
+        };
+        if let Some(sid) = st.remotes[side]
+            .sessions
+            .iter()
+            .find(|s| s.key == key)
+            .map(|s| s.sid)
+        {
+            reuse_session(st, side, tab_id, sid, h, &label);
+            return;
         }
     }
+    bind_session(st, side, tab_id, h, &label);
+}
+
+/// P2 会话复用落位：新 tab 指向既有会话（refs+=1，不 spawn / 不重发 Connect）。
+/// 会话已连接 → 直接走「初始目录列目录」（对照 Ev::Connected 优先级，抽
+/// initial_remote_dir 与其共用）+ 同步挂接重挂；会话仍在连接中（含指纹待确认）
+/// → 空态等待，由 Ev::Connected 按 sid 统一落位——复用会话不会二次触发
+/// AskFingerprint（覆盖层遍历会话池绘制既有请求）。
+fn reuse_session(
+    st: &mut State,
+    side: usize,
+    tab_id: u32,
+    sid: u64,
+    h: &crate::hosts::HostProfile,
+    label: &str,
+) {
+    let Some(si) = st.remotes[side].sessions.iter().position(|s| s.sid == sid) else {
+        return;
+    };
+    st.remotes[side].sessions[si].refs += 1;
+    // host/profile 不覆盖（同 key 语义相同，保留首个）；原会话无档案则补上
+    //（初始目录优先级 / 浏览记忆落盘需要）。
+    if st.remotes[side].sessions[si].host.is_none() {
+        st.remotes[side].sessions[si].host = Some(h.clone());
+    }
+    let connected = matches!(st.remotes[side].sessions[si].state, super::RemoteState::Off);
+    // tab 绑定 + 浏览态复位（与 bind_session 同口径）。
+    if let Some(tab) = st.remotes[side].tabs.iter_mut().find(|t| t.id == tab_id) {
+        tab.sid = sid;
+        tab.title = label.to_owned();
+        tab.fallback = None;
+        tab.del_pending = 0;
+        tab.new_pending = 0;
+        tab.pending_ed = None;
+        tab.ext_edits.clear();
+        tab.ext_stat = None;
+        tab.ext_write = None;
+        tab.ext_poll = std::time::Instant::now();
+        tab.wait = None;
+        tab.pane = if connected {
+            super::panes::FilePane::default()
+        } else {
+            // 会话仍在连接中：等待 Ev::Connected 按 sid 统一落位。
+            super::panes::FilePane {
+                empty: true,
+                ..Default::default()
+            }
+        };
+    }
+    if connected {
+        // 已连接会话：直接初始列目录（复用路径没有 Connected 事件）。
+        let root = st.remotes[side].sessions[si]
+            .root
+            .clone()
+            .unwrap_or_else(|| "/".to_owned());
+        let (init, fallback, remote_base) = super::initial_remote_dir(h, &root);
+        let ltag = super::next_seq(st);
+        if let Some(tab) = st.remotes[side].tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.pane = super::panes::FilePane {
+                remote_path: Some(init.clone()),
+                ..Default::default()
+            };
+            tab.wait = Some((ltag, init.clone()));
+            tab.pane.loading = true;
+            tab.fallback = fallback;
+        }
+        if let Some(ss) = st.remotes[side].sessions.iter().find(|s| s.sid == sid) {
+            ss.ssh.list(ltag, init);
+        }
+        // 同步挂接重挂（对照 Ev::Connected 尾部；C# 每次连接提交重组联对面）。
+        super::sync::attach_connect(st, side, sid, remote_base);
+    }
+}
+
+/// 为既有远程 tab 建新会话并绑定：旧会话 refs-1（归零断开 + 出池，C# 重连 =
+/// 换会话；两侧可同主机——独立实例），新会话注入传输/exec 档案发 Connect；
+/// tab 浏览态复位（原 RemoteCtx::default() 平移到 tab 字段）+ 换标题 + 激活；
+/// 会话重建即脱离联动面（同步浏览挂接由 Ev::Connected 重挂）。
+fn bind_session(
+    st: &mut State,
+    side: usize,
+    tab_id: u32,
+    h: &crate::hosts::HostProfile,
+    label: &str,
+) {
+    let port = h.port as u16;
+    let auth = match h.auth_mode {
+        crate::hosts::AuthMode::KeyFile => crate::ssh::Auth::KeyFile(h.key_file_path.clone()),
+        crate::hosts::AuthMode::Password => crate::ssh::Auth::Password(h.password.clone()),
+    };
     // 存档指纹（C# SetTrustedFingerprint 时机；空串归 None）。
     let fp = (!h.host_key_fingerprint.trim().is_empty()).then(|| h.host_key_fingerprint.clone());
-    // 每侧单会话：该侧已有会话先断开复位（重连 = 换会话；两侧可同主机——独立实例）。
-    if let Some(ssh) = st.remotes[side].ssh.take() {
-        ssh.disconnect();
+    // 旧会话释放（P1 每 tab 一会话：refs 1→0 即断开移除）。
+    let old_sid = st.remotes[side]
+        .tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .map(|t| t.sid);
+    if let Some(osid) = old_sid
+        && let Some(si) = st.remotes[side].sessions.iter().position(|s| s.sid == osid)
+    {
+        let dead = {
+            let ss = &mut st.remotes[side].sessions[si];
+            ss.refs = ss.refs.saturating_sub(1);
+            ss.refs == 0
+        };
+        if dead {
+            st.remotes[side].sessions[si].ssh.disconnect();
+            st.remotes[side].sessions.remove(si);
+        }
     }
-    // 会话重建即脱离联动面（同步浏览挂接由 Ev::Connected 重挂；对称窗格任一侧
-    // 连接均可能重组联对面）。
-    st.sync_browse = false;
-    st.sync_base = None;
-    st.sync_mirror = None;
-    st.remotes[side] = super::RemoteCtx::default();
-    // 传输档案：G16 静默门用存档指纹（G12 校验改读该侧会话探测快照实时句柄，
-    // 见 ui/mod.rs enqueue_tasks；连接提交时快照会错过首次探测）。
-    st.remotes[side].profile = Some(crate::transfer::Profile {
-        host: h.host.clone(),
-        port,
-        user: h.username.clone(),
-        auth: auth.clone(),
-        fingerprint: fp.clone(),
-    });
-    // 会话主机档案：初始目录优先级 / 浏览记忆落盘（LastRemotePath）用。
-    st.remotes[side].host = Some(h.clone());
-    // exec 通道（校验码等）独立连接用同一档案（实例级档案，随该侧会话）。
-    let ssh = st.remotes[side]
-        .ssh
-        .get_or_insert_with(crate::ssh::Ssh::spawn);
+    // 新会话（P1 每 tab 一会话，行为等同现状；P2 同主机共享复用）。
+    let sid = st.next_sid;
+    st.next_sid += 1;
+    let ssh = crate::ssh::Ssh::spawn();
+    // exec 通道（校验码等）独立连接用同一档案（实例级档案，随该会话）。
     ssh.set_exec_profile(Some(crate::ssh::ExecSpec {
         host: h.host.clone(),
         port,
@@ -1806,36 +1960,151 @@ pub(crate) fn connect_profile(
         auth: auth.clone(),
         fingerprint: fp.clone(),
     }));
-    ssh.connect(h.host.clone(), port, h.username.clone(), auth, label, fp);
-    // 该侧远程面板切到「正在连接」空态。
-    st.remotes[side].state = super::RemoteState::Connecting;
+    ssh.connect(
+        h.host.clone(),
+        port,
+        h.username.clone(),
+        auth.clone(),
+        label.to_owned(),
+        fp.clone(),
+    );
+    let key = super::SessionKey {
+        host: h.host.clone(),
+        port,
+        user: h.username.clone(),
+    };
+    st.remotes[side].sessions.push(super::SideSession {
+        sid,
+        key,
+        ssh,
+        // 会话主机档案：初始目录优先级 / 浏览记忆落盘（LastRemotePath）用。
+        host: Some(h.clone()),
+        // 传输档案：G16 静默门用存档指纹（G12 校验改读该 tab 会话探测快照实时
+        // 句柄，见 ui/mod.rs enqueue_tasks；连接提交时快照会错过首次探测）。
+        profile: Some(crate::transfer::Profile {
+            host: h.host.clone(),
+            port,
+            user: h.username.clone(),
+            auth,
+            fingerprint: fp,
+        }),
+        state: super::RemoteState::Connecting,
+        root: None,
+        fp_ask: None,
+        refs: 1,
+    });
+    // tab 绑定 + 浏览态复位 + 该侧远程面板切「正在连接」空态。
+    if let Some(tab) = st.remotes[side].tabs.iter_mut().find(|t| t.id == tab_id) {
+        tab.sid = sid;
+        tab.pane = super::panes::FilePane {
+            empty: true,
+            ..Default::default()
+        };
+        tab.wait = None;
+        tab.fallback = None;
+        tab.del_pending = 0;
+        tab.new_pending = 0;
+        tab.pending_ed = None;
+        tab.ext_edits.clear();
+        tab.ext_stat = None;
+        tab.ext_write = None;
+        tab.ext_poll = std::time::Instant::now();
+        tab.title = label.to_owned();
+    }
+    // 激活该 tab + 会话重建即脱离联动面（同步浏览挂接由 Ev::Connected 重挂；
+    // 对称窗格任一侧连接均可能重组联对面）。
+    activate_remote_tab(st, side, tab_id);
+    st.sync_browse = false;
+    st.sync_base = None;
+    st.sync_mirror = None;
 }
 
-/// 选择结果落到发起侧窗格（本地 → 此电脑根视图），并同步 tab 标题。
-/// 远程连接走 connect_profile（按发起侧落位）。`target` = 落位侧（0 左 / 1 右）。
-/// `new_tab`（C# OpenLocalView 非空态 → AddNewTab）追加 tab；false = 空态引导
-/// 就地打开（C# DismissEmptyState），替换该侧本地 tab。
-fn open_target(st: &mut State, title: &str, target: usize, new_tab: bool) {
+/// 激活某侧指定远程 tab（本地活动让位；侧内唯一活动）。
+fn activate_remote_tab(st: &mut State, side: usize, tab_id: u32) {
+    st.locals[side].active = None;
+    st.remotes[side].active = Some(tab_id);
+}
+
+/// 激活某侧指定本地 tab。
+fn activate_local_tab(st: &mut State, side: usize, tab_id: u32) {
+    st.remotes[side].active = None;
+    st.locals[side].active = Some(tab_id);
+}
+
+/// 队列菜单「重连」：断开会话所属远程 tab 原位重建会话（connect_profile 就地
+/// 路径同款：标题刷新 + 激活 + 右侧重播亮相）。
+pub(crate) fn reconnect_tab(
+    st: &mut State,
+    side: usize,
+    tab_id: u32,
+    h: &crate::hosts::HostProfile,
+) {
+    if st.remotes[side].tabs.iter().any(|t| t.id == tab_id) {
+        let label = host_tab_naming(&h.name, &h.host);
+        activate_remote_tab(st, side, tab_id);
+        if side == 1 {
+            st.tab_born[side] = Some((tab_id, std::time::Instant::now()));
+        }
+        bind_session(st, side, tab_id, h, &label);
+    }
+}
+
+/// 选择结果落到发起侧窗格（本地 → 此电脑根视图）。`target` = 落位侧（0 左 /
+/// 1 右）。`new_tab`（C# OpenLocalView 非空态 → AddNewTab）追加本地 tab；false =
+/// 空态引导就地打开（C# DismissEmptyState）：该侧本地 tabs 重置为单 tab，被
+/// discard 的远程 tab 走会话清理（refs 归零断开 + 出池）。
+/// （P4：本地 tab 标题由 tab 条合成处按当前目录现算，此函数不再落标题。）
+fn open_target(st: &mut State, target: usize, new_tab: bool) {
     let mut pane = super::panes::FilePane::default();
     crate::local::navigate_root(&mut pane);
-    let (tabs, slot) = if target == 0 {
-        (&mut st.left_tabs, &mut st.left)
-    } else {
-        (&mut st.right_tabs, &mut st.right)
-    };
-    *slot = pane;
-    // G17-ANIM：C# 承载此目标的 tab 同走 TabItems.Add → 系统亮相动画。
-    let item = super::panes::TabItem {
-        title: title.to_owned(),
-        local: true,
-    };
     if new_tab {
-        tabs.items.push(item);
+        // C# OpenLocalView 非空态 AddNewTab：追加本地 tab + 亮相。
+        let id = st.next_tab_id;
+        st.next_tab_id += 1;
+        st.locals[target].tabs.push(super::LocalTab { id, pane });
+        activate_local_tab(st, target, id);
+        st.tab_born[target] = Some((id, std::time::Instant::now()));
     } else {
-        tabs.items = vec![item];
+        // C# DismissEmptyState 就地打开：被 discard 的远程 tab 走 finish_close_tab
+        // 同款会话清理（无确认门——空态引导覆盖时无可见 tab 条）。
+        let rids: Vec<u32> = st.remotes[target].tabs.iter().map(|t| t.id).collect();
+        for rid in rids {
+            discard_remote_tab(st, target, rid);
+        }
+        let id = st.next_tab_id;
+        st.next_tab_id += 1;
+        st.locals[target].tabs = vec![super::LocalTab { id, pane }];
+        activate_local_tab(st, target, id);
+        // G17-ANIM：C# 承载此目标的 tab 同走 TabItems.Add → 系统亮相动画。
+        st.tab_born[target] = Some((id, std::time::Instant::now()));
     }
-    tabs.active = tabs.items.len() - 1;
-    tabs.born = Some((tabs.active, std::time::Instant::now()));
+}
+
+/// 无确认门直接弃置一个远程 tab（open_target 就地路径专用）：挂靠会话 refs-1
+/// 归零断开 + 出池（C# view.Dispose），tab 移除、活动项让位。
+fn discard_remote_tab(st: &mut State, side: usize, tab_id: u32) {
+    let sid = st.remotes[side]
+        .tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .map(|t| t.sid);
+    if let Some(sid) = sid
+        && let Some(si) = st.remotes[side].sessions.iter().position(|s| s.sid == sid)
+    {
+        let dead = {
+            let ss = &mut st.remotes[side].sessions[si];
+            ss.refs = ss.refs.saturating_sub(1);
+            ss.refs == 0
+        };
+        if dead {
+            st.remotes[side].sessions[si].ssh.disconnect();
+            st.remotes[side].sessions.remove(si);
+        }
+    }
+    st.remotes[side].tabs.retain(|t| t.id != tab_id);
+    if st.remotes[side].active == Some(tab_id) {
+        st.remotes[side].active = None;
+    }
 }
 
 // ── WinUI 输入框（textbox.xaml 默认模板口径）───────────────
@@ -3670,7 +3939,7 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                         && st
                             .remotes
                             .iter()
-                            .any(|r| r.ssh.as_ref().map(|s| !s.is_connected()) == Some(true));
+                            .any(|rs| rs.sessions.iter().any(|s| !s.ssh.is_connected()));
                     v.push(Item::Label("重连", can_reconnect, false));
                 }
                 v.push(Item::Label("移除", true, false));
@@ -3710,8 +3979,8 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                         })
                         .unwrap_or(false);
                     let hash_any = menu_side(st, pane)
-                        .and_then(|s| st.remotes[s].ssh.as_ref())
-                        .and_then(|s| s.hash_probe())
+                        .and_then(|s| super::active_remote_session(st, s))
+                        .and_then(|s| s.ssh.hash_probe())
                         .is_some_and(|h| h.any());
                     // C# BuildItemMenu 远程分支顺序（FileView.xaml.cs:2415-2452）：
                     // 传输到另一侧 / 编辑 ║ 刷新 / 重命名 / 删除(红) ║ 权限 / 校验码
@@ -3766,7 +4035,7 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 let p = pane_view(st, pane);
                 // 新建可用 = 本地有路径 / 远程已浏览到目录（与工具栏 can_new 同口径）。
                 let can_new = match menu_side(st, pane) {
-                    Some(side) => st.remotes[side].pane.remote_path.is_some(),
+                    Some(side) => super::pane_view(st, side).remote_path.is_some(),
                     None => p.path.is_some(),
                 };
                 vec![
@@ -3953,18 +4222,20 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                         Some(side) => {
                             if let Some(rp) = remote_dir {
                                 // 远程：下载到临时副本（回流失配丢弃）→ 开编辑器窗口。
+                                // 请求挂发起帧活动远程 tab（P1 每 tab 一会话）。
                                 let remote = super::join_remote_path(&rp, &name);
                                 st.stat_seq += 1;
                                 let req = st.stat_seq;
-                                st.remotes[side].pending_ed =
-                                    Some((req, remote.clone(), name.clone()));
-                                if let Some(ssh) = st.remotes[side].ssh.as_ref() {
-                                    ssh.read_file(remote, req, crate::editor::MAX_FILE_SIZE);
+                                if let Some(tab) = super::active_remote_tab_mut(st, side) {
+                                    tab.pending_ed = Some((req, remote.clone(), name.clone()));
                                 }
-                                let tag = match &st.remotes[side].host {
-                                    Some(h) => format!("[{}@{}]", h.username, h.host),
-                                    None => t("[远程]").to_owned(),
-                                };
+                                if let Some(ss) = super::active_remote_session(st, side) {
+                                    ss.ssh.read_file(remote, req, crate::editor::MAX_FILE_SIZE);
+                                }
+                                let tag = super::active_remote_session(st, side)
+                                    .and_then(|s| s.host.clone())
+                                    .map(|h| format!("[{}@{}]", h.username, h.host))
+                                    .unwrap_or_else(|| t("[远程]").to_owned());
                                 st.terminal.push((
                                     crate::local::now_hms(),
                                     format!("{tag} {}", tfmt("下载 {0}…", &[&name])),
@@ -3993,25 +4264,31 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                         if is_dir {
                             // 目录进入（file_rows 双击同款三分支）。
                             if let Some(rp) = remote_dir {
-                                // 远程视图（pane 即侧号）：列目录请求带侧号入队。
+                                // 远程视图（pane 即侧号）：列目录请求带 (侧, tab id) 入队。
                                 let target = if rp == "/" {
                                     format!("/{name}")
                                 } else {
                                     format!("{rp}/{name}")
                                 };
-                                st.list_reqs.push((pane, target));
+                                st.list_reqs.push((
+                                    pane,
+                                    super::active_tab_id(st, pane).unwrap_or(0),
+                                    target,
+                                ));
                             } else if local_dir.is_none() {
                                 // 本地根视图（此电脑）：条目即盘符，直接按盘符导航。
                                 let target = std::path::PathBuf::from(name.as_str());
                                 if crate::local::navigate(pane_view_mut(st, pane), &target) {
+                                    let tab_id = super::active_tab_id(st, pane).unwrap_or(0);
                                     st.sync_nav =
-                                        Some((pane, target.to_string_lossy().into_owned()));
+                                        Some((pane, tab_id, target.to_string_lossy().into_owned()));
                                 }
                             } else if let Some(base) = local_dir {
                                 let target = base.join(&name);
                                 if crate::local::navigate(pane_view_mut(st, pane), &target) {
+                                    let tab_id = super::active_tab_id(st, pane).unwrap_or(0);
                                     st.sync_nav =
-                                        Some((pane, target.to_string_lossy().into_owned()));
+                                        Some((pane, tab_id, target.to_string_lossy().into_owned()));
                                 }
                             }
                         } else if let Some(base) = local_dir {
@@ -4090,8 +4367,8 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                     // G9：默认算法按探测快照取首个可用（SHA256 → SHA512 → SM3）；
                     // 本地恒 SHA-256（ring 自算不依赖探测）。
                     let algo = match side
-                        .and_then(|s| st.remotes[s].ssh.as_ref())
-                        .and_then(|s| s.hash_probe())
+                        .and_then(|s| super::active_remote_session(st, s))
+                        .and_then(|s| s.ssh.hash_probe())
                     {
                         Some(h) if h.sha256 => 0,
                         Some(h) if h.sha512 => 1,
@@ -4115,13 +4392,18 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 } else {
                     t("新建文本文档.txt")
                 };
-                // 远程 tab：经该侧会话新建（重名规避按当前列表，Ev::Created
+                // 远程 tab：经该 tab 挂靠会话新建（重名规避按当前列表，Ev::Created
                 // 回执后重列）；本地 tab：同步创建 + 重列。
                 if let Some(side) = menu_side(st, pane) {
-                    if let Some(rp) = st.remotes[side].pane.remote_path.clone() {
-                        let name = super::panes::dedupe_remote(&st.remotes[side].pane, base);
+                    if let Some(rp) = pane_view(st, pane).remote_path.clone() {
+                        let name = super::panes::dedupe_remote(pane_view(st, pane), base);
                         let target = super::join_remote_path(&rp, &name);
-                        st.new_reqs.push((side, target, is_dir));
+                        st.new_reqs.push((
+                            side,
+                            super::active_tab_id(st, side).unwrap_or(0),
+                            target,
+                            is_dir,
+                        ));
                     }
                 } else if is_dir {
                     crate::local::create_dir(pane_view_mut(st, pane), base);
@@ -4133,8 +4415,9 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 // 触发刷新动效（列表淡入 + 刷新钮旋转，与工具栏刷新同口径）。
                 pane_view_mut(st, pane).refresh_at = Some(ui.ctx().input(|i| i.time));
                 if let Some(rp) = pane_view(st, pane).remote_path.clone() {
-                    // 远程视图（pane 即侧号）：重列该侧目录。
-                    st.list_reqs.push((pane, rp));
+                    // 远程视图（pane 即侧号）：重列该活动 tab 目录。
+                    st.list_reqs
+                        .push((pane, super::active_tab_id(st, pane).unwrap_or(0), rp));
                 } else {
                     crate::local::refresh(pane_view_mut(st, pane));
                 }
@@ -4209,13 +4492,22 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 // C# RowReconnectItem_Click：只重建 SSH 会话，不重跑任务、不改队列
                 // 状态（行保持失败态，用户自行决定是否再点「重试」）。Rust 复用连接
                 // 提交入口按上次连接参数重建（结果经 Ev::Connected / Ev::Failed 回流）；
-                // 遍历两侧重建所有断开的会话（行不记录侧号，按「断开即重连」口径）。
+                // 遍历两侧会话池重建所有断开的会话所属 tab（行不记录侧号，按
+                // 「断开即重连」口径）。
+                let mut downs: Vec<(usize, u32, crate::hosts::HostProfile)> = Vec::new();
                 for side in 0..2 {
-                    let down =
-                        st.remotes[side].ssh.as_ref().map(|s| !s.is_connected()) == Some(true);
-                    if down && let Some(h) = st.remotes[side].host.clone() {
-                        connect_profile(st, &h, side, false);
+                    for tab in &st.remotes[side].tabs {
+                        if let Some(ss) =
+                            st.remotes[side].sessions.iter().find(|s| s.sid == tab.sid)
+                            && !ss.ssh.is_connected()
+                            && let Some(h) = ss.host.clone()
+                        {
+                            downs.push((side, tab.id, h));
+                        }
                     }
+                }
+                for (side, tab_id, h) in downs {
+                    reconnect_tab(st, side, tab_id, &h);
                 }
             }
             "移除" => {
@@ -4446,12 +4738,13 @@ fn ext_edit_changed_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette
     let Some(content) = shell(ui, st, p, 380.0, 150.0, t("编辑"), false, 0.0, false, None) else {
         return;
     };
-    let (side, name, remote_path) = match &st.dialog {
+    let (side, tab, name, remote_path) = match &st.dialog {
         Dialog::ExtEditChanged {
             side,
+            tab,
             name,
             remote_path,
-        } => (*side, name.clone(), remote_path.clone()),
+        } => (*side, *tab, name.clone(), remote_path.clone()),
         _ => return,
     };
 
@@ -4485,11 +4778,14 @@ fn ext_edit_changed_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette
         // 暂不保存：会话保留（基准已在触发时更新），下次保存快照再变会再问。
         st.dialog = Dialog::None;
     } else if save {
-        // 回传前先探测远端 mtime（C# GetLastWriteTime 冲突比对）。
-        if let Some(ssh) = &st.remotes[side].ssh {
-            st.stat_seq += 1;
-            let req = st.stat_seq;
-            st.remotes[side].ext_stat = Some((req, remote_path.clone()));
+        // 回传前先探测远端 mtime（C# GetLastWriteTime 冲突比对）：探测在途
+        // 挂靠发起 tab，STAT 经其挂靠会话发出。
+        st.stat_seq += 1;
+        let req = st.stat_seq;
+        if let Some(t) = super::find_remote_tab_mut(st, side, tab) {
+            t.ext_stat = Some((req, remote_path.clone()));
+        }
+        if let Some(ssh) = super::session_of_tab(st, side, tab).map(|s| &s.ssh) {
             ssh.stat(remote_path.clone(), req);
         }
         st.dialog = Dialog::None;
@@ -4501,10 +4797,13 @@ fn ext_edit_conflict_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palett
     let Some(content) = shell(ui, st, p, 380.0, 150.0, t("编辑"), false, 0.0, false, None) else {
         return;
     };
-    let (side, remote_path) = match &st.dialog {
+    let (side, tab, remote_path) = match &st.dialog {
         Dialog::ExtEditConflict {
-            side, remote_path, ..
-        } => (*side, remote_path.clone()),
+            side,
+            tab,
+            remote_path,
+            ..
+        } => (*side, *tab, remote_path.clone()),
         _ => return,
     };
 
@@ -4532,15 +4831,15 @@ fn ext_edit_conflict_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palett
         // 不覆盖：会话保留（基准已在触发时更新），下次保存快照再变会再问。
         st.dialog = Dialog::None;
     } else if overwrite {
-        super::ext_upload(st, side, &remote_path);
+        super::ext_upload(st, side, tab, &remote_path);
         st.dialog = Dialog::None;
     }
 }
 
 // ── 关闭标签页确认（G17，C# FolderContainer.OnTabCloseConfirming ContentDialog）──
 /// 三键（Primary 后台继续 / Secondary 取消队列并关闭 / Close 不关了，
-/// DefaultButton=Close）：Rust 队列无 per-tab 日志源（C# LogScope），确认判据
-/// 与取消范围均取全局会话队列（单连接单队列即同域）。
+/// DefaultButton=Close）：确认判据为该 tab 归属的活动任务数（P3 per-tab，
+/// C# LogScope 语义）；「取消队列并关闭」也只取消归属该 tab 的活动任务。
 fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     let Some(content) = shell(
         ui,
@@ -4556,8 +4855,8 @@ fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     ) else {
         return;
     };
-    let side = match &st.dialog {
-        Dialog::TabClose { side } => *side,
+    let (side, tab, n) = match &st.dialog {
+        Dialog::TabClose { side, tab, n } => (*side, *tab, *n),
         _ => return,
     };
 
@@ -4565,7 +4864,13 @@ fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     cui.add_space(14.0);
     cui.horizontal(|row| {
         row.add_space(CONTENT_PAD.0);
-        row.label(RichText::new(t("此标签页仍有进行中的传输任务，如何处理？")).size(13.0));
+        row.label(
+            RichText::new(tfmt(
+                "此标签页仍有 {0} 个进行中的传输任务，如何处理？",
+                &[&n],
+            ))
+            .size(13.0),
+        );
     });
     cui.add_space(12.0);
 
@@ -4592,17 +4897,18 @@ fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     if stay {
         st.dialog = Dialog::None;
     } else if cancel {
-        // 取消队列并关闭：取消活动任务（Waiting 即时结算 / Transferring 块边界
-        // 生效），root() 等退出后执行关闭（5s 超时兜底放行）。
+        // 取消队列并关闭：只取消归属该 tab 的活动任务（P3 per-tab，C#
+        // LogScope 语义；Waiting 即时结算 / Transferring 块边界生效），root()
+        // 等「该 tab 归属活动任务清零」后执行关闭（5s 超时兜底放行）。
         if let Some(q) = &st.transfer {
-            q.cancel_active();
+            q.cancel_owned((side as u8, tab));
         }
         st.dialog = Dialog::None;
-        st.tab_close_wait = Some((side, std::time::Instant::now()));
+        st.tab_close_wait = Some((side, tab, std::time::Instant::now()));
     } else if bg {
         // 后台继续（C# 同注：传输连接独立于标签页，tab 关闭后照常跑完）。
         st.dialog = Dialog::None;
-        super::finish_close_tab(st, side);
+        super::finish_close_tab(st, side, tab);
     }
 }
 
@@ -4611,11 +4917,11 @@ fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 /// 全屏遮罩（点击不关闭，防误拒）+ 居中卡片（标题行 + 换行正文 + 右下按钮）。
 /// Enter = 默认按钮（首次 → 信任并继续；变更 → 取消，防中间人）；Esc = 取消。
 fn fp_confirm_overlay(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    // 查找序：窗格会话槽（侧 0 → 侧 1）→ 测试连接槽；无请求不绘制。
+    // 查找序：窗格会话池（侧 0 → 侧 1 逐会话）→ 测试连接槽；无请求不绘制。
     let Some(ask) = st
         .remotes
         .iter()
-        .find_map(|r| r.fp_ask.as_ref())
+        .find_map(|r| r.sessions.iter().find_map(|s| s.fp_ask.as_ref()))
         .or(st.fp_ask_test.as_ref())
     else {
         return;
@@ -4724,11 +5030,11 @@ fn fp_confirm_overlay(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         None
     };
     if let Some(ok) = decision {
-        // 回写与查找序同构：窗格会话槽优先，其次测试连接槽。
+        // 回写与查找序同构：窗格会话池优先，其次测试连接槽。
         let a = st
             .remotes
             .iter_mut()
-            .find_map(|r| r.fp_ask.take())
+            .find_map(|r| r.sessions.iter_mut().find_map(|s| s.fp_ask.take()))
             .or_else(|| st.fp_ask_test.take());
         if let Some(a) = a {
             let _ = a.reply.send(ok);

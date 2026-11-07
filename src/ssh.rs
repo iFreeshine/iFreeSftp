@@ -91,7 +91,10 @@ pub enum Cmd {
         /// 存档指纹（SHA256 base64 无前缀；None = 无存档）。
         fingerprint: Option<String>,
     },
+    /// 列远端目录（SSH_FXP_READDIR 一次整层）；tag 随 Ev::Listing / Ev::Failed
+    /// 原样回声，UI 据此定位发起 tab 并丢弃过期响应。
     List {
+        tag: u64,
         path: String,
     },
     /// 探测远端目标是否存在（传输冲突决策）；req 用于丢弃过期响应。
@@ -100,7 +103,9 @@ pub enum Cmd {
         req: u64,
     },
     /// 删除远端条目（目录递归；逐项经 Ev::Log 留终端日志 —— C5 不可逆操作）。
+    /// tag 随 Ev::Deleted 原样回声。
     Delete {
+        tag: u64,
         path: String,
         is_dir: bool,
     },
@@ -117,11 +122,15 @@ pub enum Cmd {
         data: Vec<u8>,
     },
     /// 新建远端目录（SSH_FXP_MKDIR；成败细节走 Ev::Log，完成统一 Ev::Created）。
+    /// tag 随 Ev::Created 原样回声。
     Mkdir {
+        tag: u64,
         path: String,
     },
     /// 新建远端空文件（CREATE|WRITE 打开后即关；完成统一 Ev::Created）。
+    /// tag 随 Ev::Created 原样回声。
     CreateFile {
+        tag: u64,
         path: String,
     },
     Disconnect,
@@ -151,9 +160,19 @@ pub enum Ev {
         reply: mpsc::Sender<bool>,
     },
     /// 失败（what = "连接" / "列目录"，UI 据此分流提示位置）。
-    Failed { what: &'static str, msg: String },
-    /// 目录枚举结果。
-    Listing { path: String, entries: Vec<Entry> },
+    /// tag = 发起命令的回声：列目录失败 Some(tag)（UI 按 tag 定位发起 tab），
+    /// 连接失败 None（会话级）。worker 仅透传，零逻辑。
+    Failed {
+        what: &'static str,
+        msg: String,
+        tag: Option<u64>,
+    },
+    /// 目录枚举结果；tag = Cmd::List 的回声（UI 按 tag 定位发起 tab）。
+    Listing {
+        tag: u64,
+        path: String,
+        entries: Vec<Entry>,
+    },
     /// Stat 响应（查不到/出错一律 exists=false）。
     Stat {
         req: u64,
@@ -175,10 +194,11 @@ pub enum Ev {
         path: String,
         result: Result<Option<i64>, String>,
     },
-    /// 删除完成（无论成败；成败细节已走 Ev::Log）。
-    Deleted,
-    /// 新建条目完成（无论成败；成败细节已走 Ev::Log；UI 收到即重列当前目录）。
-    Created,
+    /// 删除完成（无论成败；成败细节已走 Ev::Log）；tag = Cmd::Delete 回声。
+    Deleted { tag: u64 },
+    /// 新建条目完成（无论成败；成败细节已走 Ev::Log；UI 收到即重列当前目录）；
+    /// tag = Cmd::Mkdir / Cmd::CreateFile 回声。
+    Created { tag: u64 },
     /// 工作线程产生的终端日志（已带来源前缀）。
     Log { msg: String },
     /// exec 命令完成（exit=-1 = 超时/通道异常，C# ExitStatus null 归一）。
@@ -273,16 +293,16 @@ impl Ssh {
         });
     }
 
-    pub fn list(&self, path: String) {
-        let _ = self.tx.send(Cmd::List { path });
+    pub fn list(&self, tag: u64, path: String) {
+        let _ = self.tx.send(Cmd::List { tag, path });
     }
 
     pub fn stat(&self, path: String, req: u64) {
         let _ = self.tx.send(Cmd::Stat { path, req });
     }
 
-    pub fn delete(&self, path: String, is_dir: bool) {
-        let _ = self.tx.send(Cmd::Delete { path, is_dir });
+    pub fn delete(&self, tag: u64, path: String, is_dir: bool) {
+        let _ = self.tx.send(Cmd::Delete { tag, path, is_dir });
     }
 
     /// 读远端文件（远程编辑下载；结果走 Ev::FileData）。
@@ -296,13 +316,13 @@ impl Ssh {
     }
 
     /// 新建远端目录（结果走 Ev::Created，成败细节走 Ev::Log）。
-    pub fn mkdir(&self, path: String) {
-        let _ = self.tx.send(Cmd::Mkdir { path });
+    pub fn mkdir(&self, tag: u64, path: String) {
+        let _ = self.tx.send(Cmd::Mkdir { tag, path });
     }
 
     /// 新建远端空文件（结果走 Ev::Created，成败细节走 Ev::Log）。
-    pub fn create_file(&self, path: String) {
-        let _ = self.tx.send(Cmd::CreateFile { path });
+    pub fn create_file(&self, tag: u64, path: String) {
+        let _ = self.tx.send(Cmd::CreateFile { tag, path });
     }
 
     /// exec 通道命令（独立线程；结果走 Ev::Exec）。
@@ -869,16 +889,19 @@ async fn worker(
                     Err(msg) => {
                         connected.store(false, Ordering::Relaxed);
                         let _ = etx.send(Ev::Failed {
-                            what: "连接", msg
+                            what: "连接",
+                            msg,
+                            tag: None,
                         });
                     }
                 }
             }
-            Cmd::List { path } => {
+            Cmd::List { tag, path } => {
                 if let Some(c) = &mut ctx {
                     match sftp_op(c.conn.sftp.read_dir(&path)).await {
                         Ok(list) => {
                             let _ = etx.send(Ev::Listing {
+                                tag,
                                 path,
                                 entries: to_entries(list),
                             });
@@ -899,6 +922,7 @@ async fn worker(
                             let _ = etx.send(Ev::Failed {
                                 what: "列目录",
                                 msg: e,
+                                tag: Some(tag),
                             });
                         }
                     }
@@ -973,7 +997,7 @@ async fn worker(
                 };
                 let _ = etx.send(reply);
             }
-            Cmd::Delete { path, is_dir } => {
+            Cmd::Delete { tag, path, is_dir } => {
                 if let Some(c) = &mut ctx {
                     let label = c.label.clone();
                     let r = if is_dir {
@@ -1009,9 +1033,9 @@ async fn worker(
                     };
                     let _ = r;
                 }
-                let _ = etx.send(Ev::Deleted);
+                let _ = etx.send(Ev::Deleted { tag });
             }
-            Cmd::Mkdir { path } => {
+            Cmd::Mkdir { tag, path } => {
                 // 新建目录（SSH_FXP_MKDIR）；成败日志与 C# CreateRemoteEntryAsync
                 // 的 catch 吞错仅留痕一致，完成统一回 Ev::Created 触发重列。
                 if let Some(c) = &mut ctx {
@@ -1036,9 +1060,9 @@ async fn worker(
                         msg: t("未连接远程主机").to_owned(),
                     });
                 }
-                let _ = etx.send(Ev::Created);
+                let _ = etx.send(Ev::Created { tag });
             }
-            Cmd::CreateFile { path } => {
+            Cmd::CreateFile { tag, path } => {
                 // 新建空文件：CREATE|WRITE 打开即关（0 字节落盘，C# File.Create 同义）。
                 if let Some(c) = &mut ctx {
                     let label = c.label.clone();
@@ -1069,7 +1093,7 @@ async fn worker(
                         msg: t("未连接远程主机").to_owned(),
                     });
                 }
-                let _ = etx.send(Ev::Created);
+                let _ = etx.send(Ev::Created { tag });
             }
             Cmd::Disconnect => {
                 if let Some(c) = &ctx {
@@ -1379,7 +1403,6 @@ async fn exec_on_channel(
 
 /// exec 通道连接档案槽（per-Ssh 实例；双会话改造：原全局 static EXEC_PROFILE
 /// 改为实例字段，由 `Ssh::set_exec_profile` 注入，worker 确认指纹后回写）。
-
 /// exec 独立连接用的连接规格。
 #[derive(Clone)]
 pub struct ExecSpec {
