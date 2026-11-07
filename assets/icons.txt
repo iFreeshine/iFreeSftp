@@ -1,0 +1,36 @@
+# Phosphor 按需图标清单（D-014）。每行一个名字 = assets/icons-src/{name}.png（源图随仓库提交）。
+# `#` 开头为注释。构建期经 pngquant 压缩后内嵌，运行时重着色（src/icons.rs）。
+# 对应 C# Segoe Fluent Icons 码位见行尾注释。
+
+arrows-clockwise        # E895 同步浏览 / E72C 刷新
+files                   # E8C8 文件比对
+desktop-tower           # E968 主机
+gear                    # E713 设置
+sun                     # E706 主题-亮
+moon                    # E708 主题-暗
+translate               # E8C1 语言
+download-simple         # E896 更新徽标
+x                       # E711 关闭
+plus                    # E710 新建标签 / E8A5 新建文件
+house                   # E80F 面包屑根
+caret-right             # E76C 面包屑分隔
+caret-up                # 排序升
+caret-down              # 排序降
+arrow-up                # E74A 上一级（标准上箭头）
+folder-open             # E838 打开目录
+list                    # E700 树形切换
+folder-plus             # E8F4 新建文件夹
+eye                     # E7B3 显示隐藏
+compass                 # EDA2 空态引导图标
+file                    # 文件条目字形
+folder                  # 文件夹条目字形（E8B7）
+trash                   # E74D 删除确认弹窗条目图标
+copy                    # E8C8 校验码复制钮（E8C8 与比对同形）
+check                   # E73E 已复制反馈
+desktop                 # E7F8 主机选择-本地区条目图标
+floppy-disk             # E74E 编辑器-保存
+arrow-counter-clockwise # E7A7 编辑器-撤消
+magnifying-glass        # E721 编辑器-查找
+tray-arrow-down         # E8B5 主机面板-导入
+pencil                  # E70F 主机卡片-编辑钮
+monitor                 # E770 主机卡片-系统图标

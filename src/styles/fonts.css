@@ -1,0 +1,194 @@
+/* =============================================================================
+ * 字体 · FONTS.md 的可执行版本
+ * -----------------------------------------------------------------------------
+ * 原则：英文字体必须内嵌，但每个字节都要有理由。
+ *
+ * 体积目标（gzip 前，woff2）：
+ *   Inter 拉丁核心      ≈ 28–35 KB   ← 首屏唯一必需的字体
+ *   Inter 拉丁扩展      ≈ 12–18 KB   ← 西里尔/越南语，绝大多数产品用不到，可删
+ *   Inter 斜体          ≈ 30 KB      ← 只有正文需要斜体时才引入
+ *   JetBrains Mono 子集 ≈ 22–30 KB   ← 只保留 400/500/700 三档
+ *   --------------------------------------------------
+ *   合计（推荐配置）≈ 60–70 KB，远低于 250 KB 预算
+ *
+ * 反例：不做子集的 Inter Variable 约 300–340 KB，
+ *       CJK 全覆盖版本更是 8–15 MB —— 绝不能进包。
+ * ========================================================================== */
+
+/* =============================================================================
+ * 1. INTER · 拉丁核心（必需）
+ * -----------------------------------------------------------------------------
+ * 只声明拉丁区间，中文字符不触发下载。
+ * 这一步同时解决了"Inter 加载后中文回退"的闪烁问题。
+ * ========================================================================== */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900; /* Variable 轴，一个文件覆盖全部字重 */
+  font-display: swap;
+  src: url('../../assets/fonts/Inter-latin-var.woff2') format('woff2-variations'),
+       url('../../assets/fonts/Inter-latin-var.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+                 U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193,
+                 U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* 拉丁扩展（可选）：德语变音、土耳其语、越南语。
+   如果你的产品只面向中英用户，直接删掉这段能省 15 KB。 */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../assets/fonts/Inter-latin-ext-var.woff2') format('woff2-variations');
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF,
+                 U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* 斜体（可选）：只有正文需要 <em> 斜体时才引入。
+   注意：Variable 字体的斜体是独立文件，不能靠浏览器合成——
+   合成斜体在中文回退时会出现"歪宋体"，必须避免。 */
+@font-face {
+  font-family: 'Inter';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../assets/fonts/Inter-latin-italic-var.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+                 U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193,
+                 U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* =============================================================================
+ * 2. JETBRAINS MONO · 等宽（代码/数字）
+ * -----------------------------------------------------------------------------
+ * 只取 400 / 700 两档静态字重即可（代码场景极少用 500）。
+ * 若必须用 Variable，保留 wght 轴、删掉其他轴可再省 8–10 KB。
+ * ========================================================================== */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../../assets/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F,
+                 U+2190-21BB, U+2212, U+2215, U+2260, U+2264, U+2265;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../../assets/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F,
+                 U+2190-21BB, U+2212, U+2215, U+2260, U+2264, U+2265;
+}
+
+/* =============================================================================
+ * 3. 字体族令牌
+ * ========================================================================== */
+
+:root {
+  /* 拉丁用 Inter，中文按系统栈依次回退。
+     顺序理由：
+       1. Inter 必须第一且只覆盖拉丁 —— 它没有中文字形，
+          浏览器遇到中文会自动跳到下一个能渲染的字体，这正是我们要的混排。
+       2. -apple-system / PingFang SC 在 Windows 上不存在（反之亦然），
+          自动跳过，无副作用 —— 这是跨端单一栈的关键。
+       3. Microsoft YaHei UI 必须排在 Microsoft YaHei 之前：
+          UI 版字重更细、小字号更清晰。
+       4. system-ui 放最后兜底，不要放最前 —— 它会抢走 Linux 上更优的中文字体。 */
+  --font-sans:
+    'Inter',
+    -apple-system,
+    'SF Pro Text',
+    'PingFang SC',
+    'Microsoft YaHei UI',
+    'Microsoft YaHei',
+    'HarmonyOS Sans SC',
+    'Source Han Sans SC',
+    'Noto Sans CJK SC',
+    'WenQuanYi Micro Hei',
+    system-ui,
+    sans-serif;
+
+  --font-mono:
+    'JetBrains Mono',
+    'Cascadia Code',
+    Consolas,
+    'SF Mono',
+    Menlo,
+    'DejaVu Sans Mono',
+    ui-monospace,
+    monospace;
+
+  /* 兼容用：部分库会读这两个名字 */
+  --font-sans-fallback: -apple-system, 'PingFang SC', 'Microsoft YaHei UI', sans-serif;
+}
+
+/* =============================================================================
+ * 4. 排版基线
+ * ========================================================================== */
+
+html {
+  /* 唯一允许写 px 的地方：根字号，作为 rem 基准 */
+  font-size: 16px;
+  text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  /* 中文正文行高不低于 1.5，否则挤 */
+  line-height: 1.6;
+  font-weight: 400;
+  /* Inter 的可读性变体：单层 a、圆角 l —— 小字号更易辨认 */
+  font-feature-settings: 'cv05' 1, 'ss03' 1, 'calt' 1;
+  font-optical-sizing: auto;
+  /* 中英混排：标点挤压不生效时留一点字间呼吸 */
+  letter-spacing: 0.005em;
+}
+
+/* 等宽场景：数字必须等宽，否则表格列会抖 */
+code, kbd, samp, pre, .font-mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none; /* 关掉 == 连字，避免误导 */
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+/* 表格与数字列表：等宽数字，保证列对齐 */
+.tabular, table, [data-numeric] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 标题：负字距，字号越大越紧（Geist / Vercel 的做法） */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.011em;
+}
+h1 { letter-spacing: -0.022em; }
+h2 { letter-spacing: -0.018em; }
+
+/* 中文标题字距需要回正：负字距会让汉字粘连 */
+:lang(zh) h1,
+:lang(zh) h2,
+:lang(zh) h3,
+:lang(zh) h4 {
+  letter-spacing: 0;
+}
+
+/* 正文可读性优化只加在长文容器上，全局开启有性能代价 */
+.prose {
+  text-rendering: optimizeLegibility;
+  max-width: 68ch; /* 中文约 38–42 字/行，最舒适 */
+}
+
+/* 数字与单位之间留窄空格（中英混排规范） */
+.unit-gap::before {
+  content: '\2009';
+}

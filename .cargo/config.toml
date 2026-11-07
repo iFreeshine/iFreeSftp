@@ -1,0 +1,13 @@
+[alias]
+lint = "clippy --workspace --all-targets -- -D warnings"
+
+[target.x86_64-pc-windows-gnu]
+linker = "rust-lld"
+# 0 依赖定案（D-019）：exe 导入表只许出现 Windows 系统 DLL，禁止随包分发
+# 任何运行时。link-self-contained=yes 用 rustc 自带 CRT/启动对象，MinGW 的
+# libgcc_s_seh-1 / libstdc++-6 / libwinpthread-1 不会进导入表。
+# 验收命令（应只列出系统 DLL）：
+#   objdump -p target\debug\ifreeSftp.exe | Select-String 'DLL Name'
+# 注：+crt-static 对 windows-gnu + rust-lld 实测无效（msvcrt.dll 仍导入），
+# 不采用；msvcrt / ntdll / api-ms-* 均为系统组件，不算依赖。
+rustflags = ["-C", "link-self-contained=yes"]

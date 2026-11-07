@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX 打包清单模板 (Store 发布 / 本地测试装包), 由 tools/make-msix.ps1 注入后写入 payload:
+    __IDENTITY_NAME__     包身份名 (Partner Center 应用标识页分配, 沿用 C# 版真实值)
+    __IDENTITY_PUBLISHER__ 包身份发布者 (须与签名证书 Subject 一致, 如 CN=XXXXXXXX-...)
+    __VERSION__            包版本 (从公开仓 Cargo.toml workspace version 注入, 形如 0.9.0.0)
+  Rust 版与 C# 版差异: 无 PRI 的 Win32 payload 由 makepri new 生成 resources.pri;
+  Description 按 Rust 版实际能力表述 (服务端直达在路线图, 不宣称)。
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="__IDENTITY_NAME__"
+    Publisher="__IDENTITY_PUBLISHER__"
+    Version="__VERSION__"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>iFreeSftp</DisplayName>
+    <PublisherDisplayName>iFrees</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26226.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-US" />
+    <Resource Language="zh-CN" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+      Executable="iFreeSftp.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="iFreeSftp"
+        Description="A dual-pane, multi-tab SFTP client for Windows: tar-accelerated transfers, resumable queue, remote editing, file compare and checksums."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.scale-200.png"
+        Square44x44Logo="Assets\Square44x44Logo.scale-200.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.scale-200.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.scale-200.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <!-- runFullTrust: 纯 Win32 桌面应用 (russh + egui) 的标准声明, 网络不受限 -->
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

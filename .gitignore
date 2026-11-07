@@ -1,0 +1,66 @@
+# ---- 依赖与构建产物 ----
+node_modules/
+dist/
+out/
+release/
+coverage/
+.turbo/
+.parcel-cache/
+.vite/
+*.tsbuildinfo
+.eslintcache
+
+# ---- 密钥与环境（绝不入库）----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+
+# ---- 开发期素材仓库（整个目录忽略，见 devSource/README.md）----
+# 字体原件、参考主题、竞品安装包都在这里；构建产物不依赖它
+devSource/
+
+# ---- 字体原件（devSource/ 已整体忽略；所需字体按需落地项目内后放行，D-018）----
+src/assets/fonts/_src/
+*.ttf
+*.otf
+*.ttc
+!src/assets/fonts/Inter-Regular.ttf
+!src/assets/fonts/Inter-SemiBold.ttf
+
+# ---- 系统与编辑器 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*~
+
+# ---- 日志 ----
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# ---- Rust ----
+/target/
+**/*.rs.bk
+
+# ---- 本机 Agent 配置 ----
+.trae/
+
+# ---- 平台产物 ----
+*.dmg
+*.exe
+*.msi
+*.AppImage
+*.deb
+
+# ---- build artifacts (MSIX packaging) ----
+/release/

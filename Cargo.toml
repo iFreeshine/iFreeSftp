@@ -1,0 +1,74 @@
+[package]
+name = "ifreesftp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "iFreeSftp desktop SFTP client (Rust + egui)"
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+# 仅 PNG 解码用（图标管线 D-014）；离线缓存已有 0.25.10
+image = { version = "0.25", default-features = false, features = ["png"] }
+# SSH/SFTP（D-011）：ring 后端（默认 aws-lc-rs 在 windows-gnu 不可用）；
+# rsa feature 保住 RSA 主机密钥/算法协商；压缩 flate2 暂不启用。
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa"] }
+russh-sftp = "3.0"
+# 仅自建工作线程 runtime + 超时用（连接/认证包一层 timeout）
+tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+# 本地文件校验码（T5 校验码弹窗；russh ring 后端已在依赖树中，直接引用 digest）
+ring = "0.17"
+# 右键菜单粘贴：读剪贴板（egui 核心只有写 API；egui-winit 已拉入同版本）
+arboard = "3"
+# 注册码 Base64Url 解码（与 ifree-core include 模式共用同版本，keygen 同）
+base64 = "0.22"
+# 注册/更新远程通道（C# HttpClient 对应物；TLS = rustls ring 后端，
+# windows-gnu 兼容，p0a 已实测 reg.ifrees.top）
+ureq = "2"
+# /v1/state 响应容错解析（C# JsonDocument 对应物）
+serde_json = "1"
+
+# 官方构建门控：--features official 经 #[path] 并入闭源 ifree-core 真验签；
+# 社区源码（无 ifree-core 目录）不带本 feature 编译，零引用、完整可编译。
+[features]
+official = []
+
+# 非 Windows 本地删除进回收站（local.rs delete_to_bin）：Linux 走 FreeDesktop
+# Trash 规范、macOS 走 NSWorkspace；target-gated，Windows 构建零依赖零编译负担。
+# （Windows 分支用手写 SHFileOperationW FFI，语义一致且无额外绑定）
+[target.'cfg(not(windows))'.dependencies]
+trash = "5"
+
+[build-dependencies]
+# 构建期密度桶：256px 源 Lanczos3 下采样到 16/20/24/32/48（与主依赖同版本同 feature）
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[workspace]
+resolver = "3"
+# 注意：keygen 工具在仓库根 tools/keygen，是完全独立 crate（cargo 要求成员必须在
+# workspace 目录树内，无法跨根挂载）；自持 Cargo.lock 与 target，两子项目共用其 exe
+
+[workspace.package]
+# 版本基线（2026-10-31 定案）：构建版本号全部从 0.9.0 起步。
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.99"
+
+[workspace.dependencies]
+# UI 栈：egui 0.37 / wgpu 30 兼容线，2026-10-28 复核
+eframe = "0.37.0"
+egui = "0.37.0"
+egui-winit = "0.37.0"
+egui-wgpu = "0.37.0"
+egui_extras = "0.37.0"
+wgpu = "30.0.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false

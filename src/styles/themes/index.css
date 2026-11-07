@@ -1,0 +1,236 @@
+/* =============================================================================
+ * 主题 · 当前只启用 1 套（graphite）
+ * -----------------------------------------------------------------------------
+ * 这里只放【项目实际要用的】主题。12 套备选全集在 devSource/themes/index.css，
+ * 换主题 = 从那里把对应块连同末尾的「语义映射」一起拷过来，或直接改下面的色值。
+ * 选型建议见 devSource/themes/THEMES-REF.md。
+ *
+ * 切换方式：<html data-theme-pack="graphite" data-theme="light|dark">
+ *
+ * 设计原则：
+ *   1. 每个主题包只定义「原始色阶」（--th-*），语义映射统一放在文件末尾，
+ *      保证所有主题的语义令牌键名 100% 对称。
+ *   2. 不使用 oklch/hsl 函数，全部落地为 sRGB hex —— 兼容性最好，也便于脚本校验。
+ *   3. 每套都经过 check-theme-contrast.mjs 实测，注释里标注了关键比值。
+ *
+ * ⚠️ 加第二套主题时必看（否则暗色主题会整体失效）：
+ *   语义映射块的选择器是 :root[data-theme-pack][data-theme]（特异性 0-3-0），
+ *   靠「源码位置在主题块之后」取胜。新增的主题块必须放在映射块【之前】。
+ * ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * 1. GRAPHITE（默认）— Tailwind slate/zinc 中性灰
+ *    偏蓝的中性灰，最通用的开发者工具底色。无彩色倾向，不抢内容。
+ * ------------------------------------------------------------------------ */
+:root[data-theme-pack='graphite'][data-theme='light'] {
+  --th-canvas:    #ffffff;
+  --th-surface:   #f8fafc;
+  --th-elevated:  #ffffff;
+  --th-sunken:    #f1f5f9;
+  --th-overlay:   #ffffff;
+  --th-scrim:     rgba(15, 23, 42, 0.45);
+
+  --th-text:      #0f172a;
+  --th-text-2:    #475569;
+  --th-text-3:    #64748b;
+  --th-text-inv:  #ffffff;
+
+  --th-line:      #e2e8f0;
+  --th-line-2:    #cbd5e1;
+  --th-line-3:    #94a3b8;
+
+  --th-accent:    #2563eb;
+  --th-accent-h:  #1d4ed8;
+  --th-accent-a:  #1e40af;
+  --th-accent-s:  #dbeafe;
+  --th-accent-fg: #ffffff;
+
+  --th-success:   #16a34a;
+  --th-success-s: #dcfce7;
+  --th-warning:   #b45309;
+  --th-warning-s: #fef3c7;
+  --th-danger:    #dc2626;
+  --th-danger-h:  #b91c1c;
+  --th-danger-s:  #fee2e2;
+  --th-danger-fg: #ffffff;
+  --th-info:      #0284c7;
+  --th-info-s:    #e0f2fe;
+}
+
+/* 兜底场景的语义映射：未设 data-theme-pack 时也要能正常渲染。
+   与上方映射块内容完全一致，必须同步维护（check-tokens 会校验键名对称）。 */
+:root:not([data-theme-pack]) {
+  /* —— 表面 —— */
+  --bg-canvas:       var(--th-canvas);
+  --bg-surface:      var(--th-surface);
+  --bg-elevated:     var(--th-elevated);
+  --bg-sunken:       var(--th-sunken);
+  --bg-overlay:      var(--th-overlay);
+  --bg-scrim:        var(--th-scrim);
+
+  /* —— 文本 —— */
+  --text-primary:    var(--th-text);
+  --text-secondary:  var(--th-text-2);
+  --text-tertiary:   var(--th-text-3);
+  --text-disabled:   var(--th-line-3);
+  --text-inverse:    var(--th-text-inv);
+  --text-link:       var(--th-accent);
+
+  /* —— 边框 —— */
+  --border-subtle:   var(--th-line);
+  --border-default:  var(--th-line-2);
+  --border-strong:   var(--th-line-3);
+  --border-focus:    var(--th-accent);
+
+  /* —— 强调 —— */
+  --accent-default:  var(--th-accent);
+  --accent-hover:    var(--th-accent-h);
+  --accent-active:   var(--th-accent-a);
+  --accent-subtle:   var(--th-accent-s);
+  --accent-fg:       var(--th-accent-fg);
+
+  /* —— 状态 —— */
+  --success-default: var(--th-success);
+  --success-subtle:  var(--th-success-s);
+  --warning-default: var(--th-warning);
+  --warning-subtle:  var(--th-warning-s);
+  --danger-default:  var(--th-danger);
+  --danger-hover:    var(--th-danger-h);
+  --danger-subtle:   var(--th-danger-s);
+  --danger-fg:       var(--th-danger-fg);
+  --info-default:    var(--th-info);
+  --info-subtle:     var(--th-info-s);
+}
+
+:root[data-theme-pack='graphite'][data-theme='dark'] {
+  --th-canvas:    #0f172a;
+  --th-surface:   #1e293b;
+  --th-elevated:  #263449;
+  --th-sunken:    #0b1220;
+  --th-overlay:   #1e293b;
+  --th-scrim:     rgba(2, 6, 23, 0.66);
+
+  --th-text:      #f1f5f9;
+  --th-text-2:    #cbd5e1;
+  --th-text-3:    #94a3b8;
+  --th-text-inv:  #0f172a;
+
+  --th-line:      #334155;
+  --th-line-2:    #475569;
+  --th-line-3:    #64748b;
+
+  --th-accent:    #3b82f6;
+  --th-accent-h:  #60a5fa;
+  --th-accent-a:  #2563eb;
+  --th-accent-s:  #1e3a8a;
+  --th-accent-fg: #0b1220;
+
+  --th-success:   #22c55e;
+  --th-success-s: #14351f;
+  --th-warning:   #f59e0b;
+  --th-warning-s: #3a2608;
+  --th-danger:    #ef4444;
+  --th-danger-h:  #f87171;
+  --th-danger-s:  #3d1618;
+  --th-danger-fg: #2a0708;
+  --th-info:      #38bdf8;
+  --th-info-s:    #0c2f42;
+}
+/* =============================================================================
+ * 语义映射（所有主题共用，唯一真源）
+ * 业务代码只允许使用这一层的令牌名，禁止直接引用 --th-*
+ * -----------------------------------------------------------------------------
+ * ⚠️ 优先级陷阱（必读，改错会导致整个页面无色 / 白屏）：
+ *   在自定义属性里写 `--bg-canvas: var(--th-canvas)` 时，
+ *   var() 是【计算值使用阶段】才解析的 —— 它取的是 --th-canvas 在该元素上的
+ *   【最终层叠结果】，而不是这条声明被解析那一刻的值。
+ *
+ *   主题块选择器 :root[data-theme-pack][data-theme] 的特异性是 0-3-0，
+ *   若这里写裸 :root（0-1-0），映射会先于主题块求值 → --th-* 仍为未定义
+ *   → var() 回退为空 → 所有语义令牌失效 → 页面变白。
+ *
+ *   所以映射选择器必须同时命中「设置了主题的元素」本身。
+ *   最稳的写法是直接复用主题块的选择器形态：
+ *
+ *     :root[data-theme-pack][data-theme]   ← 与主题块同特异性，且必然命中
+ *
+ *   后续主题块在源码中位于本块之【后】，靠"顺序靠后"胜出，
+ *   不依赖特异性差值 —— 这比调权重更不容易出错。
+ *   实测：只要写成裸 :root，整页就会变白。
+ * ========================================================================== */
+
+:root[data-theme-pack][data-theme] {
+  /* —— 表面 —— */
+  --bg-canvas:       var(--th-canvas);
+  --bg-surface:      var(--th-surface);
+  --bg-elevated:     var(--th-elevated);
+  --bg-sunken:       var(--th-sunken);
+  --bg-overlay:      var(--th-overlay);
+  --bg-scrim:        var(--th-scrim);
+
+  /* —— 文本 —— */
+  --text-primary:    var(--th-text);
+  --text-secondary:  var(--th-text-2);
+  --text-tertiary:   var(--th-text-3);
+  --text-disabled:   var(--th-line-3);
+  --text-inverse:    var(--th-text-inv);
+  --text-link:       var(--th-accent);
+
+  /* —— 边框 —— */
+  --border-subtle:   var(--th-line);
+  --border-default:  var(--th-line-2);
+  --border-strong:   var(--th-line-3);
+  --border-focus:    var(--th-accent);
+
+  /* —— 强调 —— */
+  --accent-default:  var(--th-accent);
+  --accent-hover:    var(--th-accent-h);
+  --accent-active:   var(--th-accent-a);
+  --accent-subtle:   var(--th-accent-s);
+  --accent-fg:       var(--th-accent-fg);
+
+  /* —— 状态 —— */
+  --success-default: var(--th-success);
+  --success-subtle:  var(--th-success-s);
+  --warning-default: var(--th-warning);
+  --warning-subtle:  var(--th-warning-s);
+  --danger-default:  var(--th-danger);
+  --danger-hover:    var(--th-danger-h);
+  --danger-subtle:   var(--th-danger-s);
+  --danger-fg:       var(--th-danger-fg);
+  --info-default:    var(--th-info);
+  --info-subtle:     var(--th-info-s);
+}
+
+/* 兜底：万一忘记给 <html> 加 data-theme-pack，退回 graphite 亮色，
+   绝不出现"页面全白"这种无法自查的状态。 */
+:root:not([data-theme-pack]) {
+  --th-canvas: #ffffff;
+  --th-surface: #f8fafc;
+  --th-elevated: #ffffff;
+  --th-sunken: #f1f5f9;
+  --th-overlay: #ffffff;
+  --th-scrim: rgba(15, 23, 42, 0.45);
+  --th-text: #0f172a;
+  --th-text-2: #475569;
+  --th-text-3: #64748b;
+  --th-text-inv: #ffffff;
+  --th-line: #e2e8f0;
+  --th-line-2: #cbd5e1;
+  --th-line-3: #94a3b8;
+  --th-accent: #2563eb;
+  --th-accent-h: #1d4ed8;
+  --th-accent-a: #1e40af;
+  --th-accent-s: #dbeafe;
+  --th-accent-fg: #ffffff;
+  --th-success: #16a34a;
+  --th-success-s: #dcfce7;
+  --th-warning: #b45309;
+  --th-warning-s: #fef3c7;
+  --th-danger: #dc2626;
+  --th-danger-h: #b91c1c;
+  --th-danger-s: #fee2e2;
+  --th-danger-fg: #ffffff;
+  --th-info: #0284c7;
+  --th-info-s: #e0f2fe;
+}

@@ -1,0 +1,31 @@
+# 开源仓库 CI：push / PR 时社区模式编译 + 测试验证
+# 发布版 exe 不走 CI：ifree-core（闭源官方 feature）不在本仓库，
+# 维护者本机 build.ps1 release 编译后手动上传 GitHub Release（见 MIGRATION.md §4）。
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99'
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (Debug, community mode)
+        shell: pwsh
+        run: cargo build --locked
+
+      - name: Test (community mode)
+        shell: pwsh
+        run: cargo test --locked
