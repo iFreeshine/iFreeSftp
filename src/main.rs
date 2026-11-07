@@ -20,6 +20,12 @@ mod theme;
 mod transfer;
 mod ui;
 
+/// 闭源 ifree-core 唯一并入点（官方构建专用，registration/transfer 共用；
+/// 目录缺席时绝不编译到本模块——社区源码零引用完整可编译）。
+#[cfg(feature = "official")]
+#[path = "../../ifree-core/src/lib.rs"]
+pub(crate) mod ifree_core;
+
 const WINDOW_TITLE: &str = "iFreeSftp";
 const DEFAULT_SIZE: [f32; 2] = [1280.0, 800.0];
 const MIN_SIZE: [f32; 2] = [900.0, 600.0];

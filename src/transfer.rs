@@ -25,6 +25,8 @@ use crate::i18n::{t, tfmt};
 use crate::local;
 use crate::ssh::{self, SftpConn};
 
+/// 传输核心三层（C# ITransferCore 范式）：trait/Stub 开源、决策逻辑 ifree-core 闭源。
+pub mod core;
 mod tar;
 
 /// 传输块（C# 传输缓冲 256KB；检查点粒度 = 块边界）。
@@ -648,28 +650,36 @@ async fn run_kind(
             if let Err(e) = ensure_conn(profile, conn, conn_of).await {
                 return Outcome::Failed(e);
             }
-            // G13（C# S7）：组装远程 cp 命令（shell_quote 只包路径，合并的 `/.` 在引号外）；
-            // 退出码非 0 即失败，不回退本地中转（C# S7.2 实际语义）。
-            let cmd = match (is_dir, merge) {
-                (true, true) => format!(
-                    "cp -a -- {}/. {}",
-                    ssh::shell_quote(&src),
-                    ssh::shell_quote(&dst)
-                ),
-                (true, false) => format!(
-                    "cp -a -- {} {}",
-                    ssh::shell_quote(&src),
-                    ssh::shell_quote(&dst)
-                ),
-                (false, _) => format!(
-                    "cp -f -- {} {}",
-                    ssh::shell_quote(&src),
-                    ssh::shell_quote(&dst)
-                ),
+            // 传输核心三层（C# ITransferCore）：Stub（社区构建）显式提示「仅官方构建」，
+            // 远程→远程保底路径 = 本地中转（RelayFile/RelayDir，用户改用两步拖拽即得）；
+            // 官方构建走闭源决策逻辑（C# FullTransferCore）：命令组装 + CP_OK 回执判定
+            // （防 Windows 服务器 shell 下 cp 非法但 exit=0 误判成功——比旧实现增强）+
+            // 600s 超时（C# ServerCopyTimeoutSeconds）。退出码非 0 / 无回执即失败，
+            // 不回退本地中转（C# S7.2 实际语义）。
+            let core = core::make_transfer_core();
+            if !core.is_full() {
+                return Outcome::Failed(t("服务端直达复制仅官方构建可用；社区构建请分两步传输（先下载到本机，再上传到目标）").into());
+            }
+            let cmd = match core.server_copy_cmd(&src, &dst, is_dir, merge) {
+                Ok(c) => c,
+                Err(_) => {
+                    return Outcome::Failed(t("服务端直达复制仅官方构建可用；社区构建请分两步传输（先下载到本机，再上传到目标）").into());
+                }
             };
-            match conn.as_ref().unwrap().exec(&cmd).await {
-                Ok((0, _, _)) => Outcome::Done,
-                _ => Outcome::Failed(t("服务端复制失败（服务器不支持 cp 或路径无效）").into()),
+            let timeout = core.server_copy_timeout_secs();
+            let judged = match tokio::time::timeout(
+                Duration::from_secs(timeout),
+                conn.as_ref().unwrap().exec(&cmd),
+            )
+            .await
+            {
+                Ok(Ok((exit, out, _))) => core.server_copy_ok(exit, &out),
+                _ => false,
+            };
+            if judged {
+                Outcome::Done
+            } else {
+                Outcome::Failed(t("服务端复制失败（服务器不支持 cp 或路径无效）").into())
             }
         }
         Kind::RelayFile {

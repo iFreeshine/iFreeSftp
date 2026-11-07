@@ -66,10 +66,8 @@ impl RegistrationCore for StubCore {
     }
 }
 
-/// 闭源 ifree-core 源码并入（官方构建专用；目录缺席时绝不编译到本模块）。
-#[cfg(feature = "official")]
-#[path = "../../../ifree-core/src/lib.rs"]
-mod ifree_core;
+/// 闭源 ifree-core 并入点已提至 main.rs 顶层（registration/transfer 共用唯一副本）；
+/// 本模块经 `crate::ifree_core` 引用。
 
 #[cfg(feature = "official")]
 struct OfficialCore;
@@ -86,14 +84,14 @@ impl RegistrationCore for OfficialCore {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let r = ifree_core::verify(code, now);
+        let r = crate::ifree_core::verify(code, now);
         VerifyResult {
             ok: r.ok,
             error: match r.error {
-                ifree_core::ErrorKind::None => ErrorKind::None,
-                ifree_core::ErrorKind::Format => ErrorKind::Format,
-                ifree_core::ErrorKind::Signature => ErrorKind::Signature,
-                ifree_core::ErrorKind::Expired => ErrorKind::Expired,
+                crate::ifree_core::ErrorKind::None => ErrorKind::None,
+                crate::ifree_core::ErrorKind::Format => ErrorKind::Format,
+                crate::ifree_core::ErrorKind::Signature => ErrorKind::Signature,
+                crate::ifree_core::ErrorKind::Expired => ErrorKind::Expired,
             },
             user_name: r.user_name,
             issued_at: r.issued_at,
@@ -164,7 +162,7 @@ mod tests {
             URL_SAFE_NO_PAD.encode(&payload)
         );
         // 经 ifree-core 同一验签通路（公钥注入版），确认 include 装配可达
-        let raw = ifree_core::verify_with_key(kp.public_key().as_ref(), &code, 3_000_000_000);
+        let raw = crate::ifree_core::verify_with_key(kp.public_key().as_ref(), &code, 3_000_000_000);
         assert!(raw.ok);
         assert_eq!(raw.user_name, "tester");
         // make_core 走生产公钥（生成密钥与其不匹配 → Signature）

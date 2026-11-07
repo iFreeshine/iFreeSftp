@@ -709,6 +709,9 @@ pub fn t(zh: &'static str) -> &'static str {
         "连接超时（{0} 秒）" => "Connection timed out ({0} s)",
         // T6 第 2 轮补账（守卫修好字符字面量状态机后扫出的最后 1 条）
         "行 {0}, 列 {1}" => "Row {0}, Column {1}",
+        "服务端直达复制仅官方构建可用；社区构建请分两步传输（先下载到本机，再上传到目标）" => {
+            "Direct server-to-server copy is available in the official build only; in the community build, transfer in two steps (download locally, then upload to the target)"
+        }
         _ => zh,
     }
 }

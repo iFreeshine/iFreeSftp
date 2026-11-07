@@ -61,6 +61,3 @@ yarn-error.log*
 *.msi
 *.AppImage
 *.deb
-
-# ---- build artifacts (MSIX packaging) ----
-/release/
