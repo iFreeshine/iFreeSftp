@@ -74,7 +74,8 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 2. **发版前必跑** `.\tools\check-version.ps1`（build.ps1 release 已自动挂钩，不一致即 FAIL 阻塞）；
    官网 website\ 目录缺失时对应项自动 SKIP，README/CHANGELOG 项缺失 FAIL。
 3. **发布物**：`iFreeSftp-vX.Y.Z-win-x64.zip`（内含单个 `ifreeSftp.exe`）+ 微软商店包
-   `iFreeSftp-X.Y.Z.0-x64.msix`（`.\tools\make-msix.ps1 -Official` 产出，未签名——Store
+   `iFreeSftp-X.Y.Z.0-x64.msix`（**主仓** `tools\make-msix.ps1 -Official` 产出——打包工具与
+   worker 同属运营工具，永不进公开仓；未签名，Store
    提交时 Partner Center 重签）。官方构建（`--features official`，需闭源 ifree-core）在主仓
    本机编译后**手动上传**——公开 CI 不持有 ifree-core，不出官方构建（与 C#「发布 exe 不走
    CI」同规则）。商店包身份沿用 C# 版 Partner Center 真实值
@@ -83,11 +84,11 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
    Partner Center 提交用同一版本号（make-msix 自动把 `0.9.0` 归一为 `0.9.0.0`）。
 5. **CHANGELOG 遵循 Keep a Changelog / SemVer**；用户可见变更逐条记录，Rust 版从 0.9.0 起
    （C# 历史见 C# 版仓库 CHANGELOG，不合并）。
-6. **微软商店流程**（包全自动，提交人工）：`.\tools\make-msix.ps1 -Official` 一条命令产出
+6. **微软商店流程**（包全自动，提交人工）：主仓 `.\tools\make-msix.ps1 -Official` 一条命令产出
    可提交的 MSIX（构建 → 图标齐套校验 → AppxManifest 注入 → makepri 生成 resources.pri →
    MakeAppx 打包）。Partner Center 手动步骤：登录 → 提交新版本 → 上传 msix →
    Store listing 沿用 C# 版商店文案/截图（截图仍需 Rust 界面重截）→ 提交审核。
-   本地冒烟装包：`.\tools\make-msix.ps1 -Sign` 后按脚本输出两行命令导入证书安装。
+   本地冒烟装包：主仓 `.\tools\make-msix.ps1 -Sign` 后按脚本输出两行命令导入证书安装。
 
 ## 5. 每次更新操作流程（checklist）
 
@@ -124,7 +125,8 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 - [ ] **仓库归宿**：沿用 `github.com/iFreeshine/iFreeSftp` 覆盖 C# 版，还是新开仓库？
       未定前 README 的 Releases/官网链接按沿用填写，定案后如变更需改 README ×2 处链接。
 - [ ] **首个 Release 实测**：tag → 手动上传 zip → 下载验签（objdump 导入表核对 D-019）全流程未走过一遍。
-- [x] ~~MSIX 打包~~ **已继承**（tools\make-msix.ps1 + tools\msix\，0.9.0.0 官方包已产出并解包验证）；
+- [x] ~~MSIX 打包~~ **已继承**（脚本与模板/图标资产住**主仓** `tools\{make-msix.ps1, msix\}`——
+      与 worker 同为运营工具不公开；0.9.0.0 官方包已产出并解包验证）；
       商店提交为人工步骤（见 §4.6）。Store listing 的截图仍依赖本清单第 1 条。
 - [ ] **官网联动**：ifrees.top 下载链接/changelog 页是否同步 Rust 版版本号（check-version 的
       website 项现为 SKIP，接通后从 SKIP 变 FAIL 校验）。
