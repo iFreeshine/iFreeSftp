@@ -10,7 +10,7 @@ Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSft
 
 > **Free forever**: every feature is free for all users, always. The supporter badge is a purely voluntary honor mark — registration never unlocks or restricts anything.
 >
-> **License**: released under the [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html). This repository is a **half-open showcase snapshot** — the closed-source core and registration/update code are intentionally removed. Building from this source works out of the box (activation entry absent; see Build below). It is published for showcase and forking and is **not guaranteed to match the released application**.
+> **License**: released under the [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html). This repository is a **published source snapshot** — registration/update and other private module code is intentionally excluded. Building from this source works out of the box (activation entry absent; see Build below). It is published for showcase and forking and is **not guaranteed to match the released application**.
 
 ---
 
@@ -51,7 +51,7 @@ ifreeSftp.exe           # single exe — that's all (no runtime, no DLLs to bund
 
 Unzip anywhere and run `ifreeSftp.exe`. Or build from source (below).
 
-> Please download only from the official channels above; repackaged copies from third parties carry no integrity guarantee.
+> Please download only from the links above; repackaged copies from third parties carry no integrity guarantee.
 
 ## Screenshots
 
@@ -69,7 +69,7 @@ Requirements: Windows and [Rust](https://rustup.rs) 1.99 (channel `stable-x86_64
 .\build.ps1 clean      # Clean
 ```
 
-Note: the `official` cargo feature (offline registration verification) requires a private closed-source module and is **not** available in this repository; a build compiled from this source simply has no activation entry. **The released application (Windows 64-bit, Microsoft Store, Linux) is built from the private development repository and always includes registration** — this showcase snapshot is not guaranteed to match it.
+Note: offline registration verification requires a private closed-source module and is **not** available in this repository; a build compiled from this source simply has no activation entry. **The released application (Windows 64-bit, Microsoft Store, Linux) is built from the private development repository and always includes registration** — this showcase snapshot is not guaranteed to match it.
 
 ## Repository layout
 
@@ -112,7 +112,7 @@ Desktop app, no server backend; single workspace crate:
 - **UI**: egui 0.37 / eframe — `src/ui/` (panes, dialogs, host panel, settings, editor window, import wizard)
 - **SSH/SFTP**: russh 0.65 (ring backend) + russh-sftp 3.0; a dedicated worker thread runs a current-thread tokio runtime, the UI thread exchanges commands/events over channels and never blocks the frame
 - **Transfer**: queue worker with tar-accelerated directory mode, resume, post-transfer verification, explicit-stack directory walk with loop/depth guards
-- **Registration**: ECDsa P-256 offline verification lives behind the closed-source `official` feature gate (see capability note above)
+- **Registration**: ECDsa P-256 offline verification lives in a closed-source module that is not part of this repository (see capability note above)
 - **Runtime**: Rust 1.99, `x86_64-pc-windows-gnu`, self-contained CRT linking — import table contains only Windows system DLLs
 
 ## Capability matrix (public wording)
