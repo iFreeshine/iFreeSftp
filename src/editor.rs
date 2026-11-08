@@ -103,8 +103,10 @@ pub fn encode(text: &str, enc: WriteEnc) -> Vec<u8> {
 
 // ── kernel32 ANSI（CP_ACP；零新依赖，R5）─────────────────────
 
+#[cfg(windows)]
 const CP_ACP: u32 = 0;
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn MultiByteToWideChar(
@@ -128,6 +130,7 @@ unsafe extern "system" {
 }
 
 /// CP_ACP → UTF-16（失败回退 Latin-1 —— C# SystemAnsiEncoding 兜底同语义）。
+#[cfg(windows)]
 fn ansi_decode(bytes: &[u8]) -> String {
     let len = bytes.len();
     if len == 0 {
@@ -163,6 +166,7 @@ fn ansi_decode(bytes: &[u8]) -> String {
 }
 
 /// UTF-16 → CP_ACP（默认字符 '?'）。
+#[cfg(windows)]
 fn ansi_encode(text: &str) -> Vec<u8> {
     let u16s: Vec<u16> = text.encode_utf16().collect();
     if u16s.is_empty() {
@@ -199,6 +203,20 @@ fn ansi_encode(text: &str) -> Vec<u8> {
         }
     }
     text.as_bytes().to_vec()
+}
+
+// 非 Windows 无 CP_ACP 概念：ANSI 读写按 Latin-1 直通（与 C# 编码兜底链最后一环、
+// Windows 转码失败回退路径同语义；R-01 降级声明，不做 GBK 码表零依赖实现）。
+#[cfg(not(windows))]
+fn ansi_decode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| *b as char).collect()
+}
+
+#[cfg(not(windows))]
+fn ansi_encode(text: &str) -> Vec<u8> {
+    text.chars()
+        .map(|c| if (c as u32) <= 0xFF { c as u8 } else { b'?' })
+        .collect()
 }
 
 // ── 文本探测（C# IsTextData / IsTextFile 移植）────────────────

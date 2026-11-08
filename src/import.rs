@@ -225,6 +225,8 @@ fn from_winscp_values(
 // ── PuTTY 注册表键值映射（纯函数部分）───────────────────────
 
 /// PuTTY 键值 → 会话。Protocol 非空且非 ssh 跳过；HostName 可能是 user@host。
+/// （PuTTY 来源仅 Windows 注册表，Linux 无此导入面。）
+#[cfg(windows)]
 fn from_putty_map(
     v: &BTreeMap<String, RegVal>,
     name: &str,
@@ -853,6 +855,7 @@ unsafe extern "system" {
 }
 
 /// 注册表值（仅两类：字符串 / DWORD，其余跳过）。
+#[cfg(windows)]
 enum RegVal {
     Str(String),
     Dword(u32),
@@ -1286,6 +1289,7 @@ fn get_str(v: &BTreeMap<String, String>, key: &str) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(windows)]
 fn get_val_str(v: &BTreeMap<String, RegVal>, key: &str) -> String {
     match v
         .iter()
@@ -1298,6 +1302,7 @@ fn get_val_str(v: &BTreeMap<String, RegVal>, key: &str) -> String {
 }
 
 /// "user@host" 拆分；无 @ 或拆分无效时整体视为主机。
+#[cfg(windows)]
 fn split_user_host(raw: &str) -> (String, String) {
     match raw.find('@') {
         Some(at) if at > 0 && at < raw.len() - 1 => {
@@ -1611,7 +1616,8 @@ mod filezilla_tests {
 
 // ── PuTTY 注册表键值映射（纯函数直测，免注册表依赖）──────────
 
-#[cfg(test)]
+// 依赖 Windows-only 符号（from_putty_map/RegVal）：随源码门控。
+#[cfg(all(test, windows))]
 mod putty_tests {
     use super::import_test_helpers::{assert_no_secret, new_stat};
     use super::*;

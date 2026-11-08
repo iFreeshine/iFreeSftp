@@ -5,12 +5,14 @@
 #   .\build.ps1 test         # cargo test (community mode)
 #   .\build.ps1 run          # Build and run (Debug)
 #   .\build.ps1 release      # Version checks, then Release build -> release\ifreeSftp-<ver>-win64.exe
+#                            #   (source-verification build only, NOT a release artifact)
 #   .\build.ps1 clean        # Clean all build outputs
 #
 # Note: the `official` cargo feature (offline registration verification) requires the
 # private closed-source ifree-core module and is intentionally NOT exposed here.
-# Release artifacts for GitHub Releases are built on the maintainer machine and
-# uploaded manually - CI never produces official builds (same rule as the C# edition).
+# Release artifacts (Win64 zip / Microsoft Store MSIX / Linux tar.gz) are official
+# builds produced on the maintainer machine (private repo) and uploaded manually -
+# CI never produces official builds (same rule as the C# edition).
 
 param(
     [ValidateSet('build', 'test', 'run', 'release', 'clean')]

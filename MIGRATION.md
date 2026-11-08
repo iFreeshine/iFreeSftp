@@ -73,12 +73,17 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
    其余声明点全部向它对齐：README 双语徽章 `badge/version-x.y.z-`、CHANGELOG 双语 `## [x.y.z]` 节。
 2. **发版前必跑** `.\tools\check-version.ps1`（build.ps1 release 已自动挂钩，不一致即 FAIL 阻塞）；
    官网 website\ 目录缺失时对应项自动 SKIP，README/CHANGELOG 项缺失 FAIL。
-3. **发布物**：`iFreeSftp-vX.Y.Z-win-x64.zip`（内含单个 `ifreeSftp.exe`）+ 微软商店包
-   `iFreeSftp-X.Y.Z.0-x64.msix`（**主仓** `tools\make-msix.ps1 -Official` 产出——打包工具与
-   worker 同属运营工具，永不进公开仓；未签名，Store
-   提交时 Partner Center 重签）。官方构建（`--features official`，需闭源 ifree-core）在主仓
-   本机编译后**手动上传**——公开 CI 不持有 ifree-core，不出官方构建（与 C#「发布 exe 不走
-   CI」同规则）。商店包身份沿用 C# 版 Partner Center 真实值
+3. **发布物（2026-11-08 口径更新，DECISIONS.md D-018）**：产品唯一、按平台分 3 个发布版本，
+   **3 版全部为 official 构建（含注册功能）**，全部在主仓本机编译后**手动上传**——公开 CI
+   不持有 ifree-core，不出官方构建（与 C#「发布 exe 不走 CI」同规则）：
+   - `iFreeSftp-vX.Y.Z-win-x64.zip`（内含单个 official `ifreeSftp.exe`）→ GitHub Release；
+   - 微软商店包 `iFreeSftp-X.Y.Z.0-x64.msix`（**主仓** `tools\make-msix.ps1 -Official` 产出——
+     打包工具与 worker 同属运营工具，永不进公开仓；未签名，Store
+     提交时 Partner Center 重签）；
+   - Linux 版 `iFreeSftp-vX.Y.Z-linux-x64.tar.gz`（official 构建；构建环境待定案——
+     私有 runner / 本机 Ubuntu / 放宽 CI 红线，见主仓 DECISIONS.md D-018 跟进）。
+   公开仓 `.\build.ps1 release` 的产物是**公示源码验证构建**（无 official feature），
+   不作为发布物上传。商店包身份沿用 C# 版 Partner Center 真实值
    （`iFrees.iFreeSftp` / `CN=029857DD-…`），提交时无需改。
 4. **Tag 规则**：`vX.Y.Z`，与版本基准一致；Release 页文案从 CHANGELOG 对应节复制；
    Partner Center 提交用同一版本号（make-msix 自动把 `0.9.0` 归一为 `0.9.0.0`）。
@@ -107,7 +112,8 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 3. 改版本号时：Cargo.toml（主仓）→ 同步 → README 徽章 ×2 → CHANGELOG 节 ×2，跑 check-version。
 4. 跑 `..\sync-to-github.ps1`（源码镜像，幂等）。
 5. 公开仓内验证：`.\build.ps1 build`（社区模式克隆可编译）+ `cargo test --offline`。
-6. 公开仓 git commit；发版时打 tag、上传 zip、贴 CHANGELOG。
+6. 公开仓 git commit；发版时打 tag、上传发布物（Win64 zip / MSIX / Linux tar.gz，均为
+   主仓 official 构建产物，见 §4-3）、贴 CHANGELOG。
 
 ## 6. 闭源隔离约束（official 门控）
 

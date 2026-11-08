@@ -340,8 +340,8 @@ pub(crate) fn now_hms() -> String {
 
 // ── 系统打开（C# OpenEntry 文件分支：默认关联程序）─────────────
 
-/// 用系统默认关联程序打开本地文件（C# OpenEntry：文件夹进入，文件交给系统；
-/// Windows = ShellExecuteW "open"）。仅 Windows 实现；其他平台空操作。
+/// 用系统默认关联程序打开本地文件（C# OpenEntry：文件夹进入，文件交给系统）。
+/// Windows = ShellExecuteW "open"；Linux = xdg-open / macOS = open。
 pub fn open_with_default(path: &Path) {
     #[cfg(windows)]
     {
@@ -373,7 +373,15 @@ pub fn open_with_default(path: &Path) {
     }
     #[cfg(not(windows))]
     {
-        let _ = path;
+        // 单参数直传，不经 shell 二次解析（无注入面；registration/guard.rs 同款）。
+        // spawn 失败（极简桌面无 xdg-open）静默，与 Windows ShellExecuteW 失败
+        // 无错误弹窗同口径。
+        let cmd = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        let _ = std::process::Command::new(cmd).arg(path).spawn();
     }
 }
 
@@ -725,6 +733,8 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// (年, 月, 日) → 天数（1970-01-01 = 0）。
+/// （唯一调用在 Windows GetLocalTime 时区偏移探测内。）
+#[cfg(windows)]
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);

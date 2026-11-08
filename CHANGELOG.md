@@ -22,7 +22,7 @@ First release of the native Rust edition: a single-exe, zero-bundled-runtime rew
 - Built-in editor with remote edit & save-back: temp-copy download, mtime conflict detection, per-host temp cleanup; external editor support.
 - Session import wizard: consent-first scan of WinSCP (INI/registry), FileZilla Site Manager, PuTTY, OpenSSH `~/.ssh/config` and iFreeSftp archives; duplicate-aware preview; passwords and post-login commands never imported.
 - Sync-browse file comparison, rubber-band multi-select, dark/light themes, Chinese/English runtime switching.
-- Registration (official builds only): offline ECDsa P-256 registration-code verification, supporter badge, remote announcements; community builds have no activation entry.
+- Registration (release builds only): offline ECDsa P-256 registration-code verification, supporter badge, remote announcements; builds compiled from this repository have no activation entry.
 - Safety hardening: directory loop detection and 128-level depth limit in local walks, fingerprint confirmation timeout, idle queue with no busy loop.
 
 ### Notes

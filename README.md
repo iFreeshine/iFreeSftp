@@ -10,7 +10,7 @@ Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSft
 
 > **Free forever**: every feature is free for all users, always. The supporter badge is a purely voluntary honor mark — registration never unlocks or restricts anything.
 >
-> **License**: released under the [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html). Building from this repository works out of the box (community build).
+> **License**: released under the [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html). This repository is a **half-open showcase snapshot** — the closed-source core and registration/update code are intentionally removed. Building from this source works out of the box (activation entry absent; see Build below). It is published for showcase and forking and is **not guaranteed to match the released application**.
 
 ---
 
@@ -65,11 +65,11 @@ Requirements: Windows and [Rust](https://rustup.rs) 1.99 (channel `stable-x86_64
 .\build.ps1 build      # Debug build (compiles out of the box)
 .\build.ps1 test       # cargo test
 .\build.ps1 run        # Build and run
-.\build.ps1 release    # Release build -> release\ifreeSftp-<ver>-win64.exe (runs version checks first)
+.\build.ps1 release    # Release source-verification build -> release\ifreeSftp-<ver>-win64.exe (runs version checks first; NOT a release artifact - official builds come from the private repo)
 .\build.ps1 clean      # Clean
 ```
 
-Note: the `official` cargo feature (offline registration verification) requires a private closed-source module and is **not** available in this repository; community builds compile without it and simply have no activation entry.
+Note: the `official` cargo feature (offline registration verification) requires a private closed-source module and is **not** available in this repository; a build compiled from this source simply has no activation entry. **The released application (Windows 64-bit, Microsoft Store, Linux) is built from the private development repository and always includes registration** — this showcase snapshot is not guaranteed to match it.
 
 ## Repository layout
 
@@ -77,7 +77,7 @@ Note: the `official` cargo feature (offline registration verification) requires 
 ifreeSftp/                     # Rust workspace (src/ + build.rs + Cargo.toml + toolchain pins)
 tools/
 └── check-version.ps1          # Version consistency gate (Cargo.toml <-> README badge <-> CHANGELOG)
-.github/workflows/build.yml    # CI: community-mode build + test on push/PR
+.github/workflows/build.yml    # CI: source build + test on push/PR
 docs/screenshots/              # Screenshots
 build.ps1                      # Build script
 MIGRATION.md                   # Update & release rules for this repository (read before changing)
@@ -132,7 +132,7 @@ Where behaviour differs from the C# edition or naive expectations, this table is
 
 ## Registration / supporter badge
 
-Settings → Registration (official builds): offline-verified registration code, gold "Supporter" badge, remote announcements. **Registration never changes functionality** — the badge is pure honor. Verification runs fully offline (ECDsa P-256). Community builds built from this repository have no activation entry.
+Settings → Registration (release builds): offline-verified registration code, gold "Supporter" badge, remote announcements. **Registration never changes functionality** — the badge is pure honor. Verification runs fully offline (ECDsa P-256). A build compiled from this repository has no activation entry.
 
 ## Sponsor
 

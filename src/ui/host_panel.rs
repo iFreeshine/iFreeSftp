@@ -1400,7 +1400,9 @@ fn draw_alert(
 }
 
 // ── 密钥文件选择（comdlg32 GetOpenFileNameW，零依赖）────────
+// 非 Windows 无 comdlg32：入口可见但恒不弹窗（对齐 dialogs.rs pick_exe_file 降级）。
 
+#[cfg(windows)]
 #[repr(C)]
 struct OpenFileNameW {
     lstruct_size: u32,
@@ -1428,16 +1430,19 @@ struct OpenFileNameW {
     flags_ex: u32,
 }
 
+#[cfg(windows)]
 #[link(name = "comdlg32")]
 unsafe extern "system" {
     fn GetOpenFileNameW(ofn: *mut OpenFileNameW) -> i32;
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// 密钥文件选择框（.ppk/.pem/.key）；取消或失败返回 None。
+#[cfg(windows)]
 fn pick_key_file() -> Option<String> {
     let filter = wide(&format!(
         "{}\0*.ppk;*.pem;*.key\0{}\0*.*\0",
@@ -1477,4 +1482,10 @@ fn pick_key_file() -> Option<String> {
     }
     let end = buf.iter().position(|&c| c == 0).unwrap_or(0);
     Some(String::from_utf16_lossy(&buf[..end]))
+}
+
+/// 非 Windows 无 comdlg32：恒 None（按钮可见但不弹窗）。
+#[cfg(not(windows))]
+fn pick_key_file() -> Option<String> {
+    None
 }

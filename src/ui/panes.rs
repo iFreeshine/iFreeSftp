@@ -1126,7 +1126,10 @@ fn toolbar_row(
     let cy = rect.center().y;
     for (icon, id, label) in tools {
         let enabled = match id {
-            "open_dir" => !is_remote && hooks.pick.is_none(),
+            // Linux 降级（CROSS_PLATFORM §3）：无系统文件夹选择框实现（rfd 需
+            // GTK3 C 库链接，零依赖口径不引入），「打开目录」灰显——遵守禁用钮
+            // 无 tooltip 的 WinUI 语义，降级声明见文档。
+            "open_dir" => cfg!(windows) && !is_remote && hooks.pick.is_none(),
             "new_folder" | "new_file" => can_new,
             _ => true,
         };

@@ -25,6 +25,8 @@ pub(crate) struct DpapiStore {
 }
 
 impl DpapiStore {
+    /// （生产构造仅 service 的 Windows 分支；Linux 走 NoopStore。）
+    #[cfg(windows)]
     pub(crate) fn default_store() -> Self {
         Self { path: dat_path() }
     }
@@ -78,6 +80,7 @@ impl CredentialStore for NoopStore {
 }
 
 /// registration.dat 路径（app_paths::data_dir，与 hosts/settings 同目录）。
+#[cfg(windows)]
 fn dat_path() -> PathBuf {
     crate::app_paths::data_dir().join("registration.dat")
 }

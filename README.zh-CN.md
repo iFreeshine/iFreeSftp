@@ -10,7 +10,7 @@
 
 > **免费承诺**：全部功能对所有用户永久免费开放。注册勋章纯属自愿赞助，不解锁、不限制任何功能。
 >
-> **许可证**：本应用以 [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) 许可证开源发布，克隆仓库即可完整编译（社区构建）。
+> **许可证**：本应用以 [GNU AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) 许可证开源发布。本仓库是**公示用半开放源码**——闭源核心与注册/更新源代码已针对性摘除；从本源码可直接完整编译（无激活入口，见「构建」），仅作公示与 fork 用途，**不保证对齐实际发布的应用**。
 
 ---
 
@@ -65,12 +65,12 @@ ifreeSftp.exe           # 单文件 exe——就这一个（无运行时、无�
 .\build.ps1 build      # Debug 编译（克隆即可编译）
 .\build.ps1 test       # cargo test
 .\build.ps1 run        # 编译并运行
-.\build.ps1 release    # Release 编译 -> release\ifreeSftp-<版本>-win64.exe（先跑版本防漏校验）
+.\build.ps1 release    # Release 源码验证构建 -> release\ifreeSftp-<版本>-win64.exe（先跑版本防漏校验；非发布物——官方构建在私有开发仓出）
 .\build.ps1 clean      # 清理
 ```
 
-说明：`official` cargo feature（离线注册验签）依赖私有闭源模块，**不在本仓库内**；社区构建
-不带该 feature 完整可编译，仅无激活入口。
+说明：`official` cargo feature（离线注册验签）依赖私有闭源模块，**不在本仓库内**；不带该
+feature 完整可编译，仅无激活入口。**实际发布的应用（Win64 / 微软商店 / Linux）均从私有开发仓构建、均含注册功能**——本公示快照不保证与其对齐。
 
 ## 仓库结构
 
@@ -78,7 +78,7 @@ ifreeSftp.exe           # 单文件 exe——就这一个（无运行时、无�
 ifreeSftp/                     # Rust workspace（src/ + build.rs + Cargo.toml + 工具链锁定）
 tools/
 └── check-version.ps1          # 版本一致性防漏校验（Cargo.toml <-> README 徽章 <-> CHANGELOG）
-.github/workflows/build.yml    # CI：push/PR 社区模式编译 + 测试
+.github/workflows/build.yml    # CI：push/PR 源码编译 + 测试
 docs/screenshots/              # 截图
 build.ps1                      # 构建脚本
 MIGRATION.md                   # 本仓库更新与发版规则（动手前先读）
@@ -134,7 +134,7 @@ MIGRATION.md                   # 本仓库更新与发版规则（动手前先�
 
 ## 注册 / 支持者勋章
 
-设置 → 注册（官方构建）：离线验签注册码、金色"支持者"勋章、远程公告。**注册与免费版功能无差别**——勋章纯荣誉。验签全程离线完成（ECDsa P-256）。从本仓库自行编译的社区构建无激活入口。
+设置 → 注册（发布版）：离线验签注册码、金色"支持者"勋章、远程公告。**注册与免费使用无差别**——勋章纯荣誉。验签全程离线完成（ECDsa P-256）。从本仓库自行编译的构建没有激活入口。
 
 ## 赞助
 
