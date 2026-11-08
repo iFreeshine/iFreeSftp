@@ -60,7 +60,7 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 | DPAPI 加密存储 | 密码加密存储（不写具体算法，按实现更新） | hosts/settings |
 | Mica 材质 | 不写（未实现） | — |
 | 服务端校验码 SHA-256/512 + SM3 | 服务端 SHA-256/512（sha256sum/openssl）；SM3 仅当服务端有 openssl；Windows 服务器不支持；本地 SHA-256/512 | 能力矩阵 |
-| 注册验签在 Core.dll | 官方构建内置离线验签（ECDsa P-256）；社区源码编译出的构建无激活入口（`IsFullImplementation=false` 口径） | registration/core.rs |
+| 注册验签在 Core.dll | 正式发布构建内置离线验签（ECDsa P-256）；公开仓收紧版源码自编译的构建无激活入口（`IsFullImplementation=false` 口径） | registration/core.rs |
 
 **能力矩阵（公开口径）必须整表随 README 发布**——「不支持什么」与「支持什么」同等重要，
 来源：主仓 `ifreeSftp\README.md` 的能力矩阵节，更新时同步。
@@ -73,15 +73,15 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
    其余声明点全部向它对齐：README 双语徽章 `badge/version-x.y.z-`、CHANGELOG 双语 `## [x.y.z]` 节。
 2. **发版前必跑** `.\tools\check-version.ps1`（build.ps1 release 已自动挂钩，不一致即 FAIL 阻塞）；
    官网 website\ 目录缺失时对应项自动 SKIP，README/CHANGELOG 项缺失 FAIL。
-3. **发布物（2026-11-08 口径更新，DECISIONS.md D-018）**：产品唯一、按平台分 3 个发布版本，
+3. **发布物（2026-11-08 口径更新，DECISIONS.md D-018/D-021）**：产品唯一、按平台分 3 个发布版本，
    **3 版全部为 official 构建（含注册功能）**，全部在主仓本机编译后**手动上传**——公开 CI
-   不持有 ifree-core，不出官方构建（与 C#「发布 exe 不走 CI」同规则）：
+   不持有 ifree-core，不出正式发布构建（与 C#「发布 exe 不走 CI」同规则）：
    - `iFreeSftp-vX.Y.Z-win-x64.zip`（内含单个 official `ifreeSftp.exe`）→ GitHub Release；
    - 微软商店包 `iFreeSftp-X.Y.Z.0-x64.msix`（**主仓** `tools\make-msix.ps1 -Official` 产出——
      打包工具与 worker 同属运营工具，永不进公开仓；未签名，Store
      提交时 Partner Center 重签）；
-   - Linux 版 `iFreeSftp-vX.Y.Z-linux-x64.tar.gz`（official 构建；构建环境待定案——
-     私有 runner / 本机 Ubuntu / 放宽 CI 红线，见主仓 DECISIONS.md D-018 跟进）。
+   - Linux 版 `iFreeSftp-vX.Y.Z-linux-x64.tar.gz`（official 构建；主仓本机 zigbuild 交叉编译，
+     glibc 目标 2.39 = Ubuntu 24.04，见主仓 DECISIONS.md D-018/D-021）。
    公开仓 `.\build.ps1 release` 的产物是**公示源码验证构建**（无 official feature），
    不作为发布物上传。商店包身份沿用 C# 版 Partner Center 真实值
    （`iFrees.iFreeSftp` / `CN=029857DD-…`），提交时无需改。
@@ -111,7 +111,7 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
    双语（新节或 Unreleased 节）。
 3. 改版本号时：Cargo.toml（主仓）→ 同步 → README 徽章 ×2 → CHANGELOG 节 ×2，跑 check-version。
 4. 跑 `..\sync-to-github.ps1`（源码镜像，幂等）。
-5. 公开仓内验证：`.\build.ps1 build`（社区模式克隆可编译）+ `cargo test --offline`。
+5. 公开仓内验证：`.\build.ps1 build`（源码模式克隆可编译）+ `cargo test --offline`。
 6. 公开仓 git commit；发版时打 tag、上传发布物（Win64 zip / MSIX / Linux tar.gz，均为
    主仓 official 构建产物，见 §4-3）、贴 CHANGELOG。
 
@@ -119,13 +119,13 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 
 - `src\main.rs` 顶层的 `#[cfg(feature = "official")] #[path = "../../ifree-core/src/lib.rs"]`
   （`pub(crate) mod ifree_core`）是**唯一**闭源并入点，registration 与 transfer 两层共用；
-  社区构建不启用该 feature，`#[path]` 指向的目录在公开仓不存在也零编译。
-- 公开仓 CI 只跑社区模式（`cargo build && cargo test`）；任何把 ifree-core 源码、私钥、
+  源码模式不启用该 feature，`#[path]` 指向的目录在公开仓不存在也零编译。
+- 公开仓 CI 只跑源码模式（`cargo build && cargo test`）；任何把 ifree-core 源码、私钥、
   keygen 引入本仓的改动都是违规，直接拒绝。
 - 服务端直达复制（core `ServerCopyAsync`，C# FullTransferCore）已移植：决策逻辑
   （命令组装/CP_OK 判定/600s 超时）在 `ifree-core\`（闭源），trait/Stub/调度在主仓
-  （公开，`src\transfer\core.rs`）；社区构建显式提示「仅官方构建」，保底路径 = 本地
-  中转。公开仓 README 对应能力行在官方构建**发布后**才可改为「已支持」。
+  （公开，`src\transfer\core.rs`）；源码编译版显式提示激活组件未随源码分发、改走两步
+  传输，保底路径 = 本地中转。公开仓 README 对应能力行在正式发布版**发布后**才可改为「已支持」。
 
 ## 7. 未尽事宜（open items，处理一条勾一条）
 
@@ -135,13 +135,13 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
       未定前 README 的 Releases/官网链接按沿用填写，定案后如变更需改 README ×2 处链接。
 - [ ] **首个 Release 实测**：tag → 手动上传 zip → 下载验签（objdump 导入表核对 D-019）全流程未走过一遍。
 - [x] ~~MSIX 打包~~ **已继承**（脚本与模板/图标资产住**主仓** `tools\{make-msix.ps1, msix\}`——
-      与 worker 同为运营工具不公开；0.9.0.0 官方包已产出并解包验证）；
+      与 worker 同为运营工具不公开；0.9.0.0 商店包已产出并解包验证）；
       商店提交为人工步骤（见 §4.6）。Store listing 的截图仍依赖本清单第 1 条。
 - [ ] **官网联动**：ifrees.top 下载链接/changelog 页是否同步 Rust 版版本号（check-version 的
       website 项现为 SKIP，接通后从 SKIP 变 FAIL 校验）。
 - [ ] **隐私政策页**：C# README/导入向导提及隐私政策链接，Rust 公开仓需对应页面或链接。
 - [ ] **对比表更新**：对比表「服务端直达」行标为「规划中」，core ServerCopy 移植发布后改回「✓」
       （§6），并同步官网对比区（如有）。
-- [ ] **社区构建激活口径**：README 已写「社区构建无激活入口」，需在注册页 UI 文案再核对一遍
-      （社区构建打开注册页的提示与 README 一致）。
+- [ ] **源码编译版激活口径**：README 已写明激活模块仅含于 ifrees.top 发布版，需在注册页
+      UI 文案再核对一遍（源码编译版打开注册页的提示与 README 一致）。
 - [ ] **同步脚本回归**：sync-to-github.ps1 首跑已验证；主仓新增公开目录时更新本文 §2 白名单并重跑。

@@ -94,7 +94,7 @@ pub(crate) enum RegEvent {
 pub(crate) enum ActivateResult {
     /// 验签通过（状态已入 RegState，读 state() 展示；载荷供测试断言）。
     Success(#[allow(dead_code)] VerifyResult),
-    /// 社区构建无激活能力（RegErrOfficialOnly）。
+    /// 源码编译版无激活能力（RegErrOfficialOnly）。
     OfficialOnly,
     /// 验签失败（UI 按 ErrorKind 映射 RegErrSignature/RegErrExpired/RegErrFormat）。
     VerifyFail(ErrorKind),
@@ -192,7 +192,7 @@ impl Registration {
 
     /// C# TryActivateCore：验签 + 落盘 + 内存态 + StateChanged。
     fn try_activate_core(&self, code: &str, save: bool) -> ActivateResult {
-        // 验签真实现随闭源核心分发；社区构建（Stub）无激活能力
+        // 验签真实现随闭源核心分发；源码编译版（Stub）无激活能力
         if !self.core.is_full() {
             return ActivateResult::OfficialOnly;
         }
@@ -467,7 +467,7 @@ mod tests {
         p
     }
 
-    /// 测试实例：Stub 核心（社区构建语义）+ temp DPAPI 存储 + temp 缓存。
+    /// 测试实例：Stub 核心（源码编译版语义）+ temp DPAPI 存储 + temp 缓存。
     fn test_reg(tag: &str) -> Arc<Registration> {
         Registration::with_parts(
             core::make_core(),
@@ -725,16 +725,16 @@ mod tests {
         assert_eq!(json, r#"{"ok":true}"#);
     }
 
-    /// 社区构建判据：激活被拒（官方构建限定），存储不写入。
-    /// （官方构建同输入走真验签 → Format，属另一条路径，不适用本断言。）
+    /// 源码编译版判据：激活被拒（OfficialOnly），存储不写入。
+    /// （正式发布构建同输入走真验签 → Format，属另一条路径，不适用本断言。）
     #[cfg(not(feature = "official"))]
     #[test]
-    fn activate_official_only_on_community_build() {
+    fn activate_official_only_on_source_build() {
         let reg = test_reg("activate");
-        // Stub 核心：激活被拒（官方构建限定），存储不写入
+        // Stub 核心：激活被拒（OfficialOnly），存储不写入
         match reg.activate(" IFREE1.x.y ") {
             ActivateResult::OfficialOnly => {}
-            _ => panic!("社区构建应返回 OfficialOnly"),
+            _ => panic!("源码编译版应返回 OfficialOnly"),
         }
         assert!(reg.store.load_code().is_none());
         assert!(!reg.state().registered);
@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(reg.state(), RegState::default());
     }
 
-    /// 官方核心替身（is_full=true + 验签恒过）：绕开 feature 限制测激活链路。
+    /// Full 核心替身（is_full=true + 验签恒过）：绕开 feature 限制测激活链路。
     struct FullCore;
 
     impl RegistrationCore for FullCore {

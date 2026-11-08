@@ -1,5 +1,5 @@
-# 开源仓库 CI：push / PR 时社区模式编译 + 测试验证
-# 发布版 exe 不走 CI：ifree-core（闭源官方 feature）不在本仓库，
+# 开源仓库 CI：push / PR 时源码模式（source mode）编译 + 测试验证
+# 发布版 exe 不走 CI：ifree-core（闭源 official feature 组件）不在本仓库，
 # 维护者本机 build.ps1 release 编译后手动上传 GitHub Release（见 MIGRATION.md §4）。
 name: build
 
@@ -22,10 +22,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build (Debug, community mode)
+      - name: Build (Debug, source mode)
         shell: pwsh
         run: cargo build --locked
 
-      - name: Test (community mode)
+      - name: Test (source mode)
         shell: pwsh
         run: cargo test --locked

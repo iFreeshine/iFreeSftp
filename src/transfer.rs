@@ -722,20 +722,20 @@ async fn run_kind(
             if let Err(e) = ensure_conn(profile, conn, conn_of).await {
                 return Outcome::Failed(e);
             }
-            // 传输核心三层（C# ITransferCore）：Stub（社区构建）显式提示「仅官方构建」，
+            // 传输核心三层（C# ITransferCore）：Stub（源码编译版）显式提示「不含服务端直达复制组件」，
             // 远程→远程保底路径 = 本地中转（RelayFile/RelayDir，用户改用两步拖拽即得）；
-            // 官方构建走闭源决策逻辑（C# FullTransferCore）：命令组装 + CP_OK 回执判定
+            // 正式发布构建走闭源决策逻辑（C# FullTransferCore）：命令组装 + CP_OK 回执判定
             // （防 Windows 服务器 shell 下 cp 非法但 exit=0 误判成功——比旧实现增强）+
             // 600s 超时（C# ServerCopyTimeoutSeconds）。退出码非 0 / 无回执即失败，
             // 不回退本地中转（C# S7.2 实际语义）。
             let core = core::make_transfer_core();
             if !core.is_full() {
-                return Outcome::Failed(t("服务端直达复制仅官方构建可用；社区构建请分两步传输（先下载到本机，再上传到目标）").into());
+                return Outcome::Failed(t("此源码编译版不含服务端直达复制组件；请分两步传输（先下载到本机，再上传到目标）").into());
             }
             let cmd = match core.server_copy_cmd(&src, &dst, is_dir, merge) {
                 Ok(c) => c,
                 Err(_) => {
-                    return Outcome::Failed(t("服务端直达复制仅官方构建可用；社区构建请分两步传输（先下载到本机，再上传到目标）").into());
+                    return Outcome::Failed(t("此源码编译版不含服务端直达复制组件；请分两步传输（先下载到本机，再上传到目标）").into());
                 }
             };
             let timeout = core.server_copy_timeout_secs();

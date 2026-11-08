@@ -20,8 +20,8 @@ mod theme;
 mod transfer;
 mod ui;
 
-/// 闭源 ifree-core 唯一并入点（官方构建专用，registration/transfer 共用；
-/// 目录缺席时绝不编译到本模块——社区源码零引用完整可编译）。
+/// 闭源 ifree-core 唯一并入点（正式发布构建专用，registration/transfer 共用；
+/// 目录缺席时绝不编译到本模块——不带 official 的源码零引用完整可编译）。
 #[cfg(feature = "official")]
 #[path = "../../ifree-core/src/lib.rs"]
 pub(crate) mod ifree_core;
@@ -31,7 +31,7 @@ const DEFAULT_SIZE: [f32; 2] = [1280.0, 800.0];
 const MIN_SIZE: [f32; 2] = [900.0, 600.0];
 
 /// 拉丁字体：按需从 devSource 落地项目内（src/assets/fonts/），编译期嵌入
-/// （D-018：devSource 不给项目提供依赖，运行时零路径引用）。
+/// （D-022：devSource 不给项目提供依赖，运行时零路径引用）。
 /// 只装正体一款：egui 0.37 不按 weight 选字体（`strong()` 仅变色），
 /// 且 C# 版全程 Regular 无 Bold 用量；SemiBold 仅品牌名用，走独立 Name family。
 const LATIN_FONT: &[u8] = include_bytes!("assets/fonts/Inter-Regular.ttf");
@@ -210,7 +210,7 @@ fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
     // 正体插入 Proportional 队首；品牌 SemiBold 注册独立 family（显式选用才生效）。
-    // 编译期嵌入（D-018），无运行时文件读取与失配分支。
+    // 编译期嵌入（D-022），无运行时文件读取与失配分支。
     fonts.font_data.insert(
         "inter".to_owned(),
         Arc::new(egui::FontData::from_owned(LATIN_FONT.to_vec())),

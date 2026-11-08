@@ -2,7 +2,7 @@
 # Usage:
 #   .\build.ps1              # Debug build
 #   .\build.ps1 build        # Debug build
-#   .\build.ps1 test         # cargo test (community mode)
+#   .\build.ps1 test         # cargo test (source mode)
 #   .\build.ps1 run          # Build and run (Debug)
 #   .\build.ps1 release      # Version checks, then Release build -> release\ifreeSftp-<ver>-win64.exe
 #                            #   (source-verification build only, NOT a release artifact)
@@ -10,9 +10,9 @@
 #
 # Note: the `official` cargo feature (offline registration verification) requires the
 # private closed-source ifree-core module and is intentionally NOT exposed here.
-# Release artifacts (Win64 zip / Microsoft Store MSIX / Linux tar.gz) are official
-# builds produced on the maintainer machine (private repo) and uploaded manually -
-# CI never produces official builds (same rule as the C# edition).
+# Release artifacts (Win64 zip / Microsoft Store MSIX / Linux tar.gz) are release
+# builds (with the official feature) produced on the maintainer machine (private repo)
+# and uploaded manually - CI never produces release builds (same rule as the C# edition).
 
 param(
     [ValidateSet('build', 'test', 'run', 'release', 'clean')]
@@ -31,14 +31,14 @@ function Get-AppVersion {
 }
 
 function Invoke-Build {
-    Write-Host '==> cargo build (Debug, community mode)' -ForegroundColor Cyan
+    Write-Host '==> cargo build (Debug, source mode)' -ForegroundColor Cyan
     & cargo build --offline
     if ($LASTEXITCODE -ne 0) { throw "build failed, exit code $LASTEXITCODE" }
     Write-Host '==> Build OK' -ForegroundColor Green
 }
 
 function Invoke-Test {
-    Write-Host '==> cargo test (community mode)' -ForegroundColor Cyan
+    Write-Host '==> cargo test (source mode)' -ForegroundColor Cyan
     & cargo test --offline
     if ($LASTEXITCODE -ne 0) { throw "test failed, exit code $LASTEXITCODE" }
     Write-Host '==> Test OK' -ForegroundColor Green
@@ -65,7 +65,7 @@ function Invoke-Release {
     if (-not (Test-Path $exe)) { throw "output not found: $exe" }
     Copy-Item $exe (Join-Path $outDir "ifreeSftp-$ver-win64.exe") -Force
     Write-Host "==> Release OK: release\ifreeSftp-$ver-win64.exe" -ForegroundColor Green
-    Write-Host '    (GitHub Release 附件请连同 zip 打包; 上传为维护者手工步骤, CI 不出官方构建)'
+    Write-Host '    (GitHub Release 附件请连同 zip 打包; 上传为维护者手工步骤, CI 不出正式发布构建)'
 }
 
 function Invoke-Clean {

@@ -23,7 +23,7 @@ coverage/
 # 字体原件、参考主题、竞品安装包都在这里；构建产物不依赖它
 devSource/
 
-# ---- 字体原件（devSource/ 已整体忽略；所需字体按需落地项目内后放行，D-018）----
+# ---- 字体原件（devSource/ 已整体忽略；所需字体按需落地项目内后放行，D-022）----
 src/assets/fonts/_src/
 *.ttf
 *.otf

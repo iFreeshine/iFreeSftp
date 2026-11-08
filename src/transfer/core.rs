@@ -3,7 +3,7 @@
 //!
 //! C# 同构：本文件 = core-src iFreeSftp.Core.Abstractions（ITransferCore）；
 //! ifree-core/src/transfer.rs = iFreeSftp.Core FullTransferCore（闭源）；
-//! Stub（社区构建）= Core.Stub——服务端直达不可用，调度侧显式提示「仅官方构建」，
+//! Stub（源码编译版）= Core.Stub——服务端直达不可用，调度侧显式提示「不含服务端直达复制组件」，
 //! 远程→远程保底路径 = 本地中转（RelayFile/RelayDir，开源，C# 同形态）。
 //!
 //! trait 零 async：ServerCopy 的执行（exec 调用 + 600s 掐表）留在调度点
@@ -31,7 +31,7 @@ pub trait TransferCore: Send + Sync {
     fn server_copy_timeout_secs(&self) -> u64;
 }
 
-/// 社区构建存根（C# Core.Stub）：全部决策不可用，调度侧显式提示「仅官方构建」，
+/// 源码编译版存根（C# Core.Stub）：全部决策不可用，调度侧显式提示「不含服务端直达复制组件」，
 /// 远程→远程任务走本地中转保底路径。
 pub struct StubTransferCore;
 
@@ -50,8 +50,8 @@ impl TransferCore for StubTransferCore {
     }
 }
 
-/// 官方构建真实现：决策逻辑委托 ifree-core（C# FullTransferCore）。
-/// 仅 official 编译（社区源码无 ifree-core 目录，零引用完整可编译——registration 同范式）。
+/// 正式发布构建真实现：决策逻辑委托 ifree-core（C# FullTransferCore）。
+/// 仅 official 编译（源码编译版无 ifree-core 目录，零引用完整可编译——registration 同范式）。
 #[cfg(feature = "official")]
 pub struct OfficialTransferCore;
 
@@ -82,8 +82,8 @@ impl TransferCore for OfficialTransferCore {
     }
 }
 
-/// 装配入口（C# CoreEntry：社区=Stub / 官方=Full）。cfg! 分支在编译期折叠，
-/// 未选中的结构体名同样经 cfg 门控引用（社区构建无 OfficialTransferCore 符号）。
+/// 装配入口（C# CoreEntry：源码编译版=Stub / 正式发布构建=Full）。cfg! 分支在编译期折叠，
+/// 未选中的结构体名同样经 cfg 门控引用（源码编译版无 OfficialTransferCore 符号）。
 pub fn make_transfer_core() -> Box<dyn TransferCore> {
     #[cfg(feature = "official")]
     {
@@ -99,15 +99,15 @@ pub fn make_transfer_core() -> Box<dyn TransferCore> {
 mod tests {
     use super::*;
 
-    /// 社区/官方通用：Stub 语义（社区构建下 make_transfer_core 必装 Stub）。
-    /// 不含任何官方命令字面量——社区源码/二进制零出现 cp 命令串。
+    /// 无 official/有 official 通用：Stub 语义（源码编译版下 make_transfer_core 必装 Stub）。
+    /// Stub 不含任何 cp 命令字面量——源码编译版源码/二进制零出现 cp 命令串。
     #[test]
     fn stub_gates_server_copy() {
         let core = make_transfer_core();
         if cfg!(feature = "official") {
             assert!(core.is_full());
         } else {
-            // 显式门禁 + 恒不判定成功（调度侧据此走「仅官方构建」提示）
+            // 显式门禁 + 恒不判定成功（调度侧据此走「不含服务端直达复制组件」提示）
             assert!(!core.is_full());
             assert_eq!(
                 core.server_copy_cmd("/a", "/b", true, false),
@@ -117,8 +117,8 @@ mod tests {
         }
     }
 
-    /// 官方构建专用：装配层拿到的是闭源决策逻辑（C# FullTransferCore 委托）。
-    /// 社区编译整个 cfg 掉，命令串不出现在社区源码产物中。
+    /// 正式发布构建专用：装配层拿到的是闭源决策逻辑（C# FullTransferCore 委托）。
+    /// 无 official 时整个 cfg 掉，命令串不出现在源码编译版产物中。
     #[cfg(feature = "official")]
     #[test]
     fn official_offers_server_copy() {

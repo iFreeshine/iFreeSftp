@@ -20,7 +20,7 @@ ping -n 3 127.0.0.1 >nul
 rem NOTE: target/ is NOT deleted here. Incremental build relies on it.
 rem For a real clean use: powershell -File build.ps1 clean
 
-echo [2/3] Building (Debug, community mode)...
+echo [2/3] Building (Debug, source mode)...
 "%CARGO%" build --offline
 if errorlevel 1 (
     echo.

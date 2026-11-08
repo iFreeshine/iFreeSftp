@@ -400,8 +400,8 @@ pub fn t(zh: &'static str) -> &'static str {
         "本地同步路径" => "Local sync path",
         "本地文件系统" => "Local file system",
         "本地站点" => "Local site",
-        "本应用以 GNU AGPL-3.0 许可证开源发布。官方构建版额外集成了独立分发的增值组件；社区构建完全基于开源代码。" => {
-            "The app is released as open source under the GNU AGPL-3.0 license. Official builds additionally bundle separately distributed value-added components; community builds are made entirely from the open-source code."
+        "本应用以 GNU AGPL-3.0 许可证开源发布。ifrees.top 发布版额外集成了独立分发的增值组件，这些组件不包含在本仓库源码。" => {
+            "The app is released as open source under the GNU AGPL-3.0 license. The release from ifrees.top additionally bundles separately distributed value-added components that are not part of this repository's source."
         }
         "本次扫描中重复" => "Duplicate in this scan",
         "权限" => "Permissions",
@@ -450,8 +450,8 @@ pub fn t(zh: &'static str) -> &'static str {
         "源代码文件" => "Source Code File",
         "激活" => "Activate",
         "激活成功，感谢支持！" => "Activated. Thank you for your support!",
-        "激活需官方构建：社区构建不含注册模块，请使用 ifrees.top 发布版" => {
-            "Activation requires the official build: the community build does not include the registration module. Get the official release from ifrees.top"
+        "激活组件未随本仓库源码分发，请使用 ifrees.top 发布版" => {
+            "Activation is not included in this repository's source; use the release from ifrees.top"
         }
         "点击主机卡片连接时，右侧窗口的打开方式" => {
             "How the right pane opens when connecting from a host card"
@@ -610,8 +610,8 @@ pub fn t(zh: &'static str) -> &'static str {
         "正在连接…" => "Connecting…",
         "注册码格式错误" => "Invalid license key format",
         "源不是文件" => "Source is not a file",
-        "激活需官方构建：社区构建不含注册模块，请从官网下载正式版本。" => {
-            "Activation requires the official build: the community build has no licensing module. Download the official version from the website."
+        "激活组件未随本仓库源码分发，请从 ifrees.top 下载发布版。" => {
+            "Activation is not included in this repository's source; download the release from ifrees.top."
         }
         "版本 0.9.0（Rust 迁移版）" => "Version 0.9.0 (Rust migration)",
         "认证失败" => "Authentication failed",
@@ -709,8 +709,8 @@ pub fn t(zh: &'static str) -> &'static str {
         "连接超时（{0} 秒）" => "Connection timed out ({0} s)",
         // T6 第 2 轮补账（守卫修好字符字面量状态机后扫出的最后 1 条）
         "行 {0}, 列 {1}" => "Row {0}, Column {1}",
-        "服务端直达复制仅官方构建可用；社区构建请分两步传输（先下载到本机，再上传到目标）" => {
-            "Direct server-to-server copy is available in the official build only; in the community build, transfer in two steps (download locally, then upload to the target)"
+        "此源码编译版不含服务端直达复制组件；请分两步传输（先下载到本机，再上传到目标）" => {
+            "This source build does not include the server-to-server direct copy component; transfer in two steps (download to local, then upload to the target)"
         }
         _ => zh,
     }

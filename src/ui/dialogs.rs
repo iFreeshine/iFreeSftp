@@ -3550,7 +3550,7 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                             (t("激活成功，感谢支持！").to_owned(), true)
                         }
                         crate::registration::service::ActivateResult::OfficialOnly => (
-                            t("激活需官方构建：社区构建不含注册模块，请从官网下载正式版本。")
+                            t("激活组件未随本仓库源码分发，请从 ifrees.top 下载发布版。")
                                 .to_owned(),
                             false,
                         ),
@@ -3566,7 +3566,7 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                                     t("注册码已过期").to_owned()
                                 }
                                 // M-7：None = 验签失败但未带错误种类，映射为格式类
-                                //错误提示（不再 unreachable! 崩溃；社区构建/异常
+                                //错误提示（不再 unreachable! 崩溃；源码编译版/异常
                                 //载荷路径可达）。
                                 crate::registration::core::ErrorKind::None => {
                                     t("注册码格式错误").to_owned()
@@ -3794,7 +3794,7 @@ fn about_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         w,
         t("许可证"),
         t(
-            "本应用以 GNU AGPL-3.0 许可证开源发布。官方构建版额外集成了独立分发的增值组件；社区构建完全基于开源代码。",
+            "本应用以 GNU AGPL-3.0 许可证开源发布。ifrees.top 发布版额外集成了独立分发的增值组件，这些组件不包含在本仓库源码。",
         ),
         0.0,
         true,

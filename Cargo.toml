@@ -29,8 +29,8 @@ ureq = "2"
 # /v1/state 响应容错解析（C# JsonDocument 对应物）
 serde_json = "1"
 
-# 官方构建门控：--features official 经 #[path] 并入闭源 ifree-core 真验签；
-# 社区源码（无 ifree-core 目录）不带本 feature 编译，零引用、完整可编译。
+# 正式发布构建门控：--features official 经 #[path] 并入闭源 ifree-core 真验签；
+# 源码编译版（无 ifree-core 目录）不带本 feature 编译，零引用、完整可编译。
 [features]
 official = []
 

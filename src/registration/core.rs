@@ -1,18 +1,18 @@
 //! 注册体系分层（迁移自 C# Core.Abstractions / Core.Stub / core-src 装配）。
 //!
-//! 判据（交接 §1）：社区源码（无 ifree-core 目录、不带 official feature）
-//! `cargo build` 完整可编译，行为 = 源码编译版（激活提示"仅官方构建"、更新检查照常）。
+//! 判据（交接 §1）：源码编译版（无 ifree-core 目录、不带 official feature）
+//! `cargo build` 完整可编译，行为 = 源码编译版（激活提示"激活组件未随本仓库源码分发"、更新检查照常）。
 //! 注意：optional path dep 方案不可行——cargo 对缺席的 path 依赖在 feature
 //! 关闭时仍会解析报错（2026-11-06 实测）；故 official 经 `#[path]` 源码并入。
 //!
 //! - trait + Stub 在开源侧：Stub 不提供激活能力——验签真实现若随开源分发，
 //!   闭源即失去意义（C# CoreInterfaces.IRegistrationCore 注释同义）；
-//! - 官方构建 `--features official`：闭源 ifree-core 源码经 #[path] 并入真验签；
+//! - 正式发布构建 `--features official`：闭源 ifree-core 源码经 #[path] 并入真验签；
 //! - 装配点 make_core() 镜像 C# CoreEntry.CreateRegistration / CoreServices.Registration。
 
 /// 验签失败种类（错误文案由调用方按种类映射本地化资源 —— C# RegistrationErrorKind）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // 社区构建仅构造 Format；None/Signature/Expired 随 official 验签路径与 C# 对齐保留
+#[allow(dead_code)] // 源码编译版仅构造 Format；None/Signature/Expired 随 official 验签路径与 C# 对齐保留
 pub enum ErrorKind {
     None,
     /// 前缀/分段/Base64/载荷布局非法
@@ -39,13 +39,13 @@ pub struct VerifyResult {
 /// 注册核心（闭源模块边界）：ECDsa P-256 验签、注册码 payload 解析
 /// （公钥内嵌核心，离线可用 —— C# IRegistrationCore）。
 pub trait RegistrationCore: Send + Sync {
-    /// 当前实现是否提供激活能力。Stub=false → 注册页提示使用官方构建。
+    /// 当前实现是否提供激活能力。Stub=false → 注册页提示使用 ifrees.top 发布版。
     fn is_full(&self) -> bool;
     /// 验签 + 解析注册码（IFREE1.<签名>.<载荷>）。失败时 ok=false 并给出错误种类。
     fn verify(&self, code: &str) -> VerifyResult;
 }
 
-/// 社区构建（无 official）：验签恒失败 Format，激活不可用 —— C# StubRegistrationCore。
+/// 源码编译版（无 official）：验签恒失败 Format，激活不可用 —— C# StubRegistrationCore。
 #[cfg(not(feature = "official"))]
 struct StubCore;
 
