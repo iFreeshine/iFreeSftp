@@ -65,7 +65,7 @@ Requirements: Windows and [Rust](https://rustup.rs) 1.99 (channel `stable-x86_64
 .\build.ps1 build      # Debug build (compiles out of the box)
 .\build.ps1 test       # cargo test
 .\build.ps1 run        # Build and run
-.\build.ps1 release    # Release source-verification build -> release\ifreeSftp-<ver>-win64.exe (runs version checks first; NOT a release artifact - official builds come from the private repo)
+.\build.ps1 release    # Release source-verification build -> release\ifreeSftp-<ver>-win64.exe (runs version checks first; NOT a release artifact - release builds come from the private repo)
 .\build.ps1 clean      # Clean
 ```
 
@@ -96,7 +96,7 @@ MIGRATION.md                   # Update & release rules for this repository (rea
 | Transfer | Drag & drop and context-menu transfer; directory transfers pack into one tar stream when the file count crosses the threshold (per-file fallback); resumable transfers; transfer queue with waiting/failed tabs and full re-run; directory loop and 128-level depth protection |
 | Post-transfer verification | Optional server-side hashing over the exec channel (SHA-256/512, SM3 via openssl); mismatched files are flagged failed; skipped when the command channel is unavailable (see capability matrix) |
 | Settings | Categories (appearance/connection/editor/transfer/registration), live-apply, persisted as JSON under `%LOCALAPPDATA%\iFreeSftp\` |
-| Supporter badge | Registration-code activation in official builds (offline ECDsa P-256 verification), gold "Supporter" badge, remote announcements; registration never changes functionality |
+| Supporter badge | Registration-code activation in the release from ifrees.top (offline ECDsa P-256 verification), gold "Supporter" badge, remote announcements (activation is not included in a build compiled from this repository's source); registration never changes functionality |
 | Localization | Chinese / English runtime switching, all strings bilingual |
 | Themes | Dark / light |
 | File editing | Built-in editor: content-sniffed "Edit" menu (first 8 KB probe, not extension lists), line numbers, find, undo; external editor supported |
