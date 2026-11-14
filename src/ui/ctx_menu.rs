@@ -70,6 +70,19 @@ pub struct CtxMenu {
     snapshot: Option<(egui::Id, egui::text_selection::CCursorRange)>,
 }
 
+/// 自动注册侧道：拿不到 `CtxMenu` 实例的输入框（dialogs::winui_text_box 等）
+/// show 后经 [`register_auto`] 上报 (id, rect)，frame_start 排空并入注册表。
+/// 生命周期与 `register()` 一致——命中测试用上一帧 rect（帧间稳定），每帧
+/// 重新上报。
+static AUTO_REG: std::sync::Mutex<Vec<(egui::Id, egui::Rect)>> = std::sync::Mutex::new(Vec::new());
+
+/// 输入框 show 后自注册右键菜单（复制/剪切/粘贴/全选，Crumb 项集）。
+pub(crate) fn register_auto(id: egui::Id, rect: egui::Rect) {
+    if let Ok(mut q) = AUTO_REG.lock() {
+        q.push((id, rect));
+    }
+}
+
 impl CtxMenu {
     /// 编辑框 show 后注册真实 id 与占位 rect（response.id 含 id_salt 包装）。
     /// 面包屑形态（含「全选」）。
@@ -105,6 +118,14 @@ impl CtxMenu {
     pub fn frame_start(&mut self, ctx: &egui::Context) {
         // 上一帧的提交豁免到此为止：旗标只护设置它的那一帧（show 尚未执行）。
         self.submit_guard = false;
+
+        // 自动注册侧道排空并入注册表（上一帧 register_auto 上报的输入框）：
+        // 与 register() 同生命周期——保持到下方命中测试之后、末尾 clear 收走，
+        // 本帧编辑帧重新上报/注册。rect 帧间稳定，命中测试用上一帧值同语义。
+        if let Ok(mut q) = AUTO_REG.lock() {
+            self.registry
+                .extend(q.drain(..).map(|(id, r)| (id, r, Kind::Crumb)));
+        }
 
         // pending 动作：推迟到指针完全无按压的帧执行（模块注释③）。
         let clear = !ctx.input(|i| i.pointer.any_down());

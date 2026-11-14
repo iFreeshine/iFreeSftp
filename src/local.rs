@@ -15,6 +15,160 @@ use std::path::{Path, PathBuf};
 use crate::i18n::{t, tfmt};
 use crate::ui::panes::{Entry, FilePane, SortKey};
 
+// ── CR-1：本地异步 I/O ─────────────────────────────────────────
+// UI 帧内只登记请求 + 置 loading；逐项 metadata 枚举与 Shell 删除一律在
+// `run_local` 所在的工作线程执行，回执由 `ui::poll_local_jobs` 帧尾入账。
+// 帧内唯一保留的一次文件系统调用是 `navigate` 的 `read_dir` 句柄探测
+// （判目录可进入，供同步浏览的成败分支使用），它不迭代、不取 metadata。
+
+/// 本地窗格待办请求，暂挂 `FilePane.pending_local`，帧尾由 `poll_local_jobs` 取走。
+#[derive(Clone, Debug)]
+pub enum LocalPaneReq {
+    /// 导航：线程枚举 path，回执后更新 path / 清空选中；失败按 old_path 回滚。
+    Navigate {
+        path: PathBuf,
+        old_path: Option<PathBuf>,
+    },
+    /// 刷新：回执按 keep（发起时的选中行名）保留选中；keep 为空即清空。
+    Refresh { path: PathBuf, keep: Vec<String> },
+    /// 删除：线程内逐项进回收站，随后同线程枚举 dir 作删后重列（不再回到帧内）。
+    Delete {
+        dir: PathBuf,
+        targets: Vec<String>,
+        keep: Vec<String>,
+    },
+}
+
+/// 工作线程回执。`entries = None` = 枚举失败（保持原列表，不静默清空）。
+pub struct LocalPaneReply {
+    pub req: LocalPaneReq,
+    pub entries: Option<Vec<Entry>>,
+    /// Delete 的逐项结果（(展示路径, 成败)）；其余请求为空。
+    pub deleted: Vec<(String, Result<(), String>)>,
+}
+
+impl LocalPaneReply {
+    /// 线程异常退出时的失败回执：仅用于清 loading / 回滚，不产生假成功汇总。
+    pub fn worker_gone(req: LocalPaneReq) -> Self {
+        Self {
+            req,
+            entries: None,
+            deleted: Vec::new(),
+        }
+    }
+}
+
+/// 线程体：本地文件系统 I/O 的唯一入口（`list_dir` / `delete_to_bin` 纯函数不动）。
+pub fn run_local(req: LocalPaneReq, show_hidden: bool) -> LocalPaneReply {
+    let mut deleted = Vec::new();
+    let path = match &req {
+        LocalPaneReq::Navigate { path, .. } | LocalPaneReq::Refresh { path, .. } => path.clone(),
+        LocalPaneReq::Delete { dir, targets, .. } => {
+            for name in targets {
+                let p = dir.join(name);
+                let shown = p.to_string_lossy().into_owned();
+                deleted.push((shown, delete_to_bin(&p)));
+            }
+            dir.clone()
+        }
+    };
+    let entries = list_dir(&path, show_hidden);
+    LocalPaneReply {
+        req,
+        entries,
+        deleted,
+    }
+}
+
+/// 删除日志（纯函数）：逐项成功留痕、失败可定位；**部分失败绝不写「已删除 N 项」**。
+pub fn delete_log_lines(results: &[(String, Result<(), String>)]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut fails: Vec<(&String, &String)> = Vec::new();
+    for (shown, r) in results {
+        match r {
+            Ok(()) => out.push(tfmt("[本地] 已删除 {0}", &[shown])),
+            Err(e) => fails.push((shown, e)),
+        }
+    }
+    if fails.len() > 1 {
+        let detail = fails
+            .iter()
+            .map(|(p, e)| format!("{p}（{e}）"))
+            .collect::<Vec<_>>()
+            .join("、");
+        out.push(tfmt(
+            "[本地] 批量删除失败 {0} 项：{1}",
+            &[&fails.len(), &detail],
+        ));
+    } else if let Some((shown, e)) = fails.first() {
+        out.push(tfmt("[本地] 删除失败 {0}：{1}", &[shown, e]));
+    }
+    out
+}
+
+/// 帧内回执入账：纯内存，不碰文件系统。返回需写入终端的删除日志行。
+pub fn apply_local(pane: &mut FilePane, reply: LocalPaneReply) -> Vec<String> {
+    let is_delete = matches!(reply.req, LocalPaneReq::Delete { .. });
+    let logs = if is_delete {
+        delete_log_lines(&reply.deleted)
+    } else {
+        Vec::new()
+    };
+    // CR-1 竞态：请求发出后用户已导航到别处（或回「此电脑」根），旧回执不得
+    // 用旧目录内容覆盖当前窗格（ADR-031「骗」级）。远程侧由 tag + tab.wait
+    // 处理，本地侧按请求目录与当前 path 比对；删除日志仍照常入账。
+    let req_path = match &reply.req {
+        LocalPaneReq::Navigate { path, .. } | LocalPaneReq::Refresh { path, .. } => path,
+        LocalPaneReq::Delete { dir, .. } => dir,
+    };
+    if pane.path.as_ref() != Some(req_path) {
+        return logs;
+    }
+    pane.loading = false;
+    pane.loading_label = None;
+    let Some(entries) = reply.entries else {
+        // 枚举失败：保持原列表（同旧 navigate / refresh 语义），但显式提示不静默。
+        if let LocalPaneReq::Navigate { old_path, .. } = &reply.req {
+            pane.path = old_path.clone();
+        }
+        pane.msg = Some(t("目录读取失败").to_owned());
+        return logs;
+    };
+    pane.msg = None;
+    match &reply.req {
+        LocalPaneReq::Navigate { path, .. } => {
+            pane.path = Some(path.clone());
+            pane.entries = entries;
+            pane.selected.clear();
+            pane.sel_anchor = None;
+        }
+        LocalPaneReq::Refresh { keep, .. } | LocalPaneReq::Delete { keep, .. } => {
+            pane.entries = entries;
+            pane.selected = pane
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| keep.contains(&e.name))
+                .map(|(i, _)| i)
+                .collect();
+        }
+    }
+    if is_delete {
+        // 删除影响树中目录名 → 重建路径树（旧 apply_delete 同款）。
+        crate::ui::panes::tree_mark_dirty(pane);
+    }
+    apply_sort(pane);
+    logs
+}
+
+/// 发起请求时快照选中行名（回执后按名回映射，被删 / 改名的行自然落选）。
+pub fn selected_names(pane: &FilePane) -> Vec<String> {
+    pane.selected
+        .iter()
+        .filter_map(|&i| pane.entries.get(i).map(|e| e.name.clone()))
+        .collect()
+}
+
 // ── 导航 ──────────────────────────────────────────────────────
 
 /// 进入「此电脑」根（驱动器列表；C# NavigateLocalRoot）。
@@ -22,18 +176,30 @@ pub fn navigate_root(pane: &mut FilePane) {
     pane.path = None;
     pane.entries = list_drives();
     pane.selected.clear();
+    // CR-1：回根是同步的（GetLogicalDrives 位掩码，不逐项枚举）。清掉在途标记，
+    // 否则旧目录请求被丢弃后其过期回执无人清 loading，窗格会永久卡「加载中…」。
+    pane.pending_local = None;
+    pane.loading = false;
+    pane.loading_label = None;
+    pane.msg = None;
     apply_sort(pane);
 }
 
 /// 导航到目录：成功才更新 path/entries；失败保持原状（面包屑输错回车不出错页）。
+/// CR-1：帧内只探测一次目录句柄，逐项枚举交工作线程；path 乐观更新、回执失败回滚。
+/// 返回值语义不变（供同步浏览判成败），因此 10 处调用点与 `sync.rs` 无需改动。
 pub fn navigate(pane: &mut FilePane, path: &Path) -> bool {
-    let Some(entries) = list_dir(path, pane.show_hidden) else {
+    if std::fs::read_dir(path).is_err() {
         return false;
-    };
+    }
+    let old_path = pane.path.clone();
     pane.path = Some(path.to_path_buf());
-    pane.entries = entries;
-    pane.selected.clear();
-    apply_sort(pane);
+    pane.pending_local = Some(LocalPaneReq::Navigate {
+        path: path.to_path_buf(),
+        old_path,
+    });
+    pane.loading = true;
+    pane.loading_label = None;
     true
 }
 
@@ -41,29 +207,15 @@ pub fn navigate(pane: &mut FilePane, path: &Path) -> bool {
 /// 比 C# 更好：重列后按名称保留原选中（C# EnterLocalPath 重列一律清空）——
 /// 刷新语义下用户选中的文件不因重列丢失；被删/改名的行自然落选。
 pub fn refresh(pane: &mut FilePane) {
-    let Some(p) = pane.path.clone() else {
+    let Some(path) = pane.path.clone() else {
         navigate_root(pane);
         return;
     };
-    // 读失败保持原状（同 navigate 语义：面包屑/列表不出错页）。
-    let Some(entries) = list_dir(&p, pane.show_hidden) else {
-        return;
-    };
-    // 旧选中行名集合 → 新列表按名回映射（重列同一目录）。
-    let names: std::collections::HashSet<String> = pane
-        .selected
-        .iter()
-        .filter_map(|&i| pane.entries.get(i).map(|e| e.name.clone()))
-        .collect();
-    pane.entries = entries;
-    pane.selected = pane
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| names.contains(&e.name))
-        .map(|(i, _)| i)
-        .collect();
-    apply_sort(pane);
+    // CR-1：原「读失败保持原状」由回执里的 entries=None 分支承接；帧内不枚举。
+    let keep = selected_names(pane);
+    pane.pending_local = Some(LocalPaneReq::Refresh { path, keep });
+    pane.loading = true;
+    pane.loading_label = None;
 }
 
 // ── 排序 ──────────────────────────────────────────────────────
@@ -73,14 +225,35 @@ pub fn apply_sort(pane: &mut FilePane) {
     sort_entries(&mut pane.entries, pane.sort_col, pane.sort_asc);
 }
 
+/// 大小写不敏感比较（C# StringComparer.OrdinalIgnoreCase 类语义，T19-4 对齐
+/// FileView ApplySort :1422-1433）：逐字符 Unicode 小写折叠后按码位比较。
+/// ASCII 与常见中西文下与 OrdinalIgnoreCase 排序结果一致；完全等价的大小写
+/// 变体（"Aa"/"aa"）判等后交由稳定排序保持原序（C# LINQ OrderBy 亦稳定）。
+fn cmp_ignore_case(a: &str, b: &str) -> std::cmp::Ordering {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
+}
+
 /// 目录恒在前（升降序同），其余按键；同键回退按名称。
+/// 名称/类型键及全部名称回退为大小写不敏感（T19-4）：本地与远程列表共用本
+/// 函数（表头点击 panes.rs / 列表到达 ui::mod Ev::Listing / 同步浏览 sync.rs
+/// 均走 apply_sort），C# FileView 双侧 ApplySort 同为 OrdinalIgnoreCase。
 pub fn sort_entries(entries: &mut [Entry], key: SortKey, asc: bool) {
     entries.sort_by(|a, b| {
         let ord = match key {
-            SortKey::Name => a.name.cmp(&b.name),
-            SortKey::Size => a.size_bytes.cmp(&b.size_bytes).then(a.name.cmp(&b.name)),
-            SortKey::Type => a.kind.cmp(&b.kind).then(a.name.cmp(&b.name)),
-            SortKey::Modified => a.modified.cmp(&b.modified).then(a.name.cmp(&b.name)),
+            SortKey::Name => cmp_ignore_case(&a.name, &b.name),
+            SortKey::Size => a
+                .size_bytes
+                .cmp(&b.size_bytes)
+                .then(cmp_ignore_case(&a.name, &b.name)),
+            SortKey::Type => {
+                cmp_ignore_case(&a.kind, &b.kind).then(cmp_ignore_case(&a.name, &b.name))
+            }
+            SortKey::Modified => a
+                .modified
+                .cmp(&b.modified)
+                .then(cmp_ignore_case(&a.name, &b.name)),
         };
         b.is_dir
             .cmp(&a.is_dir)
@@ -116,7 +289,9 @@ fn create_entry(pane: &mut FilePane, base: &str, is_dir: bool) {
     }
     // C# :2045 创建后仅 RefreshListKeepingPath（不选中、无内联重命名）；
     // 首行 RefreshTreeIfVisible → 重建路径树（保留展开）。
-    navigate(pane, &root);
+    // CR-1：重列交工作线程（keep 为空 = 清空选中，同旧 navigate 语义）。
+    pane.selected.clear();
+    refresh(pane);
     crate::ui::panes::tree_mark_dirty(pane);
 }
 
@@ -336,6 +511,23 @@ pub(crate) fn now_hms() -> String {
         + tz_offset_secs();
     let tod = secs.rem_euclid(86_400);
     format!("{:02}:{:02}:{:02}", tod / 3600, (tod % 3600) / 60, tod % 60)
+}
+
+/// 当前本地时间戳 yyyyMMdd-HHmmss（损坏存档备份文件名用；C# `DateTime.Now:yyyyMMdd-HHmmss` 同式）。
+pub(crate) fn now_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        + tz_offset_secs();
+    let (y, mo, d) = civil_from_days(secs.div_euclid(86_400));
+    let tod = secs.rem_euclid(86_400);
+    format!(
+        "{y:04}{mo:02}{d:02}-{:02}{:02}{:02}",
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
 }
 
 // ── 系统打开（C# OpenEntry 文件分支：默认关联程序）─────────────
@@ -814,5 +1006,189 @@ mod format_tests {
         assert_eq!(format_size(1536), "1.5 KB");
         assert_eq!(format_size(1_048_576), "1 MB");
         assert_eq!(format_size(1_610_612_736), "1.5 GB");
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::{cmp_ignore_case, sort_entries};
+    use crate::ui::panes::{Entry, SortKey};
+
+    fn e(name: &str, kind: &str) -> Entry {
+        Entry {
+            name: name.to_owned(),
+            is_dir: false,
+            size: String::new(),
+            kind: kind.to_owned(),
+            modified: String::new(),
+            perms: String::new(),
+            size_bytes: 0,
+            mtime_secs: 0,
+        }
+    }
+
+    /// T19-4：名称排序大小写不敏感（C# FileView ApplySort :1422-1433
+    /// StringComparer.OrdinalIgnoreCase）。混合序列断言：字节序会把 "Aa"/"Bb"
+    /// （0x41/0x42）排在 "a c"（0x61）前；不敏感语义下 "a c" < "Aa" == "aa" <
+    /// "Bb"（空格 0x20 < 'a' 0x61），判等项由稳定排序保持原序。
+    #[test]
+    fn name_sort_case_insensitive() {
+        let mut es = vec![e("Bb", ""), e("a c", ""), e("Aa", ""), e("aa", "")];
+        sort_entries(&mut es, SortKey::Name, true);
+        let got: Vec<&str> = es.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(got, ["a c", "Aa", "aa", "Bb"]);
+    }
+
+    /// 类型键同理：kind 比较不敏感，组内回退名称亦不敏感。
+    #[test]
+    fn type_sort_case_insensitive() {
+        let mut es = vec![e("b", "TXT"), e("A", "txt"), e("C", "zip"), e("D", "")];
+        sort_entries(&mut es, SortKey::Type, true);
+        let got: Vec<&str> = es.iter().map(|x| x.name.as_str()).collect();
+        // kind 不敏感归组："TXT"=="txt"（组内按名 A < b）、""（空）<"txt"<"zip"。
+        assert_eq!(got, ["D", "A", "b", "C"]);
+    }
+
+    /// 降序：仅键倒置，目录恒在前（C# OrderByDescending(IsDirectory) 同）。
+    #[test]
+    fn desc_keeps_dirs_first() {
+        let mut es = vec![e("b", ""), e("d", "")];
+        es[0].is_dir = true;
+        sort_entries(&mut es, SortKey::Name, false);
+        assert_eq!(es[0].name, "b");
+        assert_eq!(es[1].name, "d");
+    }
+
+    /// cmp_ignore_case 基础语义：等价大小写变体判等；空格按码位参与比较。
+    #[test]
+    fn cmp_ignore_case_basic() {
+        assert_eq!(cmp_ignore_case("Aa", "aa"), std::cmp::Ordering::Equal);
+        assert_eq!(cmp_ignore_case("a c", "Aa"), std::cmp::Ordering::Less);
+        assert_eq!(cmp_ignore_case("Bb", "a c"), std::cmp::Ordering::Greater);
+    }
+}
+
+#[cfg(test)]
+mod cr1_io_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    /// CR-10 教训：Windows 上 cargo test 默认并行，固定临时文件名会互抢
+    /// （os error 5 / error 32）。pid + 进程内序号保证独占。
+    fn fixture_dir() -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("ifreesftp-cr1-{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+
+    /// 钉子①：帧内只登记请求，不做逐项枚举；列表由工作线程回执填入。
+    #[test]
+    fn navigate_registers_request_without_frame_enumeration() {
+        let dir = fixture_dir();
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        std::fs::write(dir.join("b.txt"), b"b").unwrap();
+        let mut pane = FilePane::default();
+        assert!(navigate(&mut pane, &dir), "目录可进入");
+        assert!(pane.pending_local.is_some(), "帧内只登记请求");
+        assert!(pane.loading, "在途须可见");
+        assert!(pane.entries.is_empty(), "帧内不得做逐项枚举");
+
+        let req = pane.pending_local.take().unwrap();
+        let reply = run_local(req, pane.show_hidden);
+        assert_eq!(reply.entries.as_ref().map(|v| v.len()), Some(2));
+        let logs = apply_local(&mut pane, reply);
+        assert!(logs.is_empty(), "非删除请求不产生删除日志");
+        assert_eq!(pane.entries.len(), 2, "回执才填列表");
+        assert!(!pane.loading, "回执清 loading");
+        assert_eq!(pane.path, Some(dir.clone()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 钉子②：枚举失败回滚路径、显式报错，绝不静默清空 / 假装成功。
+    #[test]
+    fn failed_read_restores_path_and_shows_message() {
+        let dir = fixture_dir();
+        let old = dir.join("old");
+        let target = dir.join("gone");
+        let mut pane = FilePane::default();
+        // 真实 navigate 会乐观把 path 置为目标；夹具须还原该状态，
+        // 否则回执按「已导航到别处」的过期回执丢弃（CR-1 竞态守卫）。
+        pane.path = Some(target.clone());
+        pane.loading = true;
+        let req = LocalPaneReq::Navigate {
+            path: target,
+            old_path: Some(old.clone()),
+        };
+        let reply = LocalPaneReply {
+            req,
+            entries: None,
+            deleted: Vec::new(),
+        };
+        assert!(apply_local(&mut pane, reply).is_empty());
+        assert_eq!(pane.path, Some(old), "失败回滚旧路径");
+        assert!(!pane.loading, "失败也须清 loading");
+        assert_eq!(pane.msg.as_deref(), Some(t("目录读取失败")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 钉子③：部分失败逐项可定位，绝不写「已删除 N 项」的假成功汇总。
+    #[test]
+    fn delete_log_lines_never_fakes_success_on_partial_failure() {
+        let results = vec![
+            ("C:/a".to_owned(), Ok(())),
+            ("C:/b".to_owned(), Err("拒绝访问".to_owned())),
+        ];
+        let lines = delete_log_lines(&results);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("C:/a"), "成功项留痕");
+        assert!(
+            lines[1].contains("C:/b") && lines[1].contains("拒绝访问"),
+            "失败项路径与原因可定位"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("已删除 1 项")),
+            "部分失败不得写成功汇总"
+        );
+        let many = vec![
+            ("C:/x".to_owned(), Err("e1".to_owned())),
+            ("C:/y".to_owned(), Err("e2".to_owned())),
+        ];
+        let lines = delete_log_lines(&many);
+        assert_eq!(lines.len(), 1, "批量失败合并一条摘要");
+        assert!(
+            lines[0].contains("批量删除失败 2 项")
+                && lines[0].contains("C:/x")
+                && lines[0].contains("C:/y")
+        );
+    }
+
+    /// 钉子④：旧目录的过期回执不得覆盖已导航到的新目录（ADR-031「骗」级）。
+    #[test]
+    fn stale_local_reply_does_not_overwrite_current_pane() {
+        let dir = fixture_dir();
+        let old = dir.join("old");
+        let new = dir.join("new");
+        let mut pane = FilePane::default();
+        pane.path = Some(new.clone());
+        pane.loading = true;
+        let stale = vec![crate::ui::panes::Entry::placeholder()];
+        let reply = LocalPaneReply {
+            req: LocalPaneReq::Refresh {
+                path: old,
+                keep: Vec::new(),
+            },
+            entries: Some(stale),
+            deleted: Vec::new(),
+        };
+        assert!(apply_local(&mut pane, reply).is_empty());
+        assert_eq!(pane.path, Some(new), "path 不被旧回执改写");
+        assert!(pane.entries.is_empty(), "列表不被旧回执覆盖");
+        // 回根是同步路径，须自行清在途标记，避免过期回执无人清 loading。
+        navigate_root(&mut pane);
+        assert!(!pane.loading && pane.pending_local.is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

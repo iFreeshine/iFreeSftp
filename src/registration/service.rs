@@ -132,14 +132,14 @@ pub(crate) fn global() -> &'static Arc<Registration> {
 }
 
 impl Registration {
-    /// 生产装配：Stub/Official 核心 + 平台凭据存储（Windows DPAPI / 非 Windows
-    /// NoopStore 不落盘）+ 默认缓存路径。
+    /// 生产装配：Stub/Official 核心 + 平台凭据存储（装配见 store.rs：Windows
+    /// DPAPI / 其余形态 NoopStore 不落盘）+ 默认缓存路径。
     pub(crate) fn new() -> Arc<Self> {
-        #[cfg(windows)]
-        let store: Arc<dyn CredentialStore> = Arc::new(store::DpapiStore::default_store());
-        #[cfg(not(windows))]
-        let store: Arc<dyn CredentialStore> = Arc::new(store::NoopStore);
-        Self::with_parts(core::make_core(), store, remote_cache_path())
+        Self::with_parts(
+            core::make_core(),
+            store::default_store(),
+            remote_cache_path(),
+        )
     }
 
     /// 测试装配点（核心/存储/缓存路径均可注入）。
@@ -467,11 +467,25 @@ mod tests {
         p
     }
 
-    /// 测试实例：Stub 核心（源码编译版语义）+ temp DPAPI 存储 + temp 缓存。
+    /// 内存测试替身（激活态直接注入，不触真 DPAPI；两种编译形态共用）。
+    #[derive(Default)]
+    struct MemStore(std::sync::Mutex<Option<String>>);
+
+    impl CredentialStore for MemStore {
+        fn load_code(&self) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+        fn save_code(&self, code: &str) -> std::io::Result<()> {
+            *self.0.lock().unwrap() = Some(code.to_owned());
+            Ok(())
+        }
+    }
+
+    /// 测试实例：Stub/Official 核心 + 内存存储 + temp 缓存。
     fn test_reg(tag: &str) -> Arc<Registration> {
         Registration::with_parts(
             core::make_core(),
-            Arc::new(store::DpapiStore::at_path(temp_path(tag, "dat"))),
+            Arc::new(MemStore::default()),
             temp_path(tag, "cache"),
         )
     }
@@ -668,6 +682,9 @@ mod tests {
 
     #[test]
     fn revoked_non_string_element_aborts() {
+        // 持 DPAPI 失败桩互斥锁（同上 revoked_array_matching_marks_state）。
+        #[cfg(windows)]
+        let _stub_guard = crate::hosts::TEST_DPAPI_LOCK.lock().unwrap();
         let reg = test_reg("revel");
         // 元素为数字：C# GetString() 抛 → 中止（revoked 未标）
         reg.store.save_code("IFREE1.TEST.CODE").unwrap();
@@ -795,22 +812,24 @@ mod tests {
     }
 
     /// protect 失败桩调 activate（Windows 置 TEST_DPAPI_FAIL 强制 DPAPI 失败；
-    /// 非 Windows protect 天然 Err）：断言 SaveFailed 且 registration.dat
-    /// 不存在 / 不含注册码明文。
+    /// DpapiStore 随闭源 core 分发，仅 official 形态可测）：断言 SaveFailed 且
+    /// registration.dat 不存在 / 不含注册码明文。
+    #[cfg(all(feature = "official", windows))]
     #[test]
     fn activate_protect_failure_leaves_no_plaintext_dat() {
-        #[cfg(windows)]
         let _g = crate::hosts::TEST_DPAPI_LOCK.lock().unwrap();
-        #[cfg(windows)]
         crate::hosts::TEST_DPAPI_FAIL.store(true, std::sync::atomic::Ordering::Relaxed);
         let dat = temp_path("protectfail", "dat");
         let reg = Registration::with_parts(
             Box::new(FullCore),
-            Arc::new(store::DpapiStore::at_path(dat.clone())),
+            Arc::new(store::DpapiStore::at_path(
+                dat.clone(),
+                crate::hosts::protect_pub,
+                crate::hosts::unprotect_pub,
+            )),
             temp_path("protectfail", "cache"),
         );
         let r = reg.activate("IFREE1.aaa.bbb");
-        #[cfg(windows)]
         crate::hosts::TEST_DPAPI_FAIL.store(false, std::sync::atomic::Ordering::Relaxed);
         let is_save_failed = matches!(r, ActivateResult::SaveFailed(_));
         assert!(is_save_failed, "应返回 SaveFailed，实际 {r:?}");
@@ -823,12 +842,10 @@ mod tests {
 
     #[test]
     fn activate_success_with_full_core_sets_state() {
-        // 真 DPAPI 往返：与 TEST_DPAPI_FAIL 桩互斥（进程级全局，防并行串扰；
-        // 同 registration/store.rs:101 roundtrip 用例的锁约定）
-        let _g = crate::hosts::TEST_DPAPI_LOCK.lock().unwrap();
+        // Full 核心 + 内存存储（DPAPI 往返归 core store 测试，此处验激活链路）
         let reg = Registration::with_parts(
             Box::new(FullCore),
-            Arc::new(store::DpapiStore::at_path(temp_path("okcore", "dat"))),
+            Arc::new(MemStore::default()),
             temp_path("okcore", "cache"),
         );
         assert!(matches!(

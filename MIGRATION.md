@@ -29,11 +29,11 @@ E:\aiProject\iFreeSftpRust\            主开发仓（私有，含闭源与素�
 |---|---|---|
 | `src\` | `ifreeSftp\src\` | 全量镜像（official 门控零引用，见 §6） |
 | `build.rs` `Cargo.toml` `Cargo.lock` | 同名 | Cargo.toml 原样（workspace 根与 member 同文件，公开仓自足） |
-| `rust-toolchain.toml` `.cargo\config.toml` `.gitattributes` `.gitignore` | 同名 | 工具链锁定 1.99 + windows-gnu 链接配置（D-019） |
+| `rust-toolchain.toml` `.cargo\config.toml` `.gitattributes` `.gitignore` | 同名 | 工具链锁定 1.99 + windows-gnu 链接配置（D-019）；config.toml 同步时剥离主仓 `[build] target-dir`（私有产物目录策略，公开仓贡献者机器路径不同） |
 | `assets\` | 同名 | build.rs 内嵌图标/Logo 资源（缺目录编译失败） |
 | `docs\zh-CN.png` 等图标/静态资源 | 同名 | 若后续新增 |
 | `E:\aiProject\iFreeSftp\github\LICENSE` | `LICENSE` | AGPL-3.0 沿用 C# 版 |
-| `E:\aiProject\iFreeSftp\github\logo.png` | `logo.png` | 品牌沿用 |
+| `E:\aiProject\iFreeSftpRust\devSource\logo-sftp.png` | `logo.png` | 品牌沿用（2026-11 新版 SFTP 意象 logo） |
 
 **不拷（公开仓自有/独占）**：`README.md`、`README.zh-CN.md`、`CHANGELOG.md`、
 `CHANGELOG.zh-CN.md`、`build.ps1`、`build.cmd`（dev loop，Rust 版重写）、`tools\`、
@@ -55,6 +55,7 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 | .NET 10 SDK 构建 | Rust 1.99（stable-x86_64-pc-windows-gnu），`.\build.ps1` | rust-toolchain.toml |
 | SSH.NET 2026.0.0 | russh 0.65 + russh-sftp 3.0（ring 后端） | Cargo.toml |
 | zip 内 `iFreeSftp.exe + iFreeSftp.Core.dll + wpf\ + locales\` | **单 exe**（0 依赖定案 D-019，导入表仅系统 DLL） | D-019 |
+| tar 加速打包/解包（本机 bsdtar 子进程 + 服务端 tar） | 纯 Rust 内嵌（`tar` crate + `flate2` gzip，零子进程零 C 依赖）；**有意优于 C#**：tar 头按 PAX/UTF-8 写，中文文件名不依赖系统代码页——C# 的 bsdtar 在 Windows 按系统代码页解释文件名，非 UTF-8 环境有乱码风险；远端打包/解包命令仍走服务端 tar | src/transfer/tar.rs |
 | **服务端直达远程→远程（一条 cp）** | **不得宣称已实现**——当前同主机经本机中转（tar 打包单流加速）；服务端直达在路线图（core `ServerCopyAsync` 移植项） | ifree-core ITransferCore 未移植 |
 | AvalonEdit 语法高亮 | 内置编辑器（egui）+ 远程编辑回传 + mtime 冲突检测；语法高亮未实现不写 | src/ui/editor_window.rs |
 | DPAPI 加密存储 | 密码加密存储（不写具体算法，按实现更新） | hosts/settings |
@@ -66,6 +67,42 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 来源：主仓 `ifreeSftp\README.md` 的能力矩阵节，更新时同步。
 
 版本徽章数字、对比表、功能表在每次发版随 CHANGELOG 一起核对（见 §5）。
+
+### 3.1 有意安全差异：远程状态缓存剔除购买/更新链接（2026-11-09 定案）
+
+- **C# 事实**：`RegistrationService.RefreshAsync` 把 `/v1/state` 应答**原文全量**落缓存
+  `remote.json`（RegistrationService.cs:135-137）；24h 节流命中时把缓存整体
+  `ApplyRemoteState`（:118-127）——购买链接与更新 URL 随缓存恢复。
+- **Rust 差异（有意为之）**：`registration/service.rs` 的 `write_cache` 落盘前剔除
+  `purchase` 整块与 `update.url`（保留公告/勋章/更新版本号/吊销名单）；缓存命中的会话
+  这些字段维持默认，**不随缓存恢复**。仅 fresh（联网拉取）应答才应用链接，且
+  `update.url` 入口过 `guard::is_safe_web_url`、消费点另有 UrlGuard 拦截（双重防御）。
+- **理由**：缓存文件位于用户目录，可被篡改；「缓存恢复的购买/更新链接」是钓鱼页注入面。
+  剔除后篡改者只能删信息不能注信息，与 guard.rs 仅 http(s) 协议白名单自洽。
+- **将来若恢复缓存链接**，必须同时满足：缓存 URL 同样过 guard + UI 显示目标域名
+  （让用户看见即将跳往何处），缺一不可。
+
+### 3.2 有意差异补记（T19-5，2026-11-09 拍板定稿，均维持 Rust 现状）
+
+- **远程工具栏「新建」**：C# `FileView.xaml.cs:2088-2093` 远程工具栏 New 按钮禁用
+  → Rust **启用**（远程目录下新建目录/文件可用）→ 维持理由：远程新建是正当需求，
+  C# 禁用属历史局限而非能力边界，公开 README 不作远程不支持新建的声明。
+- **本地「编辑」≤10MB 上限**：C# `FileView.xaml.cs:2443`（入口）与 `:2736-2756`
+  （编辑判定仅 8KB 文本探测、无总体积限制）→ Rust 加 **10MB** 上限，超限
+  「编辑」置灰，仍可经「打开」用系统默认关联程序处理 → 维持理由：防大文件
+  整读卡死内置编辑器（egui 全量驻内存），体验换稳定；「打开」为既有通用入口
+  （dialogs.rs:4241 恒可用），对超限内容同样可用。
+- **远程右键「新建」门槛**：C# `FileView.xaml.cs:2467` 仅判 `IsConnected` 即可
+  → Rust 须**已浏览到目录**（本次会话列出过目录项）→ 维持理由：未列目录时无
+  落点上下文（新建目标路径未知），放宽只会制造报错路径；已列目录后功能等同。
+- **列显隐状态作用域**（T20-1）：C# 左右窗格列状态独立（`FileView.xaml.cs:134`
+  FileColumnState per-view）→ Rust **全局一份**（左右窗格与新建 tab 全部继承；
+  列宽/拖拽几何/权限列仅远程显示的本地态仍 per-pane）→ 维持理由：跨窗格一致的
+  列视图符合双窗格对比浏览场景，C# 分侧记忆在双窗格同览时反成噪音。
+- **设置面板长描述**（F-6，2026-11-11）：设置卡说明不再逐字对齐 C# Resources.resw
+  ——以 Rust 当前实现为事实基线做语义纠偏与精简（如 tar 本地内嵌打包、并发独立
+  连接、校验算法可用性顺位），C# 原句仅作历史参考；主题下拉补「跟随系统」第三项
+  （store theme = "" 同语义，对齐 C# ThemeService 空值）。
 
 ## 4. 发版规则（继承 C# 项目区）
 

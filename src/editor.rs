@@ -458,6 +458,11 @@ pub struct EditorDoc {
     pub sel_cache: Option<(usize, usize)>,
     /// 行数提示（打开/保存时重算一次，行号列宽用；避免每帧 O(n) 扫描）。
     pub lines_hint: usize,
+    /// 已入队、回执未到（远程保存语义：dirty 在 FileWritten::Ok 前保持 true，
+    /// 关闭未回执的文档会走未保存确认——数据不因「显示已保存」而丢）。
+    pub pending_upload: bool,
+    /// 最近一次成功回执展示串（字节数 · 远端路径；状态栏右区第三优先级）。
+    pub last_receipt: Option<String>,
     /// 未保存关闭确认层。
     pub close_ask: bool,
     /// 已关（主窗口回收 Arc + 清副本）。
@@ -470,6 +475,10 @@ pub struct SavedEvent {
     /// 副本路径（上传源文件）。
     pub local_path: PathBuf,
     pub remote_path: String,
+    /// 从 RemoteRef.host 带入：主窗口匹配会话池不再反查 docs（CR-6③）。
+    pub host: String,
+    /// 从 RemoteRef.base_mtime 带入：供回传前 STAT 比对（±1s 判据同外部链路）。
+    pub base_mtime: Option<i64>,
 }
 
 /// 全部打开的文档 + 事件队列（主窗口 State 持有；doc Arc 交给 viewport 闭包）。
@@ -591,6 +600,8 @@ impl EditorDoc {
             cursor_cache: (0, 1, 1),
             sel_cache: None,
             lines_hint,
+            pending_upload: false,
+            last_receipt: None,
             close_ask: false,
             closed: false,
         }
@@ -613,14 +624,21 @@ impl EditorDoc {
         }
         let bytes = encode(&self.text, self.enc);
         std::fs::write(&self.path, bytes).map_err(|e| e.to_string())?;
-        self.dirty = false;
         self.lines_hint = self.text.matches('\n').count() + 1;
         if let Some(r) = &self.remote {
+            // 远程文档：回执（FileWritten::Ok）前 dirty 保持 true——只有纯本地
+            // 文档写盘成功即视为已保存（CR-6②：显示已保存 ≠ 已回传）。
+            self.pending_upload = true;
+            self.last_receipt = None;
             EditorHub::push_saved(SavedEvent {
                 doc_id: self.id,
                 local_path: self.path.clone(),
                 remote_path: r.remote_path.clone(),
+                host: r.host.clone(),
+                base_mtime: r.base_mtime,
             });
+        } else {
+            self.dirty = false;
         }
         Ok(())
     }
@@ -628,4 +646,51 @@ impl EditorDoc {
 
 fn oversize_msg() -> String {
     crate::i18n::t("文件超过 10 MB，暂不支持远程编辑").to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 钉子（CR-6②）：远程文档从 save 到回执（FileWritten::Ok 主窗口回写）
+    /// 之间 dirty 恒为 true——写盘成功 ≠ 已回传，显示已保存前不得清 dirty。
+    /// save() 同时入队事件（host / base_mtime 随行）。纯本地文档对照：
+    /// 写盘成功即 dirty=false（既有语义）。
+    #[test]
+    fn remote_save_keeps_dirty_until_receipt_and_local_saves_clear() {
+        let dir = std::env::temp_dir().join("ifreesftp-cr6-editor-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("remote_save_nail.txt");
+        std::fs::write(&copy, b"v1").unwrap();
+        let mut hub = EditorHub::new();
+        hub.open_remote("h1", &copy, "/r.txt".into(), Some(1000), true);
+        let doc = hub.docs[0].clone();
+        {
+            let mut d = doc.lock().unwrap();
+            d.text = "v2".into();
+            d.dirty = true;
+            d.save().unwrap();
+            assert!(d.dirty, "远程文档 save 后 dirty 恒为 true（回执未到）");
+            assert!(d.pending_upload, "已入队、回执未到");
+            assert!(d.last_receipt.is_none(), "成功回执未到不得有旧值");
+        }
+        let evs = EditorHub::drain_saved();
+        assert_eq!(evs.len(), 1, "save 入队一条回传事件");
+        assert_eq!(evs[0].doc_id, doc.lock().unwrap().id);
+        assert_eq!(evs[0].host, "h1");
+        assert_eq!(evs[0].remote_path, "/r.txt");
+        assert_eq!(evs[0].base_mtime, Some(1000));
+        // 纯本地文档对照：写盘成功即清 dirty。
+        let local = dir.join("local_save_nail.txt");
+        std::fs::write(&local, b"v1").unwrap();
+        let mut hub2 = EditorHub::new();
+        hub2.open_local(&local, true);
+        let ldoc = hub2.docs[0].clone();
+        let mut d = ldoc.lock().unwrap();
+        d.text = "v2".into();
+        d.dirty = true;
+        d.save().unwrap();
+        assert!(!d.dirty, "纯本地文档写盘成功即视为已保存");
+        assert!(!d.pending_upload);
+    }
 }

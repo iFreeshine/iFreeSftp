@@ -15,6 +15,7 @@ mod local;
 mod persistence;
 mod registration;
 mod settings;
+mod sm3;
 mod ssh;
 mod theme;
 mod transfer;
@@ -38,11 +39,12 @@ const LATIN_FONT: &[u8] = include_bytes!("assets/fonts/Inter-Regular.ttf");
 /// 品牌名字体（C# 应用名 SemiBold）：注册为独立 family，需要处显式指定。
 const BRAND_FONT: &[u8] = include_bytes!("assets/fonts/Inter-SemiBold.ttf");
 
-/// 等宽字体：系统自带，按需只装一款，从新到旧探测（D-015）。
-const MONO_FONT_CANDIDATES: &[&str] = &[
-    r"C:\Windows\Fonts\CascadiaMono.ttf",
-    r"C:\Windows\Fonts\consola.ttf",
-];
+/// 等宽字体：JetBrains Mono Regular（SIL OFL 1.1，编译期嵌入 D-022，取代
+/// 运行时读盘 CascadiaMono→Consolas 探测——Win10/Win11 观感漂移与失配分支
+/// 一并消除，与 Inter 同口径）。现有等宽消费点（终端 / 大小列 / 校验码）无
+/// 加粗语义，Regular 一款足够；不含 CJK，中文经 CJK_FONT_CANDIDATES 追加
+/// Monospace 队尾回退。
+const MONO_FONT: &[u8] = include_bytes!("assets/fonts/JetBrainsMono-Regular.ttf");
 
 const CJK_FONT_CANDIDATES: &[&str] = &[
     r"C:\Windows\Fonts\msyh.ttc",
@@ -52,11 +54,15 @@ const CJK_FONT_CANDIDATES: &[&str] = &[
 ];
 
 fn main() -> eframe::Result {
+    // SM3 实现自检（C# Debug 启动 RunSelfTest 同语义）：实现被误改启动即 panic。
+    #[cfg(debug_assertions)]
+    sm3::debug_self_check();
     // 上次快照：几何 + 主题。无效 / 缺失走默认。
     let saved = persistence::load();
     // 应用设置（settings.json，C# AppSettingsService 同款；先于 State 默认值）。
     settings::load();
-    // 主机档案（hosts.json，C# HostStoreService 同款；逐行容错，无备份逻辑）。
+    // 主机档案（hosts.json，C# HostStoreService 同款；结构损坏时原文备份，
+    // 备份路径存全局通知由主机面板提示，S-10）。
     hosts::load();
 
     let mut viewport = egui::ViewportBuilder::default()
@@ -64,7 +70,10 @@ fn main() -> eframe::Result {
         .with_inner_size(saved.map(|s| [s.w, s.h]).unwrap_or(DEFAULT_SIZE))
         .with_min_inner_size(MIN_SIZE)
         // 1:1 自绘标题栏（C# ExtendsContentIntoTitleBar）：去系统装饰，
-        // 最小化/最大化/关闭与拖拽在 ui::header 实现。
+        // 最小化/最大化/关闭与拖拽在 ui::header 实现；边缘缩放由 ui::edge_resize
+        // 命中区接手（无边框后 OS 缩放边消失），resizable 保持 true 是
+        // ViewportCommand::StartResize 的前置条件。
+        .with_resizable(true)
         .with_decorations(false);
     if let Some(s) = saved {
         viewport = viewport.with_position([s.x as f32, s.y as f32]);
@@ -101,20 +110,31 @@ struct App {
     last_save: f64,
 }
 
-/// 解 assets/AppIcon.ico 中最大的 PNG 条目为窗口图标数据（ico 全条目 PNG 压缩，
-/// 手写容器解析即可，无需 image 的 ico feature）。None = 解析失败（保持默认图标）。
+/// 解 assets/AppIcon.ico 中最大的 PNG 条目为窗口图标数据（生成规则：256 档为 PNG
+/// 压缩、其余档为 BMP 32bpp；手写容器解析即可，无需 image 的 ico feature）。
+/// None = 解析失败（保持默认图标）。
 pub fn window_icon() -> Option<egui::IconData> {
     const ICO: &[u8] = include_bytes!("../assets/AppIcon.ico");
     // ICONDIR 6 字节 + 每条目 16 字节：宽(0=256)、色数、保留、位平面、位深、数据长、偏移。
     let count = u16::from_le_bytes([ICO[4], ICO[5]]) as usize;
-    let (mut off, mut len, mut best) = (0usize, 0usize, 0u8);
+    let (mut off, mut len, mut best) = (0usize, 0usize, 0u32);
     for i in 0..count {
         let e = 6 + 16 * i;
-        let w = *ICO.get(e)?;
+        // 宽度字节 0 = 256（ICO 规范），比大小时必须还原；只认 PNG 条目——
+        // 条目内 BMP 无 BITMAPFILEHEADER，image::load_from_memory 解不动。
+        let w = match *ICO.get(e)? {
+            0 => 256,
+            w => u32::from(w),
+        };
+        let entry_len = u32::from_le_bytes(ICO.get(e + 8..e + 12)?.try_into().ok()?) as usize;
+        let entry_off = u32::from_le_bytes(ICO.get(e + 12..e + 16)?.try_into().ok()?) as usize;
+        if !ICO.get(entry_off..entry_off + 4)?.starts_with(b"\x89PNG") {
+            continue;
+        }
         if w >= best {
             best = w;
-            len = u32::from_le_bytes(ICO.get(e + 8..e + 12)?.try_into().ok()?) as usize;
-            off = u32::from_le_bytes(ICO.get(e + 12..e + 16)?.try_into().ok()?) as usize;
+            len = entry_len;
+            off = entry_off;
         }
     }
     let img = image::load_from_memory(ICO.get(off..off + len)?)
@@ -130,16 +150,28 @@ pub fn window_icon() -> Option<egui::IconData> {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, saved: Option<persistence::WinState>) -> Self {
         // 明暗两套都写入令牌，末次调用为当前主题：
-        // 有快照按快照恢复；无快照维持既有默认（Dark 末次）。
+        // 主题来源 settings.json theme 键（T19-1，C# ThemeService.Initialize 同
+        // 语义、与 C# 共用存档互认）："Dark"/"Light" 显式；空/未知 = 跟随系统
+        // （theme::system_prefers_light 注册表探测）。window.ini dark 不再作
+        // 主题依据（几何快照仍含 dark 字段仅作落盘结构保持）。
         theme::install(&cc.egui_ctx, egui::Theme::Light);
         theme::install(&cc.egui_ctx, egui::Theme::Dark);
-        if let Some(s) = saved
-            && !s.dark
-        {
+        if !settings::startup_theme_dark() {
             theme::install(&cc.egui_ctx, egui::Theme::Light);
         }
 
         install_fonts(&cc.egui_ctx);
+
+        // 列显隐偏好回灌（T20-1 契约 A：读取独立于窗口几何完整性判据——
+        // 几何非法也生效；文件缺失保持全开默认）。
+        if let Some(c) = persistence::load_cols() {
+            ui::panes::set_col_vis(ui::panes::ColVisibility {
+                size: c[0],
+                ty: c[1],
+                modified: c[2],
+                perms: c[3],
+            });
+        }
 
         // 注册服务装配（C# App 启动链：Load 已存注册码 + 启动静默拉远程，
         // 24h 节流内走缓存不联网；结果供 Header 更新徽标/设置页消费）。
@@ -170,12 +202,19 @@ impl App {
         }
 
         let dark = ctx.theme() == egui::Theme::Dark;
-        // 最大化时只更新标志与主题，几何保持还原态（上次快照）。
+        // 列显隐并入快照（T20-1 契约 A）：PartEq 变更检测 + 0.3s 节流写 window.ini
+        // （不写 settings.json——C# AppSettingsService 整体覆写会丢未知键）；
+        // 最大化分支同样直读当前全局值（折叠 ..base 的几何延续）。
+        let cv = ui::panes::col_vis();
         let base = self.saved.unwrap_or_default();
         let cand = if maximized {
             persistence::WinState {
                 maximized: true,
                 dark,
+                col_size: cv.size,
+                col_type: cv.ty,
+                col_modified: cv.modified,
+                col_perms: cv.perms,
                 ..base
             }
         } else {
@@ -186,6 +225,10 @@ impl App {
                 h: rect.height(),
                 maximized: false,
                 dark,
+                col_size: cv.size,
+                col_type: cv.ty,
+                col_modified: cv.modified,
+                col_perms: cv.perms,
             }
         };
         if self.saved == Some(cand) {
@@ -205,7 +248,7 @@ impl App {
 }
 
 /// Inter 正体置 Proportional 队首、品牌 SemiBold 独立 family，
-/// 等宽一款置 Monospace 队首，中文追加队尾作回退。
+/// JetBrains Mono 置 Monospace 队首（编译期嵌入），中文追加队尾作回退。
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
@@ -229,20 +272,17 @@ fn install_fonts(ctx: &egui::Context) {
         vec!["inter-semibold".to_owned()],
     );
 
-    for path in MONO_FONT_CANDIDATES {
-        if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert(
-                "mono".to_owned(),
-                Arc::new(egui::FontData::from_owned(bytes)),
-            );
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .insert(0, "mono".to_owned());
-            break;
-        }
-    }
+    // 等宽编译期嵌入置队首（D-022，JetBrains Mono OFL 1.1）：不再探测系统
+    // CascadiaMono/Consolas，跨机一致；中文回退由 CJK 段追加队尾。
+    fonts.font_data.insert(
+        "mono".to_owned(),
+        Arc::new(egui::FontData::from_owned(MONO_FONT.to_vec())),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, "mono".to_owned());
 
     for path in CJK_FONT_CANDIDATES {
         let Ok(bytes) = std::fs::read(path) else {
@@ -275,11 +315,17 @@ fn install_fonts(ctx: &egui::Context) {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // S-6：DPAPI 解密失败日志投递（load/导入期入全局队列，这里每帧排空）。
+        self.st.terminal.extend(crate::hosts::drain_pending_logs());
         // 编辑框全局右键菜单：帧首钩子必须先于 root 里的一切控件
         // （拦截 Secondary press / 注入菜单动作），帧尾画浮层菜单。
         self.st.ctx_menu.frame_start(ui.ctx());
         ui::root(ui, &mut self.st);
         self.st.ctx_menu.frame_end(ui.ctx());
+        let modal = ui::frame_modal(&self.st);
+        ui::edge_resize(ui, modal);
+        // F-8：主视口帧尾唯一一次光标写入（须在 edge_resize 之后）。
+        ui::cursor_decide(ui.ctx());
         self.persist_window(ui.ctx());
     }
 }

@@ -23,6 +23,11 @@ pub struct WinState {
     pub maximized: bool,
     /// 是否深色主题。
     pub dark: bool,
+    /// 列显隐偏好（T20-1 契约 A；全开默认，随 0.3s 节流 + PartialEq 变更检测落盘）。
+    pub col_size: bool,
+    pub col_type: bool,
+    pub col_modified: bool,
+    pub col_perms: bool,
 }
 
 impl Default for WinState {
@@ -34,6 +39,10 @@ impl Default for WinState {
             h: 0.0,
             maximized: false,
             dark: false,
+            col_size: true,
+            col_type: true,
+            col_modified: true,
+            col_perms: true,
         }
     }
 }
@@ -46,7 +55,9 @@ fn file_path() -> Option<PathBuf> {
         .map(|d| d.join("window.ini"))
 }
 
-/// 读取上次快照。字段缺失 / 数值非法（尺寸过小）返回 None。
+/// 读取上次快照。几何字段缺失 / 数值非法（尺寸过小）返回 None（完整性判据
+/// 只看窗口几何）；列显隐偏好随结构带回（几何非法时另有 load_cols 单独读回，
+/// T20-1 契约 A）。
 pub fn load() -> Option<WinState> {
     let txt = fs::read_to_string(file_path()?).ok()?;
     let mut st = WinState::default();
@@ -61,6 +72,10 @@ pub fn load() -> Option<WinState> {
             "h" => st.h = v.trim().parse().unwrap_or(st.h),
             "maximized" => st.maximized = v.trim() == "1",
             "dark" => st.dark = v.trim() == "1",
+            "col_size" => st.col_size = v.trim() == "1",
+            "col_type" => st.col_type = v.trim() == "1",
+            "col_modified" => st.col_modified = v.trim() == "1",
+            "col_perms" => st.col_perms = v.trim() == "1",
             _ => {}
         }
     }
@@ -72,19 +87,44 @@ pub fn load() -> Option<WinState> {
     }
 }
 
+/// 列显隐偏好读取（T20-1 契约 A）：独立于窗口几何完整性判据——load() 的
+/// Some/None 只由几何有效性决定，几何非法时偏好仍要能读回，故单列一条
+/// 读取路径。文件缺失返回 None（调用方保持全开默认）。
+pub fn load_cols() -> Option<[bool; 4]> {
+    let txt = fs::read_to_string(file_path()?).ok()?;
+    let mut c = [true; 4];
+    for line in txt.lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        match k.trim() {
+            "col_size" => c[0] = v.trim() == "1",
+            "col_type" => c[1] = v.trim() == "1",
+            "col_modified" => c[2] = v.trim() == "1",
+            "col_perms" => c[3] = v.trim() == "1",
+            _ => {}
+        }
+    }
+    Some(c)
+}
+
 /// 写入快照（尽力而为，失败静默——持久化不影响功能）。
 pub fn save(st: &WinState) {
     let Some(p) = file_path() else {
         return;
     };
     let body = format!(
-        "x={}\ny={}\nw={}\nh={}\nmaximized={}\ndark={}\n",
+        "x={}\ny={}\nw={}\nh={}\nmaximized={}\ndark={}\ncol_size={}\ncol_type={}\ncol_modified={}\ncol_perms={}\n",
         st.x,
         st.y,
         st.w,
         st.h,
         i32::from(st.maximized),
         i32::from(st.dark),
+        i32::from(st.col_size),
+        i32::from(st.col_type),
+        i32::from(st.col_modified),
+        i32::from(st.col_perms),
     );
     let _ = fs::write(p, body);
 }

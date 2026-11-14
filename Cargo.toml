@@ -28,6 +28,19 @@ base64 = "0.22"
 ureq = "2"
 # /v1/state 响应容错解析（C# JsonDocument 对应物）
 serde_json = "1"
+# T15 tar 加速嵌入化：打包/解包从本机 tar 子进程改为纯 Rust 内嵌实现
+# （tar::Builder/Archive + flate2 gzip，级别固定 6）。flate2 用默认 feature =
+# 纯 Rust miniz_oxide 后端，禁止启用任何 C 后端 feature——保持零 C 依赖与
+# zig 交叉兼容（D-018/D-021）。tar 的传递依赖 filetime 0.2.29（mtime 保留）
+# 与 xattr 1.7.0（unix 默认 feature）随 lock 解析，均在本机 registry cache。
+tar = "0.4.46"
+flate2 = "1.1.10"
+# P0-#3 保留修改时间：下载结算点设本地文件 mtime（C# SetLastWriteTime 对应物）。
+# T15 起已在依赖树（tar 传递依赖 0.2.29），transfer.rs 直接消费转显式声明。
+filetime = "0.2.29"
+# T20-G③ 批量并发 STAT 预检（join_all）：版本与依赖树既有 0.3.34 一致，仅
+# 显式声明（零新增编译负担，与 filetime 先例同做法）。
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 
 # 正式发布构建门控：--features official 经 #[path] 并入闭源 ifree-core 真验签；
 # 源码编译版（无 ifree-core 目录）不带本 feature 编译，零引用、完整可编译。

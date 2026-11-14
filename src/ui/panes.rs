@@ -5,9 +5,10 @@
 
 use std::path::{Component, PathBuf};
 
-use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke};
+use egui::{Align2, Color32, CursorIcon, FontId, LayerId, Order, Pos2, Rect, Sense, Stroke, Vec2};
 
 use super::dialogs::{Dialog, Hooks, MenuState};
+use super::{CursorLayer, cursor_intent};
 use crate::i18n::{t, tfmt};
 use crate::theme;
 
@@ -22,11 +23,11 @@ const TREE_ROW: f32 = 20.0;
 const TREE_INDENT: f32 = 14.0;
 /// 行内图标尺寸。
 const ROW_ICON: f32 = 18.0;
-/// 文件行文字。
+/// 文件行文字（f32 数值口径：高度算式 / galley_w 量宽消费；FontId 已收口 theme::font_small）。
 const ROW_FONT: f32 = 12.0;
 /// 文件行高（C# ItemContainerStyle Padding 4,1 + 图标格 22 = 24）。
 const ROW_H: f32 = 24.0;
-/// 表头文字。
+/// 表头文字（brand 11 数值口径；FontId 已收口 theme::font_header）。
 const HEADER_FONT: f32 = 11.0;
 /// 面包屑行高。
 const CRUMB_H: f32 = 30.0;
@@ -101,7 +102,75 @@ pub(crate) struct DragPayload {
     pub rows: Vec<usize>,
 }
 
-/// 单侧文件面板状态（C# FileView + FileColumnState 镜像）。
+/// T20-4 拖拽就绪判定（C# CanTransferToOpposite :3010-3015）：两侧窗格均已
+/// 导航（本地=非「此电脑」根态；远程=已入远程目录）且涉及远程的侧会话已连。
+/// `conn` 由调用侧折算：本地恒 true；远程 = 活动 tab 所属会话在池（断开即
+/// 出池，C# `_sftp.IsConnected` 同口径——会话域判定，非 remote_path）。
+pub(crate) fn can_transfer_to_oppo(
+    src_nav: bool,
+    src_conn: bool,
+    dst_nav: bool,
+    dst_conn: bool,
+) -> bool {
+    src_nav && src_conn && dst_nav && dst_conn
+}
+
+/// 全局列显隐（T20-1 契约 B）：C# 左右窗格各一份 FileColumnState（FileView
+/// .xaml.cs:134 per-view）→ Rust 有意差异 = 全局一份，左右与新建 tab 全部
+/// 继承；列宽 / 拖拽几何 / 权限列仅远程显示的本地态仍 per-pane。持久化落
+/// window.ini（Rust 私有 UI 偏好，禁写 settings.json——C# AppSettingsService
+/// 整体覆写会丢未知键）。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ColVisibility {
+    pub size: bool,
+    pub ty: bool,
+    pub modified: bool,
+    pub perms: bool,
+}
+
+impl Default for ColVisibility {
+    fn default() -> Self {
+        Self {
+            size: true,
+            ty: true,
+            modified: true,
+            perms: true,
+        }
+    }
+}
+
+/// 全局唯一份（UI 单线程读写；仅 main 启动回灌与菜单切换写入）。
+static COL_VIS: std::sync::Mutex<ColVisibility> = std::sync::Mutex::new(ColVisibility {
+    size: true,
+    ty: true,
+    modified: true,
+    perms: true,
+});
+
+/// 读全局列显隐。
+pub fn col_vis() -> ColVisibility {
+    *COL_VIS.lock().unwrap()
+}
+
+/// 写全局列显隐（启动回灌 window.ini）。
+pub fn set_col_vis(v: ColVisibility) {
+    *COL_VIS.lock().unwrap() = v;
+}
+
+/// 按菜单键翻转对应列（"大小"/"类型"/"修改时间"/"权限"，复用表头 i18n 键）。
+pub(crate) fn toggle_col(key: &str) {
+    let mut g = COL_VIS.lock().unwrap();
+    match key {
+        "大小" => g.size = !g.size,
+        "类型" => g.ty = !g.ty,
+        "修改时间" => g.modified = !g.modified,
+        "权限" => g.perms = !g.perms,
+        _ => {}
+    }
+}
+
+/// 单侧文件面板状态（C# FileView + FileColumnState 镜像；列显隐四字段已上提
+/// 全局 ColVisibility，T20-1）。
 pub struct FilePane {
     pub name_w: f32,
     pub size_w: f32,
@@ -116,18 +185,18 @@ pub struct FilePane {
     pub perms_def_w: f32,
     /// 拖拽中的列（C# _draggingCol：自适应压缩时其他列先被挤、本列最后被压）。
     pub dragging_col: Option<Col>,
-    pub show_size: bool,
-    pub show_type: bool,
-    pub show_modified: bool,
-    pub show_perms: bool,
     pub tree_open: bool,
     /// 树侧栏宽（FV-33，C# DirTree.Width：分隔条拖拽钳 120~500）。
     pub tree_w: f32,
     pub show_hidden: bool,
     pub sort_col: SortKey,
     pub sort_asc: bool,
-    /// 选中行集合（C# SelectedItems 多选：点击 = 单选替换、框选 = 集合应用）。
+    /// 选中行集合（C# SelectedItems 多选：点击 = 单选替换、Ctrl 单击 = 翻转、
+    /// Shift 单击 = 锚点范围、框选 = 集合应用——SelectionMode="Extended"）。
     pub selected: Vec<usize>,
+    /// Shift 范围选择锚点（#8；C# ListView 平台内部锚点：最近一次非 Shift
+    /// 单击行，行号随刷新可能过期——越界时钳到当前列表尾）。
+    pub sel_anchor: Option<usize>,
     /// 框选拖拽上下文（FV-24；None = 未在框选。C# _rubberOrigin/_rubberActive/
     /// _rubberAdditive/_rubberBase）。
     pub rubber: Option<RubberState>,
@@ -142,6 +211,10 @@ pub struct FilePane {
     pub empty_sub: String,
     /// 目录枚举进行中（状态栏提示）。
     pub loading: bool,
+    /// CR-1：登记中的本地 I/O 请求（帧尾由 `ui::poll_local_jobs` 取走）。
+    pub pending_local: Option<crate::local::LocalPaneReq>,
+    /// CR-1：loading 状态栏文案覆盖（None = 「加载中…」；删除时「正在删除…」）。
+    pub loading_label: Option<&'static str>,
     /// 状态栏消息（列目录失败等；下一次成功枚举清除）。
     pub msg: Option<String>,
     /// 目录树侧栏根节点（tree_open 时初始化；本地=驱动器 / 远程="/"）。
@@ -158,6 +231,9 @@ pub struct FilePane {
     /// 共用，时长 REFRESH_ANIM。触发点 = 刷新按钮/菜单、远程 Listing 入账、
     /// 上传完成静沿刷新；入账侧仅在上轮动画结束后重启（保角度连续）。
     pub refresh_at: Option<f64>,
+    /// 面包屑 ".." 折叠下拉展开中锁定的折叠窗口（T18-1；None = 收起）：存
+    /// crumb_fold 结果，行宽/路径变化致窗口失配即自动收起。
+    pub crumb_ov: Option<(usize, usize)>,
 }
 
 /// 目录树节点（C# TreeDir + TreeViewNode 懒展开语义）。
@@ -202,11 +278,6 @@ impl Default for FilePane {
             modified_def_w: 120.0,
             perms_def_w: 90.0,
             dragging_col: None,
-            show_size: true,
-            show_type: true,
-            show_modified: true,
-            // 权限列默认开：仅远程模式显示（C# ShowPermissions = true，本地由 Mode 隐藏）。
-            show_perms: true,
             tree_open: false,
             // C# DirTree.Width NaN → 200（TreeSplitter_DragDelta 初始化 :1098-1100）。
             tree_w: TREE_W,
@@ -214,6 +285,7 @@ impl Default for FilePane {
             sort_col: SortKey::Name,
             sort_asc: true,
             selected: Vec::new(),
+            sel_anchor: None,
             rubber: None,
             empty: false,
             path: None,
@@ -226,7 +298,10 @@ impl Default for FilePane {
             tree_reexpand: Vec::new(),
             compare_marks: None,
             refresh_at: None,
+            crumb_ov: None,
             loading: false,
+            pending_local: None,
+            loading_label: None,
             msg: None,
         }
     }
@@ -235,17 +310,18 @@ impl Default for FilePane {
 /// 可见列（名称恒在；权限列仅远程模式生效——C# ShowPermissions 默认开、本地由
 /// Mode 整列隐藏）。
 fn visible_cols(p: &FilePane) -> Vec<Col> {
+    let vis = col_vis();
     let mut v = vec![Col::Name];
-    if p.show_size {
+    if vis.size {
         v.push(Col::Size);
     }
-    if p.show_type {
+    if vis.ty {
         v.push(Col::Type);
     }
-    if p.show_modified {
+    if vis.modified {
         v.push(Col::Modified);
     }
-    if p.show_perms && p.remote_path.is_some() {
+    if vis.perms && p.remote_path.is_some() {
         v.push(Col::Permissions);
     }
     v
@@ -301,18 +377,20 @@ fn update_column_fit(p: &mut FilePane, avail: f32) {
     if avail <= 0.0 {
         return; // 首帧布局前宽度未定（C# 同）
     }
-    // 可见列（名称恒在）：(列, 当前宽, 最小宽, 回涨目标宽)。
+    // 可见列（名称恒在）：(列, 当前宽, 最小宽, 回涨目标宽)。列显隐读全局
+    // ColVisibility（T20-1 契约 B）。
+    let vis = col_vis();
     let mut cols: Vec<(Col, f32, f32, f32)> = vec![(Col::Name, p.name_w, 60.0, p.name_def_w)];
-    if p.show_size {
+    if vis.size {
         cols.push((Col::Size, p.size_w, 40.0, p.size_def_w));
     }
-    if p.show_type {
+    if vis.ty {
         cols.push((Col::Type, p.type_w, 40.0, p.type_def_w));
     }
-    if p.show_modified {
+    if vis.modified {
         cols.push((Col::Modified, p.modified_w, 40.0, p.modified_def_w));
     }
-    if p.show_perms && p.remote_path.is_some() {
+    if vis.perms && p.remote_path.is_some() {
         cols.push((Col::Permissions, p.perms_w, 40.0, p.perms_def_w));
     }
     // 总需求 = 固定开销（左右 Padding 8 + 图标列 22 + 名称列前间距 12）
@@ -470,7 +548,9 @@ impl Default for Tabs {
 /// SubtleFillColorTertiary / 选中底 TabActiveBrush / 图标 9px 恒 AccentBrush /
 /// 标题 12px 随态取 TabViewItemHeaderForeground*（常态·悬停 Secondary / 按下
 /// Tertiary / 选中覆写主色）/ 关闭钮 18×18 仅 hover·按下·选中可见 / 指示条高 2
-/// 下探 1px 盖基线 / 新建钮 28×28 固定最右。`remote`：窗格模式（决定图标与新建页签标题）。
+/// 下探 1px 盖基线 / 新建钮 28×28 固定最右；超宽等比收缩：第一轮压非活动
+/// tab（活动优先保标题），第二轮活动参与，钳到最小宽（标题省略号），兜底
+/// 裁剪不越 + 钮左界。`remote`：窗格模式（决定图标与新建页签标题）。
 /// 返回标签内的关闭请求（C# Tabs_TabCloseRequested）：本层不移除标签，交
 /// 调用方处置（活动 tab 走确认门与资源清理，非活动 tab 直接移除标题）。
 pub fn tab_strip(
@@ -492,13 +572,61 @@ pub fn tab_strip(
             Pos2::new(rect.left(), rect.top() + 37.5),
             Pos2::new(rect.right(), rect.top() + 37.5),
         ],
-        Stroke::new(1.0, p.ide_tab_border),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.ide_tab_border),
     );
 
     // 项几何：Margin 0,1,1,1 → y0 = top+1、高 36、项距 1。
     let y0 = rect.top() + 1.0;
     let mut x = rect.left();
-    let title_font = FontId::proportional(TAB_TITLE_FONT);
+
+    // 等比收缩（WinUI TabView 口径）：tab 自然宽总和超过可用宽度时压标题区，
+    // 第一轮只压非活动 tab（活动保自然宽，优先保标题），仍超出则第二轮活动
+    // tab 同步参与，钳到最小宽后标题截断加省略号。可用宽 = 条宽 − 新建钮区
+    // （Margin 右 4 + 钮 28 + 与末 tab 间隔 1）。
+    let ell_w = galley_w(ui, "…", TAB_TITLE_FONT);
+    let tab_fixed = 8.0 + TAB_ICON_FONT + 8.0 + TAB_CLOSE_COL; // 图标区 + 关闭列
+    let min_w = tab_fixed + ell_w;
+    let avail = rect.width() - (TAB_NEW_SIZE + 4.0 + 1.0);
+    let text_ws: Vec<f32> = tabs
+        .items
+        .iter()
+        .map(|it| galley_w(ui, &it.title, TAB_TITLE_FONT))
+        .collect();
+    let natural: Vec<f32> = text_ws.iter().map(|&w| tab_fixed + w).collect();
+    let total = natural.iter().sum::<f32>() + (tabs.items.len().saturating_sub(1)) as f32;
+    let mut widths = natural.clone();
+    if total > avail {
+        let excess = total - avail;
+        let budget: f32 = (0..tabs.items.len())
+            .filter(|&i| i != tabs.active)
+            .map(|i| natural[i] - min_w)
+            .sum();
+        if budget >= excess {
+            // 轮 1：非活动按可压缩量占比分摊超出部分（占比和为 1，单项收缩
+            // 不超过自身预算，天然钳在 min_w 之上）。
+            for i in 0..tabs.items.len() {
+                if i != tabs.active {
+                    widths[i] -= excess * (natural[i] - min_w) / budget;
+                }
+            }
+        } else {
+            // 轮 2：非活动全压到最小宽，剩余量由活动 tab 承担（仍钳最小宽）。
+            for (i, w) in widths.iter_mut().enumerate() {
+                if i != tabs.active {
+                    *w = min_w;
+                }
+            }
+            if let Some(w) = widths.get_mut(tabs.active) {
+                *w = (*w - (excess - budget)).max(min_w);
+            }
+        }
+    }
+    // 兜底裁剪：全部钳到最小宽仍超出时，tab 绘制不越过新建钮左界（间隔 1）。
+    let tab_clip = Rect::from_min_max(
+        Pos2::new(rect.left(), rect.top()),
+        Pos2::new(rect.right() - 4.0 - TAB_NEW_SIZE - 1.0, rect.bottom()),
+    );
+    let title_font = theme::font_small();
     let mut close_req: Option<usize> = None;
     let mode_icon = if remote { "desktop-tower" } else { "monitor" };
 
@@ -519,9 +647,7 @@ pub fn tab_strip(
     for i in 0..tabs.items.len() {
         let title = tabs.items[i].title.clone();
         let active = i == tabs.active;
-        let text_w = galley_w(ui, &title, TAB_TITLE_FONT);
-        // 图标 Margin 左 8 + 图标 9 + 标题 Margin 左 8 + 文字 + 关闭列 28。
-        let item_w = 8.0 + TAB_ICON_FONT + 8.0 + text_w + TAB_CLOSE_COL;
+        let item_w = widths[i];
         let mut item = Rect::from_min_size(Pos2::new(x, y0), egui::vec2(item_w, TAB_ITEM_H));
 
         // 亮相动画（G17-ANIM）：整体 visual 下探+渐显（命中几何随动，C#
@@ -537,8 +663,12 @@ pub fn tab_strip(
             }
         }
         painter.set_opacity(alpha);
+        painter.set_clip_rect(tab_clip);
 
         let resp = ui.allocate_rect(item, egui::Sense::click());
+        // S-7 hover tooltip 显示全文（WinUI TabViewItem ToolTip 同位）：标题被
+        // 等比收缩截断后仍可悬停读全名。
+        let resp = resp.on_hover_text(title.clone());
         // 三态底（模板 VSM）：选中 TabActiveBrush / hover·按下
         // SubtleFillColorSecondary / 常态 SubtleFillColorTertiary（方角贴基线，
         // CornerRadius 0）。
@@ -585,13 +715,31 @@ pub fn tab_strip(
         } else {
             p.text_secondary
         };
-        painter.text(
-            Pos2::new(item.left() + 8.0 + TAB_ICON_FONT + 8.0, cy),
-            Align2::LEFT_CENTER,
-            title,
-            title_font.clone(),
-            title_fg,
-        );
+        // 可用文字宽 = 项宽 − 固定开销（图标区 + 关闭列）；超宽截断加省略号
+        // （LayoutJob 单行 + overflow '…'，WinUI 标题截断同观感）。
+        // M-12：关闭钮仅图标无文字，无障碍语义 = 「关闭 {标签标题}」；先取 label，
+        // title 随后移入绘制 job / painter.text。
+        let close_label = crate::i18n::tfmt("关闭 {0}", &[&title]);
+        let title_x = Pos2::new(item.left() + 8.0 + TAB_ICON_FONT + 8.0, cy);
+        if text_ws[i] > widths[i] - tab_fixed {
+            let mut job = egui::text::LayoutJob::single_section(
+                title,
+                egui::TextFormat::simple(title_font.clone(), title_fg),
+            );
+            job.wrap.max_width = widths[i] - tab_fixed;
+            job.wrap.max_rows = 1;
+            job.wrap.overflow_character = Some('…');
+            let galley = painter.layout_job(job);
+            painter.galley(title_x, galley, title_fg);
+        } else {
+            painter.text(
+                title_x,
+                Align2::LEFT_CENTER,
+                title,
+                title_font.clone(),
+                title_fg,
+            );
+        }
 
         // 关闭钮 18×18 CornerRadius 3（Margin 6,0,4,0），仅 hover / 按下 / 选中可见。
         if active || resp.hovered() || resp.is_pointer_button_down_on() {
@@ -600,6 +748,9 @@ pub fn tab_strip(
                 egui::vec2(TAB_CLOSE_SIZE, TAB_CLOSE_SIZE),
             );
             let close_resp = ui.allocate_rect(close_r, egui::Sense::click());
+            close_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Button, true, close_label.as_str())
+            });
             if close_resp.hovered() {
                 // hover 底来自默认 Button 模板 ButtonBackgroundPointerOver
                 // （= ControlFillColorSecondary）。
@@ -632,6 +783,8 @@ pub fn tab_strip(
         egui::vec2(TAB_NEW_SIZE, TAB_NEW_SIZE),
     );
     let resp = ui.allocate_rect(new_r, egui::Sense::click());
+    // M-12：+ 号自绘无控件语义，补 widget_info（C# NewTabBtn Button 同位）。
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, t("新建标签")));
     if resp.hovered() {
         // NewTabBtn 资源字典覆写 ButtonBackgroundPointerOver（亮 #E3E3E3 / 暗 #2B3138）。
         ui.painter().rect_filled(new_r, 3.0, p.tab_new_hover);
@@ -779,7 +932,7 @@ pub fn folder(
                 Pos2::new(line_x, toolbar.bottom()),
                 Pos2::new(line_x, status.top()),
             ],
-            Stroke::new(1.0, p.separator),
+            theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.separator),
         );
         let thumb = Rect::from_min_size(
             Pos2::new(list_left - 6.0, toolbar.bottom()),
@@ -787,7 +940,7 @@ pub fn folder(
         );
         let resp = ui.allocate_rect(thumb, egui::Sense::drag());
         if resp.hovered() || resp.dragged() {
-            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            cursor_intent(ui.ctx(), CursorLayer::Hover, CursorIcon::ResizeHorizontal);
         }
         if resp.dragged() {
             pane.tree_w = (pane.tree_w + resp.drag_delta().x).clamp(120.0, 500.0);
@@ -803,7 +956,7 @@ pub fn folder(
         Pos2::new(inner.right(), status.top()),
     );
 
-    header_row(ui, header, pane, st_icons, &p);
+    header_row(ui, header, pane, st_icons, &p, hooks, side);
     file_rows(ui, list, pane, st_icons, sys_icons, &p, hooks, side);
 
     // 列分隔竖线：跨表头+列表贯穿，画在相邻列之间（C# 覆盖层：N 列 N-1 条线，
@@ -820,15 +973,15 @@ pub fn folder(
         if x < inner.right() - 8.0 {
             ui.painter().line_segment(
                 [Pos2::new(x, header.top()), Pos2::new(x, list.bottom())],
-                Stroke::new(1.0, p.separator),
+                theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.separator),
             );
             let thumb = Rect::from_min_size(
                 Pos2::new(x - 8.0, header.top()),
                 egui::vec2(16.0, header.height()),
             );
             let thumb_resp = ui.allocate_rect(thumb, Sense::click_and_drag());
-            if thumb_resp.hovered() {
-                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            if thumb_resp.hovered() || thumb_resp.dragged() {
+                cursor_intent(ui.ctx(), CursorLayer::Hover, CursorIcon::ResizeHorizontal);
             }
             if thumb_resp.dragged() {
                 // 增量累加到当前列宽并按 min/max 钳制（C# ColumnThumb_DragDelta）；
@@ -855,6 +1008,65 @@ pub fn folder(
 }
 
 // ── 面包屑行 ──────────────────────────────────────────────
+/// 面包屑折叠窗口计算（T18-1；C# FileView.xaml.cs RebuildCrumbPanel :1174-1242 +
+/// CollapsedCrumbWidth :1244-1260 逐式翻译。下标换算：C# `_crumbs` 段表含根段
+/// [0]（house 图标钮），Rust 侧 house 单独绘制、`widths` 只收路径段宽，故 C#
+/// 段下标 k ↔ Rust 路径段下标 k-1；C# 折叠区间 [i, j] ↔ Rust [i-1, j-1]）。
+///
+/// 规则（C# 同口径）：根段与末段恒显，只折中间路径段，折叠数量取「能放下的
+/// 最小值」——cnt 自 1 递增，窗口在中段范围内居中（整除偏左），首个放得下的
+/// 窗口即选定；全折仍放不下则兜底全折（home > .. > 末段，末段超长由 160px
+/// MaxWidth 截断兜底）。段数不足（根 + 0/1 段无从折）或可用宽 ≤ 0 或全显放
+/// 得下 → None（完整显示，不出现 ".."）。
+/// 返回 Some((a, b))：被折叠的 Rust 路径段下标闭区间 [a, b]。
+fn crumb_fold(
+    widths: &[f32],
+    ov_w: f32,
+    sep_w: f32,
+    house_w: f32,
+    avail: f32,
+) -> Option<(usize, usize)> {
+    let n = widths.len(); // Rust 路径段数；C# 段数 nc = n + 1（含根段）
+    let nc = n + 1;
+    // 全显总宽（C# :1185-1199）：Σ按钮宽 + (nc-1) 条分隔线 + StackPanel
+    // Spacing=2（子元素 = 按钮 + 分隔线共 2nc-1 个 → 间隙 2×(2nc-2)）。
+    let full = house_w
+        + widths.iter().sum::<f32>()
+        + (nc - 1) as f32 * sep_w
+        + 2.0 * ((2 * nc - 2) as f32);
+    if n <= 1 || avail <= 0.0 || full <= avail {
+        return None;
+    }
+    // 折叠窗口自中间向两侧扩张（C# :1216-1228）：兜底 home > .. > 末段
+    //（C# foldFrom=1, foldTo=nc-2 ↔ Rust [0, n-2]）。
+    let mid_count = nc - 2; // 中段数（不含根段与末段）
+    let (mut fold_a, mut fold_b) = (0usize, mid_count - 1);
+    for cnt in 1..=mid_count {
+        let i = 1 + (mid_count - cnt) / 2; // 折叠窗口在中段内居中（整除偏左）
+        let j = i + cnt - 1;
+        let (a, b) = (i - 1, j - 1); // C# 段下标 → Rust 路径段下标
+        if collapsed_w(widths, a, b, ov_w, sep_w, house_w) <= avail {
+            fold_a = a;
+            fold_b = b;
+            break;
+        }
+    }
+    Some((fold_a, fold_b))
+}
+
+/// 折叠方案 [a, b]（Rust 路径段闭区间；C# CollapsedCrumbWidth :1244-1260 换算）
+/// 的理想总宽：house + 头部保留段 + ".." + 尾部保留段 + 分隔线 + Spacing 2。
+fn collapsed_w(widths: &[f32], a: usize, b: usize, ov_w: f32, sep_w: f32, house_w: f32) -> f32 {
+    let n = widths.len();
+    // 可见按钮 = house + 头部保留段(a) + ".." + 尾部保留段(n-1-b)
+    //（C# visButtons = i + 1 + (nc - 1 - j)，含根段）。
+    let vis_buttons = a + 2 + (n - 1 - b);
+    let seps = vis_buttons - 1;
+    let head: f32 = widths[..a].iter().sum();
+    let tail: f32 = widths[b + 1..].iter().sum();
+    head + house_w + ov_w + tail + seps as f32 * sep_w + 2.0 * ((vis_buttons + seps - 1) as f32)
+}
+
 fn breadcrumb(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -870,7 +1082,7 @@ fn breadcrumb(
             Pos2::new(rect.left(), rect.bottom() - 0.5),
             Pos2::new(rect.right(), rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0, p.row_separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.row_separator),
     );
 
     // 点击空白切输入框（先分配在下层；house/段命中面在后分配可优先吃点击）。
@@ -896,7 +1108,7 @@ fn breadcrumb(
                 .unwrap_or(false);
             let te = egui::TextEdit::singleline(&mut text)
                 .id_salt(te_id)
-                .font(egui::FontId::proportional(12.0))
+                .font(theme::font_small())
                 .desired_width(edit_r.width())
                 .min_size(egui::vec2(edit_r.width(), edit_r.height()));
             let resp = ui.put(edit_r, te);
@@ -910,11 +1122,20 @@ fn breadcrumb(
             // 「右键冻结选区 + 键盘 Ctrl+C」方案）。
             hooks.ctx_menu.register(resp.id, edit_r);
             let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
             // 菜单项松开帧与动作注入帧抑制提交：egui 0.37 默认 Clicks 收焦
             // （收焦在 click 完成帧，见 ctx_menu submit_guard 注释），lost
             // 沿落在菜单项松开帧，若照常提交则菜单一点编辑态即退出。
             let suppress = hooks.ctx_menu.suppress_submit();
-            if !suppress && (resp.lost_focus() || enter) {
+            // #9 对齐 C# PathEditBox（FileView.xaml.cs:1369-1407）：Enter 提交
+            // 导航、Esc 取消退出、失焦仅退出编辑不导航（旧实现 blur 也导航，
+            // 点击别处即被跳转，误触高发）。Enter/Esc 仅在编辑框持焦时生效
+            // （C# KeyDown 挂框上，全局按键不误伤）。
+            if !suppress && esc && resp.has_focus() {
+                // Esc：取消编辑（PathEditBox_KeyDown Escape 臂），不导航。
+                *hooks.crumb_edit = None;
+                ui.ctx().data_mut(|d| d.insert_temp(open_id, false));
+            } else if !suppress && enter && resp.has_focus() {
                 // 回车导航到输入路径；本地无效路径 navigate 失败保持原目录，
                 // 远程无效路径由列目录失败消息反馈。
                 let t = text.trim().to_owned();
@@ -927,6 +1148,11 @@ fn breadcrumb(
                 }
                 *hooks.crumb_edit = None;
                 // 清编辑态打开旗标，下次打开重新走打开沿夺焦。
+                ui.ctx().data_mut(|d| d.insert_temp(open_id, false));
+            } else if !suppress && resp.lost_focus() {
+                // 失焦：仅退出编辑（PathEditBox_LostFocus → EndPathEdit），
+                // 不导航——点击别处只是收起编辑框。
+                *hooks.crumb_edit = None;
                 ui.ctx().data_mut(|d| d.insert_temp(open_id, false));
             } else if let Some((_, t)) = hooks.crumb_edit.as_mut() {
                 *t = text;
@@ -1003,21 +1229,83 @@ fn breadcrumb(
     }
     x += 24.0 + 2.0;
 
-    for (i, (text, nav)) in segs.iter().enumerate() {
-        let last = i == segs.len() - 1;
-        // 当前段 SemiBold 品牌字 + 主色，其余常规 + 次级（C# 重建面包屑）。
-        let font = if last {
-            FontId::new(12.0, egui::FontFamily::Name("brand".into()))
+    // 预测量各段宽（末段品牌字体；160 截断后计）与 ".." 哨兵宽——折叠估算与
+    // 实际绘制同口径（C# :1183-1197 预生成全部段按钮 MeasureWidth）。
+    let brand_font = theme::font_brand_small();
+    let reg_font = theme::font_small();
+    let mut widths = Vec::with_capacity(segs.len());
+    for (i, (text, _)) in segs.iter().enumerate() {
+        let font = if i + 1 == segs.len() {
+            &brand_font
         } else {
-            FontId::proportional(12.0)
+            &reg_font
         };
-        let color = if last {
-            p.text_primary
-        } else {
-            p.text_secondary
+        let shown = ellipsize(ui, text, font, 160.0);
+        let w = ui
+            .painter()
+            .layout_no_wrap(shown, font.clone(), Color32::WHITE)
+            .size()
+            .x
+            + 12.0;
+        widths.push(w);
+    }
+    // ".." 哨兵宽（C# :1193-1197 CrumbTextLastStyle 品牌样式）。
+    let ov_w = ui
+        .painter()
+        .layout_no_wrap("..".to_owned(), brand_font.clone(), Color32::WHITE)
+        .size()
+        .x
+        + 12.0;
+    // 折叠窗口（C# :1202 avail = BreadcrumbRow.ActualWidth - 12 行 Padding 6+6）。
+    let fold = crumb_fold(&widths, ov_w, 10.0, 24.0, rect.width() - 12.0);
+    // 展开中的窗口与当前计算失配（行宽/路径变化）→ 自动收起。
+    if pane.crumb_ov.is_some() && pane.crumb_ov != fold {
+        pane.crumb_ov = None;
+    }
+
+    /// 折叠感知渲染序列元素：路径段下标 / ".." 哨兵。
+    enum CrumbItem {
+        Seg(usize),
+        Ov,
+    }
+    let items: Vec<CrumbItem> = match fold {
+        None => (0..segs.len()).map(CrumbItem::Seg).collect(),
+        Some((a, b)) => {
+            let mut v: Vec<CrumbItem> = (0..a).map(CrumbItem::Seg).collect();
+            v.push(CrumbItem::Ov);
+            v.extend((b + 1..segs.len()).map(CrumbItem::Seg));
+            v
+        }
+    };
+
+    let ov_open_id = egui::Id::NULL.with(("crumb_ov_open", side));
+    let mut ov_btn_r: Option<Rect> = None;
+    let mut ov_clicked = false;
+
+    for (ii, item) in items.iter().enumerate() {
+        let last = ii == items.len() - 1;
+        // 末段 SemiBold 品牌字 + 主色，其余常规 + 次级；哨兵品牌样式（C# 重建面包屑）。
+        let is_last_seg = match item {
+            CrumbItem::Seg(i) => *i + 1 == segs.len(),
+            CrumbItem::Ov => false,
+        };
+        let (text, font, color) = match item {
+            CrumbItem::Seg(i) => {
+                let (seg_text, _) = &segs[*i];
+                (
+                    seg_text.as_str(),
+                    if is_last_seg { &brand_font } else { &reg_font },
+                    if is_last_seg {
+                        p.text_primary
+                    } else {
+                        p.text_secondary
+                    },
+                )
+            }
+            CrumbItem::Ov => ("..", &brand_font, p.text_primary),
         };
         // 段文字 MaxWidth 160 截断（C# TextBlock MaxWidth + TextTrimming CharacterEllipsis）。
-        let shown = ellipsize(ui, text, &font, 160.0);
+        let shown = ellipsize(ui, text, font, 160.0);
         let galley = ui
             .painter()
             .layout_no_wrap(shown.clone(), font.clone(), color);
@@ -1041,7 +1329,7 @@ fn breadcrumb(
             // C# CrumbSeparator Glyph E76C（ChevronRight）= > 形折线，非实心三角：
             // 两段 1px 线，高 10（FontSize=10）居中，前色 TextFillColorTertiary。
             let cx = x + 5.0;
-            let crumb_stroke = Stroke::new(1.0, p.text_tertiary);
+            let crumb_stroke = theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.text_tertiary);
             ui.painter().line_segment(
                 [Pos2::new(cx - 2.5, cy - 5.0), Pos2::new(cx + 2.5, cy)],
                 crumb_stroke,
@@ -1052,14 +1340,130 @@ fn breadcrumb(
             );
             x += 10.0 + 2.0;
         }
-        if resp.clicked() {
-            match nav {
-                Nav::Local(pth) => {
-                    if crate::local::navigate(pane, pth) {
-                        *hooks.sync_nav = Some((side, pth.to_string_lossy().into_owned()));
+        if matches!(item, CrumbItem::Ov) {
+            ov_btn_r = Some(seg_r);
+            // 下拉开着时 ".." 常亮（展开态标记）。
+            if pane.crumb_ov.is_some() {
+                ui.painter().rect_filled(seg_r, 4.0, p.row_hover);
+            }
+            if resp.clicked() {
+                ov_clicked = true;
+            }
+        } else if resp.clicked() {
+            if let CrumbItem::Seg(i) = item {
+                let (_, nav) = &segs[*i];
+                match nav {
+                    Nav::Local(pth) => {
+                        if crate::local::navigate(pane, pth) {
+                            *hooks.sync_nav = Some((side, pth.to_string_lossy().into_owned()));
+                        }
                     }
+                    Nav::Remote(target) => hooks.list_req.push((side, target.clone())),
                 }
-                Nav::Remote(target) => hooks.list_req.push((side, target.clone())),
+            }
+        }
+    }
+
+    // ".." 点击翻转展开（打开沿只记状态 + 置 fresh 旗标，弹层/遮罩自下一帧起
+    // 绘制——与 dialogs combo popup 同款一帧拍子，防当帧点击被自建遮罩吃掉）。
+    if ov_clicked {
+        let opening = if pane.crumb_ov.is_some() { None } else { fold };
+        pane.crumb_ov = opening;
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(ov_open_id, opening.is_some()));
+    }
+
+    // 折叠段下拉浮层（外壳对照 dialogs.rs combo popup :2921-2942：全屏遮罩点击
+    // 关闭 + Foreground 弹层（后者在上），combo_popup_bg 底 + 1px 描边圆角 8；
+    // Esc 亦收起）。
+    if pane.crumb_ov == fold && fold.is_some() {
+        let fresh = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(ov_open_id))
+            .unwrap_or(false);
+        if fresh {
+            // 打开沿帧：清旗标，弹层下一帧起算（见上）。
+            ui.ctx().data_mut(|d| d.insert_temp(ov_open_id, false));
+        } else if let (Some(btn_r), Some((a, b))) = (ov_btn_r, fold) {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                pane.crumb_ov = None;
+            } else {
+                let ctx = ui.ctx().clone();
+                let screen = ctx.input(|i| i.raw.screen_rect).unwrap_or(rect);
+                // 遮罩先建（点空白关闭），弹层后建（同 Order 后者在上）。
+                egui::Area::new(egui::Id::NULL.with(("crumb_ov_blocker", side)))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(screen.min)
+                    .show(&ctx, |ui| {
+                        let blk = ui.allocate_rect(screen, Sense::click());
+                        if blk.clicked() {
+                            pane.crumb_ov = None;
+                        }
+                    });
+                // 弹层：向下 4 间距（面包屑贴窗口顶，无需上翻）。
+                let item_h = 26.0;
+                let mut pop_w = 120.0f32;
+                for (seg_text, _) in &segs[a..=b] {
+                    let g = ui.painter().layout_no_wrap(
+                        seg_text.clone(),
+                        reg_font.clone(),
+                        Color32::WHITE,
+                    );
+                    pop_w = pop_w.max(g.size().x + 24.0);
+                }
+                let pop_h = (b - a + 1) as f32 * item_h + 2.0;
+                let pop_rect = Rect::from_min_size(
+                    Pos2::new(btn_r.left(), btn_r.bottom() + 4.0),
+                    egui::vec2(pop_w, pop_h),
+                );
+                egui::Area::new(egui::Id::NULL.with(("crumb_ov_popup", side)))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(pop_rect.min)
+                    .show(&ctx, |ui| {
+                        let pt = ui.painter().with_clip_rect(pop_rect);
+                        pt.rect_filled(pop_rect, 8.0, p.combo_popup_bg);
+                        pt.rect_stroke(
+                            pop_rect,
+                            8.0,
+                            theme::stroke(pt.ctx().pixels_per_point(), 1.0, p.combo_popup_stroke),
+                            egui::StrokeKind::Outside,
+                        );
+                        for (k, (seg_text, seg_nav)) in segs[a..=b].iter().enumerate() {
+                            let ir = Rect::from_min_size(
+                                Pos2::new(
+                                    pop_rect.left() + 1.0,
+                                    pop_rect.top() + 1.0 + k as f32 * item_h,
+                                ),
+                                egui::vec2(pop_w - 2.0, item_h),
+                            );
+                            let row = ui.allocate_rect(ir, Sense::click());
+                            if row.hovered() {
+                                pt.rect_filled(ir, 0.0, p.row_hover);
+                            }
+                            let shown = ellipsize(ui, seg_text, &reg_font, pop_w - 24.0);
+                            pt.text(
+                                Pos2::new(ir.left() + 12.0, ir.center().y),
+                                Align2::LEFT_CENTER,
+                                shown,
+                                theme::font_small(),
+                                p.text_primary,
+                            );
+                            if row.clicked() {
+                                match seg_nav {
+                                    Nav::Local(pth) => {
+                                        if crate::local::navigate(pane, pth) {
+                                            *hooks.sync_nav =
+                                                Some((side, pth.to_string_lossy().into_owned()));
+                                        }
+                                    }
+                                    Nav::Remote(target) => {
+                                        hooks.list_req.push((side, target.clone()))
+                                    }
+                                }
+                                pane.crumb_ov = None;
+                            }
+                        }
+                    });
             }
         }
     }
@@ -1104,7 +1508,7 @@ fn toolbar_row(
             Pos2::new(rect.left(), rect.bottom() - 0.5),
             Pos2::new(rect.right(), rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0, p.row_separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.row_separator),
     );
 
     let tools = [
@@ -1146,6 +1550,9 @@ fn toolbar_row(
                 Sense::hover()
             },
         );
+        // M-12：自绘钮无控件语义，补 widget_info（C# AutomationProperties 同位，
+        // 屏幕阅读器 / AccessKit 检视可见「{label}」钮）；禁用态如实上报 enabled=false。
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, t(label)));
         let on = match id {
             "tree" => pane.tree_open,
             "hidden" => pane.show_hidden,
@@ -1334,6 +1741,8 @@ fn header_row(
     pane: &mut FilePane,
     st_icons: &mut crate::icons::Cache,
     p: &theme::Palette,
+    hooks: &mut Hooks,
+    side: usize,
 ) {
     ui.painter().rect_filled(rect, 0.0, p.folder_area);
     ui.painter().line_segment(
@@ -1341,11 +1750,11 @@ fn header_row(
             Pos2::new(rect.left(), rect.bottom() - 0.5),
             Pos2::new(rect.right(), rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0, p.row_separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.row_separator),
     );
 
     // 表头字体（C# ColumnHeader SemiBold 11 → brand=Inter-SemiBold）。
-    let font = FontId::new(HEADER_FONT, egui::FontFamily::Name("brand".into()));
+    let font = theme::font_header();
     let content_x = rect.left() + 4.0;
     let cy = rect.center().y;
     for (c, r) in col_rects(pane, content_x) {
@@ -1409,8 +1818,15 @@ fn header_row(
             }
         }
 
-        // 点击表头排序（列宽拖拽走分隔线 Thumb，见 folder）。
-        let resp = ui.allocate_rect(r, egui::Sense::click());
+        // 点击表头排序（列宽拖拽走分隔线 Thumb，见 folder）。col_rects 只给
+        // 列 x 区间（y=0 / 高 0 的占位矩形），命中区必须把 x 区间投影回表头
+        // 带自身 y 范围——直接 allocate 原矩形会把可点区落在窗口顶缘的零高
+        // 条上，表头点击永远落空（画字只用 x 不受影响，故此前无视觉破绽）。
+        let hit = Rect::from_min_max(
+            Pos2::new(r.left(), rect.top()),
+            Pos2::new(r.right(), rect.bottom()),
+        );
+        let resp = ui.allocate_rect(hit, egui::Sense::click());
         if resp.clicked() {
             if active_sort_col(pane) == c {
                 pane.sort_asc = !pane.sort_asc;
@@ -1422,6 +1838,21 @@ fn header_row(
         }
     }
     let _ = st_icons;
+
+    // 表头右键列显隐菜单（T20-1；C# HeaderGrid.ContextFlyout FileView.xaml:
+    // 359-367 四 ToggleMenuFlyoutItem，Placement=Bottom）：右键表头任意处弹出
+    // （排序走左键，右键不冲突；原始输入级判定，避开与单元格命中区争层）。
+    if ui.rect_contains_pointer(rect) && ui.input(|i| i.pointer.secondary_clicked()) {
+        let pos = ui.input(|i| i.pointer.interact_pos().unwrap_or(rect.left_top()));
+        *hooks.menu = Some(MenuState {
+            pos,
+            pane: side,
+            row: None,
+            queue: None,
+            terminal: false,
+            cols: true,
+        });
+    }
 }
 
 fn galley_w(ui: &egui::Ui, text: &str, size: f32) -> f32 {
@@ -1468,7 +1899,7 @@ fn file_rows(
     hooks: &mut Hooks,
     side: usize,
 ) {
-    let row_font = FontId::proportional(ROW_FONT);
+    let row_font = theme::font_small();
     let content_x = rect.left() + 4.0;
     let row_h = ROW_H; // C# 模板 Padding 4,1 + 图标格 22 = 24
 
@@ -1481,26 +1912,86 @@ fn file_rows(
     let released = ui.input(|i| i.pointer.any_released());
     if let Some(pl) = egui::DragAndDrop::payload::<DragPayload>(ui.ctx()) {
         if pl.side == side {
+            // 拖拽影子（C# DragItemsStarting 平台 drag visual：被拖项快照一直跟随
+            // 光标直至放进目标区）：卡片底 + 描边 + 阴影，光标右下偏移；最多 3 行
+            // 条目名，更多以「等 N 项」收尾。画在 Tooltip 顶层——目标侧 DropHint
+            // 高亮遮罩（后绘制窗格）不会盖住影子（用户实测：普通层影子会被
+            // 对侧遮罩压住，松手才消失，观感「抓起物进不去目标区」）。
+            // T20-G④ 用户定案：影子与判定门解耦——C# 平台拖影始终可抓，禁止
+            // 只作用于目标侧（原实现 !dnd_ready 连源侧影子都不画，观感「抓不
+            // 起来」）。C# DragDropCaption「传输到 {leaf}」方向 chip 去除（用户
+            // 定案：C# 原版该提示同样多余）。
             if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let tip = tfmt("传输到 {0}", &[&dir_leaf(pane)]);
-                let font = FontId::proportional(ROW_FONT);
-                let galley = ui
-                    .painter()
-                    .layout_no_wrap(tip, font.clone(), p.on_accent_fg);
-                let chip = Rect::from_min_size(
-                    pos + egui::vec2(14.0, 12.0),
-                    galley.size() + egui::vec2(16.0, 8.0),
+                let lp = ui
+                    .ctx()
+                    .layer_painter(LayerId::new(Order::Tooltip, egui::Id::unique("dnd_ghost")));
+                let font = theme::font_small();
+                let names: Vec<String> = pl
+                    .rows
+                    .iter()
+                    .filter_map(|&r| pane.entries.get(r).map(|e| e.name.clone()))
+                    .collect();
+                let mut lines: Vec<String> = names.iter().take(3).cloned().collect();
+                if names.len() > 3 {
+                    lines.push(tfmt("等 {0} 项", &[&names.len().to_string()]));
+                }
+                let galleys: Vec<_> = lines
+                    .iter()
+                    .map(|s| {
+                        // 名字过长截断（…收尾），影子卡保持紧凑。
+                        let shown = if s.chars().count() > 28 {
+                            format!("{}…", s.chars().take(28).collect::<String>())
+                        } else {
+                            s.clone()
+                        };
+                        lp.layout_no_wrap(shown, font.clone(), p.text_primary)
+                    })
+                    .collect();
+                let row_gap = 2.0;
+                let pad = egui::vec2(10.0, 5.0);
+                let card_w =
+                    galleys.iter().map(|g| g.size().x).fold(56.0_f32, f32::max) + pad.x * 2.0;
+                let card_h = galleys.iter().map(|g| g.size().y).sum::<f32>()
+                    + row_gap * (galleys.len().saturating_sub(1)) as f32
+                    + pad.y * 2.0;
+                let card =
+                    Rect::from_min_size(pos + egui::vec2(10.0, 10.0), Vec2::new(card_w, card_h));
+                lp.rect_filled(
+                    card.translate(egui::vec2(2.0, 3.0)),
+                    6.0,
+                    Color32::from_black_alpha(38),
                 );
-                ui.painter().rect_filled(chip, 4.0, p.accent);
-                ui.painter()
-                    .galley(chip.min + egui::vec2(8.0, 4.0), galley, p.on_accent_fg);
+                lp.rect_filled(card, 6.0, theme::palette(ui.ctx()).card_bg);
+                lp.rect_stroke(
+                    card,
+                    6.0,
+                    theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.accent),
+                    egui::StrokeKind::Inside,
+                );
+                let mut y = card.top() + pad.y;
+                for g in &galleys {
+                    lp.galley(Pos2::new(card.left() + pad.x, y), g.clone(), p.text_primary);
+                    y += g.size().y + row_gap;
+                }
+            }
+        } else if !hooks.dnd_ready {
+            // T20-4（C# DragOver :3393-3421 → CanTransferToOpposite :3010-3015）：
+            // 目标侧不就绪 = 无 DropHint、悬停禁止光标、释放不入队不清 payload
+            // （C# e.AllowedOperation = None 同观感；连接态按会话域逐帧判定）。
+            if ui.rect_contains_pointer(rect) {
+                cursor_intent(ui.ctx(), CursorLayer::Hover, CursorIcon::NotAllowed);
             }
         } else if ui.rect_contains_pointer(rect) {
             if released {
                 // Drop：取走载荷走批量传输入队（覆盖确认/异步 STAT 复用现有链路）。
+                // 传源侧 pl.side（begin_transfer_multi 首参 = 发起窗格，dst = 1 - pane）；
+                // 传 drop 目标侧会把方向整个反过来（右拖左 = 右侧列表被传到左边）。
                 egui::DragAndDrop::clear_payload(ui.ctx());
-                *hooks.transfer = Some((side, pl.rows.clone()));
+                *hooks.transfer = Some((pl.side, pl.rows.clone()));
             } else {
+                // C# DragOver 合法放置：目标区高亮保留，光标改默认箭头
+                //（原 Copy 的「+ 号」观感被判为怪异；F-8 要求 3）。
+                cursor_intent(ui.ctx(), CursorLayer::Hover, CursorIcon::Default);
                 ui.painter()
                     .rect_filled(rect, 2.0, p.accent.gamma_multiply(0.08));
                 ui.painter().rect_stroke(
@@ -1524,6 +2015,19 @@ fn file_rows(
 
     // 滚动列表（C# ScrollViewer）：内容占位 = 行数×行高，不足视口铺满（空白区右键同 C#）。
     let n = pane.entries.len();
+
+    // Ctrl+A 全选（C# ListView SelectionMode="Extended" 平台语义：焦点在列表时
+    // Ctrl+A 全选）。Rust 无焦点系统 → 指针悬停本侧列表区才消费（另一侧不劫持）；
+    // 有文本编辑焦点（面包屑/重命名/主机名输入框）时不劫持 Ctrl+A，文本全选
+    // 原生照常；占位行（比对占位，name 空）不可选，与行点击 !ph 守卫同口径。
+    let ctrl_a = ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::A));
+    if ctrl_a && n > 0 && ui.rect_contains_pointer(rect) && ui.memory(|m| m.focused().is_none()) {
+        pane.selected = (0..n)
+            .filter(|&i| !pane.entries[i].name.is_empty())
+            .collect();
+        pane.sel_anchor = Some(0);
+    }
+
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -1602,10 +2106,38 @@ fn file_rows(
                     _ => {}
                 }
                 if !ph && resp.clicked() {
-                    pane.selected = vec![i];
+                    // 行多选（#8，C# ListView SelectionMode="Extended" 平台语义）：
+                    // Shift+单击 = 锚点范围替换（锚点 = 最近一次非 Shift 单击行，
+                    // 无锚点退化单选；锚点随刷新可能越界，钳到当前列表尾）；
+                    // Ctrl+单击 = 翻转该行选中（焦点/锚点移至该行）；
+                    // 普通单击 = 替换单选并重置锚点。
+                    let mods = ui.input(|i| i.modifiers);
+                    if mods.shift
+                        && let Some(a) = pane.sel_anchor
+                    {
+                        let last = pane.entries.len().saturating_sub(1);
+                        let hi = a.max(i).min(last);
+                        let lo = a.min(i).min(last);
+                        pane.selected = if lo <= hi {
+                            (lo..=hi).collect()
+                        } else {
+                            vec![i]
+                        };
+                    } else if mods.ctrl {
+                        if let Some(p) = pane.selected.iter().position(|&s| s == i) {
+                            pane.selected.remove(p);
+                        } else {
+                            pane.selected.push(i);
+                        }
+                        pane.sel_anchor = Some(i);
+                    } else {
+                        pane.selected = vec![i];
+                        pane.sel_anchor = Some(i);
+                    }
                 }
-                // 双击目录进入（C# EnterDirectory → EnterLocalDirectory）。
-                if !ph && resp.double_clicked() {
+                // 双击目录进入（C# FileList_DoubleTapped :2248-2254：仅 IsDirectory
+                // 进入，文件双击无动作——文件不是目录，进去只会列目录报错）。
+                if !ph && e.is_dir && resp.double_clicked() {
                     open_idx = Some(i);
                 }
                 // FV-25（C# DragItemsStarting :3366 / CanDragItems）：左键拖行发起
@@ -1636,6 +2168,7 @@ fn file_rows(
                         row: if ph { None } else { Some(i) },
                         queue: None,
                         terminal: false,
+                        cols: false,
                     });
                 }
 
@@ -1757,6 +2290,7 @@ fn file_rows(
                         row: None,
                         queue: None,
                         terminal: false,
+                        cols: false,
                     });
                 }
                 rubber_band(ui, pane, &resp, top, rect, row_h, clip);
@@ -1866,13 +2400,14 @@ fn rubber_band(
     ui.painter().rect_stroke(
         band,
         2.0,
-        Stroke::new(1.0, p.accent),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.accent),
         egui::StrokeKind::Inside,
     );
 }
 
-/// 当前目录末段显示名（C# DragDropCaption leaf：_currentPath 去尾分隔后末段，
-/// 根显示 "/"；本地「此电脑」根同 "/"）。
+/// 目录末段显示名（原拖拽方向 chip「传输到 {leaf}」用，chip 已按用户定案
+/// 去除——C# DragDropCaption 同判多余；仅 dir_leaf_tests 引用保留防回归）。
+#[cfg(test)]
 fn dir_leaf(pane: &FilePane) -> String {
     if let Some(rp) = &pane.remote_path {
         return if rp == "/" {
@@ -1902,7 +2437,7 @@ fn status_bar(ui: &mut egui::Ui, rect: Rect, pane: &FilePane, p: &theme::Palette
             Pos2::new(rect.left(), rect.top() + 0.5),
             Pos2::new(rect.right(), rect.top() + 0.5),
         ],
-        Stroke::new(1.0, p.row_separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.row_separator),
     );
     let dirs = pane.entries.iter().filter(|e| e.is_dir).count();
     let files = pane.entries.len() - dirs;
@@ -1918,7 +2453,11 @@ fn status_bar(ui: &mut egui::Ui, rect: Rect, pane: &FilePane, p: &theme::Palette
         String::new()
     };
     let load = if pane.loading {
-        format!("  ·  {}", t("加载中…"))
+        // CR-1：删除期间覆盖为「正在删除…」，其余在途 I/O 沿用「加载中…」。
+        format!(
+            "  ·  {}",
+            pane.loading_label.unwrap_or_else(|| t("加载中…"))
+        )
     } else {
         String::new()
     };
@@ -1930,7 +2469,7 @@ fn status_bar(ui: &mut egui::Ui, rect: Rect, pane: &FilePane, p: &theme::Palette
             tfmt("{0} 个目录", &[&dirs]),
             tfmt("{0} 个文件", &[&files])
         ),
-        FontId::proportional(ROW_FONT),
+        theme::font_small(),
         p.text_secondary,
     );
     if let Some(m) = &pane.msg {
@@ -1938,7 +2477,7 @@ fn status_bar(ui: &mut egui::Ui, rect: Rect, pane: &FilePane, p: &theme::Palette
             Pos2::new(rect.right() - 8.0, rect.center().y),
             Align2::RIGHT_CENTER,
             m,
-            FontId::proportional(ROW_FONT),
+            theme::font_small(),
             p.text_secondary,
         );
     }
@@ -1972,7 +2511,7 @@ fn empty_state(
     }
 
     // 标题 / 副标题 / 按钮位置按 C# StackPanel Spacing（中心 84 / 110，按钮顶 140）。
-    let title_font = FontId::new(18.0, egui::FontFamily::Name("brand".into()));
+    let title_font = theme::font_empty_title();
     ui.painter().text(
         Pos2::new(cx, top + 84.0),
         Align2::CENTER_CENTER,
@@ -1984,19 +2523,21 @@ fn empty_state(
         Pos2::new(cx, top + 110.0),
         Align2::CENTER_CENTER,
         sub,
-        FontId::proportional(ROW_FONT),
+        theme::font_small(),
         p.text_secondary,
     );
 
     // 蓝色主按钮（C# EmptyStateBtn：Padding 24,8，图标 14 + 文字）。
     let y = top + 140.0;
     let label = t("选择主机");
-    let btn_font = FontId::proportional(14.0);
+    let btn_font = theme::font_body();
     let text_w = galley_w(ui, label, 14.0);
     let btn_w = 24.0 + 14.0 + 8.0 + text_w + 24.0;
     let btn_h = 8.0 * 2.0 + 20.0;
     let btn = Rect::from_min_size(Pos2::new(cx - btn_w / 2.0, y), egui::vec2(btn_w, btn_h));
     let resp = ui.allocate_rect(btn, egui::Sense::click());
+    // M-12：空态主按钮自绘无控件语义，补 widget_info（C# EmptyStateBtn 同位）。
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     let bg = if resp.is_pointer_button_down_on() {
         theme::ACCENT_PRESSED
     } else if resp.hovered() {
@@ -2036,7 +2577,7 @@ use crate::transfer::{Status as TStatus, VerifyKind};
 /// 队列第四列状态语义（C# TransferItem.StatusText）：
 /// 等待→「等待中」（全局暂停「已暂停」）；传输中→模式前缀+实时速度（无回报仅模式文案）；
 /// 校验中→「校验中」；完成/失败→校验结论前缀+时刻；已取消→「已取消」。
-fn queue_status_text(i: &crate::transfer::Item, paused: bool) -> String {
+pub(crate) fn queue_status_text(i: &crate::transfer::Item, paused: bool) -> String {
     match i.status {
         TStatus::Waiting => {
             if paused {
@@ -2046,7 +2587,18 @@ fn queue_status_text(i: &crate::transfer::Item, paused: bool) -> String {
             }
         }
         TStatus::Transferring => {
-            if i.speed > 0 {
+            // 续传行带真实百分比（T20-3，C# TransferQueueService :317-325）：
+            // resumed 且 size>0 →「续传中 {pct}%」，pct = transferred*100/size
+            // 整除、钳 0..=100（transferred 为绝对偏移，与 C# BytesDone 同口径，
+            // 非估算）；有实时速度再接 " {v}/s"。size=0（未知总量）退回原形态。
+            if i.resumed && i.size > 0 {
+                let pct = (i.transferred.saturating_mul(100) / i.size).clamp(0, 100);
+                let mut s = format!("{} {}%", t("续传中"), pct);
+                if i.speed > 0 {
+                    s.push_str(&format!(" {}/s", crate::local::format_size(i.speed)));
+                }
+                s
+            } else if i.speed > 0 {
                 if i.resumed {
                     format!("{} {}/s", t("续传中"), crate::local::format_size(i.speed))
                 } else {
@@ -2054,7 +2606,8 @@ fn queue_status_text(i: &crate::transfer::Item, paused: bool) -> String {
                 }
             } else if i.phase == 1 {
                 // tar 阶段旗标：服务端打包/解包无进度回报，无实时速度时显示阶段
-                // 文案（流式上传期间有速度回报，速度列照常）。
+                // 文案（流式上传期间有速度回报，速度列照常）。phase=1 仅下载方向
+                // （上传打包在本地，不置 1）。
                 t("服务端打包中").to_owned()
             } else if i.phase == 2 {
                 t("解包中").to_owned()
@@ -2064,6 +2617,8 @@ fn queue_status_text(i: &crate::transfer::Item, paused: bool) -> String {
                 t("传输中").to_owned()
             }
         }
+        // 扫描中不受全局暂停影响（T20-2：暂停不拦扫描，父行显「扫描中」）。
+        TStatus::Scanning => t("扫描中").to_owned(),
         TStatus::Verifying => t("校验中").to_owned(),
         // C# VerifyTail：结论文案 + " " + 时刻（G12 校验结论前缀）。
         TStatus::Done => match i.verify_result {
@@ -2104,14 +2659,18 @@ fn ellipsize(ui: &egui::Ui, text: &str, font: &FontId, max_w: f32) -> String {
     format!("{cut}…")
 }
 
-/// 传输队列（C# QueueContainer）：表头 5 列（源/目标/大小/速度或时间/原因，失败页签
-/// 才有原因列）+ 按页签过滤的行 + foot 三页签（队列中=等待+传输中+已取消 / 失败 / 完成）。
+/// 传输队列（C# QueueContainer）：表头 5 列（源/目标/大小/速度或时间/原因，
+/// 失败页签原因列 2* 星号列、源/目标缩 1.5*）+ 按页签过滤的行 + foot 三页签
+/// （队列中=等待+传输中+已取消 / 失败 / 完成）。
 pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
     let p = theme::palette(ui.ctx());
     ui.painter()
         .rect_filled(rect, theme::CONTAINER_RADIUS, p.folder_area);
     let inner = rect.shrink2(egui::vec2(1.0, 1.0));
-    let font = FontId::proportional(12.0);
+    // 列表文字：行 11px（用户要求比 C# 12px 小一号）；表头 12px（回 C# 原值，
+    // 用户要求表头大一点、行保持）；foot 页签栏 12。
+    let font = theme::font(theme::TextRole::Caption);
+    let header_font = theme::font_small();
 
     // 队列快照（每帧整表重绘；单 worker 无高频事件，直读即一致）。
     let (items, paused) = match &st.transfer {
@@ -2121,14 +2680,19 @@ pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
     let in_active = |s: TStatus| {
         matches!(
             s,
-            TStatus::Waiting | TStatus::Transferring | TStatus::Verifying | TStatus::Cancelled
+            TStatus::Waiting
+                | TStatus::Transferring
+                | TStatus::Verifying
+                | TStatus::Scanning
+                | TStatus::Cancelled
         )
     };
     let n_active = items.iter().filter(|i| in_active(i.status)).count();
     let n_failed = items.iter().filter(|i| i.status == TStatus::Failed).count();
     let n_done = items.iter().filter(|i| i.status == TStatus::Done).count();
 
-    // 表头（Padding 12,5 + 底线）：源 2* / 目标 2* / 大小 90 / 速度或时间 90 / 原因（仅失败页签）。
+    // 表头（Padding 12,5 + 底线）：源/目标星号列（按页签 2* 或 1.5*）+ 大小 90 +
+    // 速度或时间 90 + 原因（仅失败页签，2* 星号列）。
     let header_h = 5.0 + 16.0 + 5.0 + 1.0; // C# 表头 Padding 12,5 + 12px 行高 ≈16 + 底线 1 = 27
     let header = Rect::from_min_max(
         inner.left_top(),
@@ -2140,12 +2704,18 @@ pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
             Pos2::new(inner.left(), header.bottom() - 0.5),
             Pos2::new(inner.right(), header.bottom() - 0.5),
         ],
-        Stroke::new(1.0, p.separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.separator),
     );
     let hy = header.center().y;
-    let reason_w = if st.queue_tab == 1 { 90.0 } else { 0.0 };
-    let fixed = 90.0 + 90.0 + reason_w;
-    let half = ((inner.width() - 24.0 - fixed - 48.0) / 2.0).max(40.0);
+    // 星号列分摊（C# _cols 每页签配置，xaml.cs:44-58）：失败页签 = 源 1.5* /
+    // 目标 1.5* / 原因 2*（原因参与弹性分摊，宽列装得下报错详情）；其余页签 =
+    // 源/目标各 2*、原因 0 隐藏。定宽列大小/时间 90、4 个列间距 12、左右 Padding 12。
+    let star_total = (inner.width() - 24.0 - 180.0 - 48.0).max(120.0);
+    let (half, reason_w) = if st.queue_tab == 1 {
+        ((star_total * 0.3).max(40.0), (star_total * 0.4).max(40.0))
+    } else {
+        ((star_total / 2.0).max(40.0), 0.0)
+    };
     let x0 = inner.left() + 12.0;
     let xs = [
         x0,
@@ -2163,95 +2733,150 @@ pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
             Pos2::new(xs[k], hy),
             Align2::LEFT_CENTER,
             *label,
-            font.clone(),
+            header_font.clone(),
             p.text_secondary,
         );
-        // 列分割线（C# 仅表头内，Width 1 Margin right -6.5 → 中心=列右+6；第 4 条仅失败页签）。
-        if k < 3 || st.queue_tab == 1 {
+        // 列分割线（C# 仅表头内，Width 1 Margin right -6.5 → 中心=列右+6）：
+        // 源/目标/大小 3 条 + 时间|原因 1 条（第 4 条仅失败页签，画在时间列
+        // 右缘+6）。原因列是末列不画——此前条件误放行 k=4 且 dx 按 90 定宽
+        // 算，线落进原因列内部（失败页签表头右侧多出的竖线）。
+        if k < 3 || (st.queue_tab == 1 && k == 3) {
             let dx = xs[k] + if k < 2 { half } else { 90.0 } + 6.0;
             ui.painter().line_segment(
                 [Pos2::new(dx, header.top()), Pos2::new(dx, header.bottom())],
-                Stroke::new(1.0, p.divider_stroke),
+                theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.divider_stroke),
             );
         }
     }
 
     // 行：按页签过滤（队列中=等待+传输中+已取消 / 失败 / 完成），行高 26（Padding 12,5 + 行高 ≈16）。
+    // 滚动列表（C# ListView 自滚动）：内容占位 = 行数×行高，不足视口铺满；
+    // 滚动条外距按下方 SCROLL_BAR_INNER_QUEUE 单独内收，表头/页签栏固定不随滚。
     let row_h = 26.0;
-    let mut y = header.bottom();
     let list_bottom = inner.bottom() - 29.0; // foot 页签栏（顶线 1 + Padding 6,2 + 页签 24 = 29）
-    let mut hit_row: Option<(Pos2, u64)> = None;
-    for i in &items {
-        let show = match st.queue_tab {
+    let rows_rect = Rect::from_min_max(
+        Pos2::new(inner.left(), header.bottom()),
+        Pos2::new(inner.right(), list_bottom),
+    );
+    let shown: Vec<&crate::transfer::Item> = items
+        .iter()
+        .filter(|i| match st.queue_tab {
             0 => in_active(i.status),
             1 => i.status == TStatus::Failed,
             _ => i.status == TStatus::Done,
-        };
-        if !show {
-            continue;
-        }
-        if y + row_h > list_bottom {
-            break; // 视口裁剪（无滚动，超出丢弃；C# ListView 自滚动随后续任务）
-        }
-        let row = Rect::from_min_max(
-            Pos2::new(inner.left(), y),
-            Pos2::new(inner.right(), y + row_h),
-        );
-        let resp = ui.allocate_rect(row, Sense::click());
-        if resp.secondary_clicked() {
-            hit_row = Some((resp.interact_pointer_pos().unwrap_or(row.center()), i.id));
-        }
-        let cy = row.center().y;
-        let w_src = half;
-        for (k, text) in [
-            ellipsize(ui, &i.source, &font, w_src),
-            ellipsize(ui, &i.dest, &font, half),
-            if i.size == 0 {
-                "—".to_owned()
-            } else {
-                crate::local::format_size(i.size)
-            },
-            queue_status_text(i, paused),
-            ellipsize(ui, &i.reason, &font, 90.0),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if k == 4 && st.queue_tab != 1 {
-                continue;
-            }
-            // 行文字默认前景 = 主色（C# DataTemplate 未覆写 Foreground）。
-            let color = p.text_primary;
-            ui.painter().text(
-                Pos2::new(xs[k], cy),
-                Align2::LEFT_CENTER,
-                text,
-                font.clone(),
-                color,
+        })
+        .collect();
+    let mut hit_row: Option<(Pos2, u64)> = None;
+    let mut blank_hit: Option<Pos2> = None;
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rows_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    // 滚动条例外（公用令牌基调上的单独覆盖，theme::SCROLL_BAR_INNER_QUEUE）：
+    // 队列列表右缘与容器内缘重合，全局外浮令牌会把条画到容器圆角边线外 →
+    // 此处条贴缘内收；宽 / 透明度仍走全局令牌。表头/页签栏固定不随滚。
+    child.style_mut().spacing.scroll.bar_outer_margin = theme::SCROLL_BAR_INNER_QUEUE;
+    egui::ScrollArea::vertical()
+        .id_salt(("queue-rows", st.queue_tab))
+        .auto_shrink([false, false])
+        .show(&mut child, |ui| {
+            let (content_r, _) = ui.allocate_exact_size(
+                egui::vec2(
+                    rows_rect.width(),
+                    (shown.len() as f32 * row_h).max(rows_rect.height()),
+                ),
+                Sense::hover(),
             );
-        }
-        y += row_h;
-    }
-
-    // 空白区/表头右键：队列菜单（C# Root_RightTapped；队列空不弹）。
-    if !items.is_empty() {
-        let blank = Rect::from_min_max(
-            Pos2::new(inner.left(), y),
-            Pos2::new(inner.right(), list_bottom),
-        );
-        for zone in [header, blank] {
-            if zone.height() <= 0.0 {
-                continue;
+            let top = content_r.top();
+            let clip = ui.clip_rect();
+            for (ri, i) in shown.iter().enumerate() {
+                let row = Rect::from_min_max(
+                    Pos2::new(rows_rect.left(), top + ri as f32 * row_h),
+                    Pos2::new(rows_rect.right(), top + (ri + 1) as f32 * row_h),
+                );
+                // 视口外整行跳过（占位仍在，滚动正确）。
+                if row.bottom() < clip.top() {
+                    continue;
+                }
+                if row.top() > clip.bottom() {
+                    break;
+                }
+                let resp = ui.allocate_rect(row, Sense::click());
+                // M-12：队列行自绘无控件语义，上报行内容摘要（源 → 目标 · 状态）
+                // 给屏幕阅读器 / AccessKit 检视。
+                resp.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::Role::Button,
+                        true,
+                        format!(
+                            "{} → {} · {}",
+                            i.source,
+                            i.dest,
+                            queue_status_text(i, paused)
+                        ),
+                    )
+                });
+                if resp.secondary_clicked() {
+                    hit_row = Some((resp.interact_pointer_pos().unwrap_or(row.center()), i.id));
+                }
+                let cy = row.center().y;
+                let w_src = half;
+                for (k, text) in [
+                    ellipsize(ui, &i.source, &font, w_src),
+                    ellipsize(ui, &i.dest, &font, half),
+                    if i.size == 0 {
+                        "—".to_owned()
+                    } else {
+                        crate::local::format_size(i.size)
+                    },
+                    queue_status_text(i, paused),
+                    ellipsize(ui, &i.reason, &font, reason_w),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if k == 4 && st.queue_tab != 1 {
+                        continue;
+                    }
+                    // 行文字默认前景 = 主色（C# DataTemplate 未覆写 Foreground）。
+                    let color = p.text_primary;
+                    ui.painter().text(
+                        Pos2::new(xs[k], cy),
+                        Align2::LEFT_CENTER,
+                        text,
+                        font.clone(),
+                        color,
+                    );
+                }
             }
-            let resp = ui.allocate_rect(zone, Sense::click());
-            if resp.secondary_clicked() {
-                let pos = resp.interact_pointer_pos().unwrap_or(zone.center());
+            // 行下方空白区右键：队列菜单（C# Root_RightTapped；队列空不弹）。
+            let blank = Rect::from_min_max(
+                Pos2::new(rows_rect.left(), top + shown.len() as f32 * row_h),
+                Pos2::new(rows_rect.right(), content_r.bottom()),
+            );
+            if !items.is_empty() && blank.height() > 0.0 {
+                let resp = ui.allocate_rect(blank, Sense::click());
+                if resp.secondary_clicked() {
+                    blank_hit = Some(resp.interact_pointer_pos().unwrap_or(blank.center()));
+                }
+            }
+        });
+
+    // 表头右键：队列菜单（C# Root_RightTapped；队列空不弹）。
+    if !items.is_empty() {
+        let resp = ui.allocate_rect(header, Sense::click());
+        if resp.secondary_clicked() || blank_hit.is_some() {
+            let pos =
+                blank_hit.or_else(|| Some(resp.interact_pointer_pos().unwrap_or(header.center())));
+            if let Some(pos) = pos {
                 st.menu = Some(super::dialogs::MenuState {
                     pos,
                     pane: 0,
                     row: None,
                     queue: Some(super::dialogs::QueueMenu::Batch),
                     terminal: false,
+                    cols: false,
                 });
             }
         }
@@ -2263,6 +2888,7 @@ pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
             row: None,
             queue: Some(super::dialogs::QueueMenu::Item(id)),
             terminal: false,
+            cols: false,
         });
     }
 
@@ -2277,8 +2903,17 @@ pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
             Pos2::new(foot.left(), foot.top() + 0.5),
             Pos2::new(foot.right(), foot.top() + 0.5),
         ],
-        Stroke::new(1.0, p.separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.separator),
     );
+    // 页签栏右键（C# Root_RightTapped 冒泡面：底部页签栏整条，含页签间隙与
+    // 右侧空白）：先挂整条感应面再画页签（egui 后注册优先命中，页签左键切页
+    // 不受影响）；页签本体右键由循环内 resp 汇入同一 foot_hit，弹全局菜单
+    // （队列空不弹，与表头/内容空白同口径）。
+    let mut foot_hit: Option<Pos2> = None;
+    let foot_resp = ui.allocate_rect(foot, Sense::click());
+    if foot_resp.secondary_clicked() {
+        foot_hit = Some(foot_resp.interact_pointer_pos().unwrap_or(foot.center()));
+    }
     let tabs = [
         (t("队列中"), n_active),
         (t("传输失败"), n_failed),
@@ -2298,28 +2933,48 @@ pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
             // hover = SubtleFillColorSecondary（C# RadioButton 模板 PointerOver 底）。
             ui.painter().rect_filled(r, 4.0, p.row_hover);
         }
-        // 选中 label = 强调色 + SemiBold（C# Tab_Checked 切换 VisualState）。
+        if resp.secondary_clicked() {
+            // 页签本体右键：与页签栏空白同弹全局菜单（C# 冒泡到根容器）。
+            foot_hit = Some(resp.interact_pointer_pos().unwrap_or(r.center()));
+        }
+        // 选中 label = 强调色 + SemiBold（C# Tab_Checked 切换 VisualState）；
+        // 页签栏字号固定 12（C# QTabStyle），不随列表文字缩小。
         let fg = if sel { p.accent } else { p.text_secondary };
         let cg = if sel { p.accent } else { p.text_tertiary };
-        let sel_font = FontId::new(12.0, egui::FontFamily::Name("brand".into()));
+        let tab_font = theme::font_small();
+        let sel_font = theme::font_brand_small();
         ui.painter().text(
             Pos2::new(r.left() + 10.0, r.center().y),
             Align2::LEFT_CENTER,
             *label,
-            if sel { sel_font } else { font.clone() },
+            if sel { sel_font } else { tab_font.clone() },
             fg,
         );
         ui.painter().text(
             Pos2::new(r.left() + 10.0 + text_w + 4.0, r.center().y),
             Align2::LEFT_CENTER,
             count_s,
-            font.clone(),
+            tab_font,
             cg,
         );
         if resp.clicked() {
             st.queue_tab = k;
         }
         tx += w + 4.0;
+    }
+    // foot 页签栏右键 → 全局队列菜单（C# QueueContainer 根容器冒泡面收口：
+    // 至此表头/页签栏/列表空白三处非行区域全部为全局菜单入口）。
+    if !items.is_empty()
+        && let Some(pos) = foot_hit
+    {
+        st.menu = Some(super::dialogs::MenuState {
+            pos,
+            pane: 0,
+            row: None,
+            queue: Some(super::dialogs::QueueMenu::Batch),
+            terminal: false,
+            cols: false,
+        });
     }
 }
 
@@ -2331,45 +2986,71 @@ pub fn terminal(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
     ui.painter()
         .rect_filled(rect, theme::CONTAINER_RADIUS, p.terminal_bg);
     let inner = rect.shrink2(egui::vec2(12.0, 8.0)); // C# Padding 12,8
-    let mono = FontId::monospace(11.0); // C# Cascadia Mono 11
+    let mono = theme::font_mono_caption(); // C# Cascadia Mono 11
     let lh = 15.0;
     let slot_pad = 7.0; // 每条日志 Margin bottom 7
 
-    // 末尾对齐：从尾部逐条排版累计槽高，直到铺满视口（C# ListView 滚动到底同表现）。
-    // 每条槽高 ≥ lh+7，按 lh 估条数必覆盖视口。
-    let est = ((inner.height() / lh).ceil() as usize).max(1);
-    let from = st.terminal.len().saturating_sub(est);
-    let mut laid: Vec<(
-        f32,
-        std::sync::Arc<egui::Galley>,
-        f32,
-        std::sync::Arc<egui::Galley>,
-    )> = Vec::new();
-    let mut y = inner.bottom();
-    for (time, text) in st.terminal[from..].iter().rev() {
-        let time_g =
-            ui.painter()
-                .layout_no_wrap(format!("[{time}]"), mono.clone(), p.terminal_time);
-        // 时间列 Auto 宽实测，正文列 = 时间列右 + ColumnSpacing 8。
-        let text_x = inner.left() + time_g.size().x + 8.0;
-        let wrap_w = (inner.right() - text_x).max(40.0);
-        let body_g = ui
-            .painter()
-            .layout(text.clone(), mono.clone(), p.terminal_text, wrap_w);
-        let slot = body_g.size().y.max(lh) + slot_pad;
-        if y - slot < inner.top() {
-            break;
-        }
-        y -= slot;
-        laid.push((y, time_g, text_x, body_g));
-    }
-    // laid 逆序（最早条最后 push），反转后自上而下绘制。
-    for (top, time_g, text_x, body_g) in laid.into_iter().rev() {
-        ui.painter()
-            .galley(Pos2::new(inner.left(), top), time_g, p.terminal_time);
-        ui.painter()
-            .galley(Pos2::new(text_x, top), body_g, p.terminal_text);
-    }
+    // 滚动日志（C# ListView 滚动到底同表现）：全量排版入内容占位（galley 走
+    // egui 字体缓存，重复帧近零开销）；滚动条走全局浮动令牌；stick_to_bottom
+    // = 停在底部时新日志自动跟随，上翻查看历史则停留。
+    let mut menu_hit: Option<Pos2> = None;
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    egui::ScrollArea::vertical()
+        .id_salt("terminal-log")
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .show(&mut child, |ui| {
+            // 逐条排版累计槽高（时间列 Auto 宽实测，正文列 = 时间列右 + ColumnSpacing 8）。
+            let mut laid: Vec<(
+                f32,
+                std::sync::Arc<egui::Galley>,
+                f32,
+                std::sync::Arc<egui::Galley>,
+            )> = Vec::with_capacity(st.terminal.len());
+            let mut off = 0.0;
+            for (time, text) in &st.terminal {
+                let time_g =
+                    ui.painter()
+                        .layout_no_wrap(format!("[{time}]"), mono.clone(), p.terminal_time);
+                let text_x = inner.left() + time_g.size().x + 8.0;
+                let wrap_w = (inner.width() - time_g.size().x - 8.0).max(40.0);
+                let body_g =
+                    ui.painter()
+                        .layout(text.clone(), mono.clone(), p.terminal_text, wrap_w);
+                let y0 = off;
+                off += body_g.size().y.max(lh) + slot_pad;
+                laid.push((y0, time_g, text_x, body_g));
+            }
+            let (content_r, resp) = ui.allocate_exact_size(
+                egui::vec2(inner.width(), off.max(inner.height())),
+                Sense::click(),
+            );
+            let top = content_r.top();
+            let clip = ui.clip_rect();
+            for (dy, time_g, text_x, body_g) in &laid {
+                let y = top + dy;
+                let slot = body_g.size().y.max(lh);
+                // 视口外整条跳过绘制（占位仍在，滚动正确）。
+                if y + slot < clip.top() {
+                    continue;
+                }
+                if y > clip.bottom() {
+                    break;
+                }
+                ui.painter()
+                    .galley(Pos2::new(inner.left(), y), time_g.clone(), p.terminal_time);
+                ui.painter()
+                    .galley(Pos2::new(*text_x, y), body_g.clone(), p.terminal_text);
+            }
+            // 右键菜单（C# TerminalMenuFlyout：清除全部 / 复制全部）。
+            if resp.secondary_clicked() {
+                menu_hit = Some(resp.interact_pointer_pos().unwrap_or(inner.center()));
+            }
+        });
 
     // 连接 loading 圈（C# TerminalContainer.xaml BusyRing）：18×18 ProgressRing
     // 悬浮右上角（Margin 0,9,12,0 → 右缩 12、顶缩 9，右/顶对齐）。C# 连接前置位
@@ -2393,16 +3074,14 @@ pub fn terminal(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
             .paint_at(ui, ring);
     }
 
-    // 右键菜单（C# TerminalMenuFlyout：清除全部 / 复制全部）。
-    let resp = ui.allocate_rect(inner, Sense::click());
-    if resp.secondary_clicked() {
-        let pos = resp.interact_pointer_pos().unwrap_or(inner.center());
+    if let Some(pos) = menu_hit {
         st.menu = Some(super::dialogs::MenuState {
             pos,
             pane: 0,
             row: None,
             queue: None,
             terminal: true,
+            cols: false,
         });
     }
 }
@@ -2714,7 +3393,7 @@ fn draw_tree(
             Pos2::new(rect.right() - 0.5, rect.top()),
             Pos2::new(rect.right() - 0.5, rect.bottom()),
         ],
-        Stroke::new(1.0, p.separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.separator),
     );
     let mut actions = Vec::new();
     let cur = pane_pos(pane);
@@ -2764,7 +3443,7 @@ fn draw_nodes(
             ui.painter().rect_filled(r, 0.0, p.hover_bg);
         }
         let x0 = r.left() + 6.0 + depth as f32 * TREE_INDENT;
-        let font12 = egui::FontId::proportional(12.0);
+        let font12 = theme::font_small();
         // caret（加载中画「…」 tertiary）。
         let caret_c = Pos2::new(x0 + 6.0, r.center().y);
         if n.loading {
@@ -2818,5 +3497,238 @@ fn draw_nodes(
         if n.expanded && !n.children.is_empty() {
             draw_nodes(ui, &n.children, depth + 1, st_icons, p, actions, cur);
         }
+    }
+}
+
+/// T14 加项：dir_leaf 边界测试——原 remote_dir_label_last_segment 的 4 条边界
+/// assert 随函数删除而消失，dir_leaf（:1942）是其内联等价实现，钉回去防回归
+/// （本体不改）。
+#[cfg(test)]
+mod dir_leaf_tests {
+    use super::{FilePane, dir_leaf};
+
+    fn pane(remote: Option<&str>, local: Option<&str>) -> FilePane {
+        FilePane {
+            remote_path: remote.map(str::to_owned),
+            path: local.map(std::path::PathBuf::from),
+            ..Default::default()
+        }
+    }
+
+    /// 远端根目录 → "/"。
+    #[test]
+    fn remote_root_shows_slash() {
+        assert_eq!(dir_leaf(&pane(Some("/"), None)), "/");
+    }
+
+    /// 尾斜杠路径取末段。
+    #[test]
+    fn trailing_slash_keeps_leaf() {
+        assert_eq!(dir_leaf(&pane(Some("/var/log/"), None)), "log");
+    }
+
+    /// remote_path=None 且本地 path=None（「此电脑」根态）→ "/"。
+    #[test]
+    fn no_remote_and_no_local_shows_slash() {
+        assert_eq!(dir_leaf(&pane(None, None)), "/");
+    }
+
+    /// 正常路径取末段。
+    #[test]
+    fn normal_path_shows_leaf() {
+        assert_eq!(dir_leaf(&pane(Some("/var/log"), None)), "log");
+    }
+}
+
+/// T18-1：crumb_fold / collapsed_w 纯函数钉子测试（期望值均按 C# 逐式手算）。
+#[cfg(test)]
+mod crumb_fold_tests {
+    use super::{collapsed_w, crumb_fold};
+
+    /// 与绘制侧调用同源的常量：ov_w=24、sep_w=10、house_w=24。
+    const OV: f32 = 24.0;
+    const SEP: f32 = 10.0;
+    const HOUSE: f32 = 24.0;
+
+    /// 恰好放得下（full == avail 边界等号）→ 不折叠。
+    /// 4 段：full = 24 + 120 + 4×10 + 2×(2×5−2) = 200。
+    #[test]
+    fn fits_no_fold_boundary() {
+        let w = [30.0, 30.0, 30.0, 30.0];
+        assert_eq!(crumb_fold(&w, OV, SEP, HOUSE, 200.0), None);
+    }
+
+    /// 最小折叠 + 首个放得下的窗口即选定；collapsed_w 精确钉值。
+    #[test]
+    fn minimal_fold_first_fit() {
+        let w = [30.0, 30.0, 30.0, 30.0];
+        // cnt=1 窗 (1,1)：折后 194 > 175；cnt=2 窗 (0,1)：折后 150 ≤ 175。
+        assert_eq!(crumb_fold(&w, OV, SEP, HOUSE, 175.0), Some((0, 1)));
+        // 150 > 149 → cnt=2 仍放不下；cnt=3 窗 (0,2)：折后 106 ≤ 149。
+        assert_eq!(crumb_fold(&w, OV, SEP, HOUSE, 149.0), Some((0, 2)));
+        // 4 段折 [0,1]：可见钮 4（house+..+尾2 段）、seps 3、tail 60
+        // → 0+24+24+60+30+2×(4+3−1) = 150。
+        assert_eq!(collapsed_w(&w, 0, 1, OV, SEP, HOUSE), 150.0);
+    }
+
+    /// 折叠窗口在中段居中（整除偏左）：5 段 cnt=3 命中 (0,2) 而非右偏 (1,3)。
+    #[test]
+    fn fold_window_centered_left_biased() {
+        let w = [10.0, 100.0, 100.0, 100.0, 10.0];
+        // cnt=1 (1,1)=338、cnt=2 (1,2)=224 均 >210；cnt=3 (0,2)=200 ≤ 210。
+        assert_eq!(crumb_fold(&w, OV, SEP, HOUSE, 210.0), Some((0, 2)));
+    }
+
+    /// 全折仍放不下 → 兜底全折（C# foldFrom=1, foldTo=nc−2 ↔ Rust [0, n−2]）。
+    #[test]
+    fn fallback_folds_all_middle() {
+        let w = [10.0, 100.0, 100.0, 100.0, 10.0];
+        // cnt=4 窗 (0,3)：折后 86 > 80 → 循环耗尽走兜底。
+        assert_eq!(crumb_fold(&w, OV, SEP, HOUSE, 80.0), Some((0, 3)));
+    }
+
+    /// 退化：单段（根 + 末段无从折）/ 空段 / 可用宽 ≤ 0 → None。
+    #[test]
+    fn degenerate_no_fold() {
+        assert_eq!(crumb_fold(&[30.0], OV, SEP, HOUSE, 10.0), None);
+        let empty: [f32; 0] = [];
+        assert_eq!(crumb_fold(&empty, OV, SEP, HOUSE, 200.0), None);
+        assert_eq!(crumb_fold(&[30.0, 30.0], OV, SEP, HOUSE, 0.0), None);
+    }
+}
+
+/// T20-3：续传第四列真实百分比钉子（C# TransferQueueService :317-325）。
+#[cfg(test)]
+mod queue_status_tests {
+    use super::queue_status_text;
+    use crate::i18n::t;
+    use crate::transfer::{Item, Status as TStatus};
+
+    /// 续传 + size>0 →「续传中 {pct}%」（90/200 整除 = 45%）；速度为 0 不带速度。
+    #[test]
+    fn resumed_with_size_shows_percent() {
+        let i = Item::fixture(TStatus::Transferring, 200, 90, 0, true);
+        assert_eq!(queue_status_text(&i, false), format!("{} 45%", t("续传中")));
+    }
+
+    /// 续传 + size>0 + 实时速度 → 百分比后接 " {v}/s"（1MB = "1 MB"）。
+    #[test]
+    fn resumed_percent_appends_speed() {
+        let i = Item::fixture(TStatus::Transferring, 200, 90, 1_048_576, true);
+        assert_eq!(
+            queue_status_text(&i, false),
+            format!("{} 45% 1 MB/s", t("续传中"))
+        );
+    }
+
+    /// size=0（总量未知）不带百分比，退回原形态（速度 0 → 仅「续传中」）。
+    #[test]
+    fn resumed_zero_size_keeps_plain_form() {
+        let i = Item::fixture(TStatus::Transferring, 0, 5, 0, true);
+        assert_eq!(queue_status_text(&i, false), t("续传中"));
+    }
+
+    /// 超界钳制：transferred > size → 钳 100；transferred = 0 → 0%。
+    #[test]
+    fn percent_clamped_to_bounds() {
+        let over = Item::fixture(TStatus::Transferring, 100, 250, 0, true);
+        assert_eq!(
+            queue_status_text(&over, false),
+            format!("{} 100%", t("续传中"))
+        );
+        let zero = Item::fixture(TStatus::Transferring, 100, 0, 0, true);
+        assert_eq!(
+            queue_status_text(&zero, false),
+            format!("{} 0%", t("续传中"))
+        );
+    }
+
+    /// 非续传行不受影响：普通传输行仅速度/「传输中」。
+    #[test]
+    fn non_resumed_rows_unchanged() {
+        let i = Item::fixture(TStatus::Transferring, 200, 90, 1_048_576, false);
+        assert_eq!(queue_status_text(&i, false), "1 MB/s");
+        let j = Item::fixture(TStatus::Transferring, 200, 90, 0, false);
+        assert_eq!(queue_status_text(&j, false), t("传输中"));
+    }
+
+    /// 扫描中（T20-2）：暂停与否均显「扫描中」（扫描不受全局暂停影响）。
+    #[test]
+    fn queue_status_scanning_text() {
+        let i = Item::fixture(TStatus::Scanning, 0, 0, 0, false);
+        assert_eq!(queue_status_text(&i, false), t("扫描中"));
+        assert_eq!(queue_status_text(&i, true), t("扫描中"));
+    }
+
+    /// relay 行（T20-3，评估报告确认段）：RelayFile/RelayDir 构造时
+    /// size = 原始 size ×2（下载+上传两程总量），transferred 为两程累计
+    /// 绝对偏移——续传百分比分母即 ×2 后总量（整除口径同普通行）。
+    #[test]
+    fn relay_doubled_size_resumed_percent() {
+        // 500/2000 → 25%（×2 后总量整除）。
+        let i = Item::fixture(TStatus::Transferring, 2000, 500, 0, true);
+        assert_eq!(queue_status_text(&i, false), format!("{} 25%", t("续传中")));
+        // 两程过半 + 实时速度：50% + " 1 MB/s" 后缀。
+        let j = Item::fixture(TStatus::Transferring, 2000, 1000, 1_048_576, true);
+        assert_eq!(
+            queue_status_text(&j, false),
+            format!("{} 50% 1 MB/s", t("续传中"))
+        );
+    }
+}
+
+/// T20-4：拖拽就绪判定组合矩阵钉子（C# CanTransferToOpposite :3010-3015）。
+#[cfg(test)]
+mod dnd_ready_tests {
+    use super::can_transfer_to_oppo;
+
+    /// 全就绪：两侧已导航 + 两侧 conn 折算均 true（本地恒 true）。
+    #[test]
+    fn all_ready() {
+        assert!(can_transfer_to_oppo(true, true, true, true));
+    }
+
+    /// 任一侧未导航（本地「此电脑」根态 / 远程未入目录）→ 不就绪。
+    #[test]
+    fn any_unnavigated_blocks() {
+        assert!(!can_transfer_to_oppo(false, true, true, true));
+        assert!(!can_transfer_to_oppo(true, true, false, true));
+    }
+
+    /// 任一远程侧会话不在池（断开 / 连接中）→ 不就绪（钉子⑤断开态依据）。
+    #[test]
+    fn any_disconnected_blocks() {
+        assert!(!can_transfer_to_oppo(true, false, true, true));
+        assert!(!can_transfer_to_oppo(true, true, true, false));
+    }
+
+    /// 远程↔远程双断开 / 部分就绪组合全拦。
+    #[test]
+    fn combined_matrix() {
+        assert!(!can_transfer_to_oppo(false, false, true, true));
+        assert!(!can_transfer_to_oppo(true, true, false, false));
+        assert!(!can_transfer_to_oppo(false, true, true, false));
+    }
+}
+
+/// T20-1：全局 ColVisibility 钉子（契约 B 全局一份 + 菜单键翻转）。
+#[cfg(test)]
+mod col_vis_tests {
+    use super::{ColVisibility, col_vis, set_col_vis, toggle_col};
+
+    /// 默认全开；toggle 按菜单键翻转对应列；未知键不动；set 全量恢复。
+    #[test]
+    fn toggle_by_key_and_set() {
+        set_col_vis(ColVisibility::default());
+        toggle_col("大小");
+        let v = col_vis();
+        assert!(!v.size && v.ty && v.modified && v.perms);
+        toggle_col("权限");
+        let v = col_vis();
+        assert!(!v.size && v.ty && v.modified && !v.perms);
+        toggle_col("不存在的键");
+        assert_eq!(col_vis(), v);
+        set_col_vis(ColVisibility::default());
+        assert_eq!(col_vis(), ColVisibility::default());
     }
 }

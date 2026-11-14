@@ -1,49 +1,60 @@
-//! tar 目录加速（C# TarAccelService 全套移植）。
+//! tar 目录加速（C# TarAccelService 全套移植；T15 嵌入化：本机 tar 子进程全删，
+//! 打包/解包改 tar crate + flate2 gzip 纯 Rust 内嵌实现，远端服务器命令保留）。
 //!
 //! 触发（C# CanUse 口径）：设置开 && 文件数 ≥ 阈值（且 >0）&& 仅上传/下载整目录
 //! （中转/本地复制不走）。判定时机在 worker 领取目录任务时（C# 在 UI 入队时判定，
 //! 等价后移；未接管才走 expand 展开逐文件）。
 //!
-//! - 上传：本地有界计数 → 本机 tar 可用 → POSIX 探测 → 本机 `tar -cf - -C <dir> .`
-//!   stdout 经 SFTP 流式直写远端临时 .tar → 服务端 `mkdir -p tmp && tar -xf` →
-//!   sftp rename 原子切换（目标已存在 → 直接解包覆盖；rename 失败 → 记日志后
-//!   降级直接解包覆盖）；
-//! - 下载：服务端 `tar -cf /tmp/….tar -C <dir> .` → SFTP 单文件下载（复用
-//!   download_file：检查点/进度全继承）→ 本机解包到同级临时目录 → 目标不存在
-//!   rename 落位 / 已存在合并覆盖（C# MergeDirectory）。
+//! - 上传：本地有界计数 → 远端探测（POSIX + gzip）→ `tar::Builder`（复用 T5
+//!   有界扫描范式逐条 append，禁 append_dir_all 裸奔；header 保 mtime/权限）+
+//!   `GzEncoder` 压缩块经通道桥流式直写远端临时 .tar.gz → 服务端
+//!   `mkdir -p tmp && tar -xzf` → sftp rename 原子切换（目标已存在 → 直接解包
+//!   覆盖；rename 失败 → 记日志后降级直接解包覆盖）；
+//! - 下载：服务端 `tar -czf /tmp/….tar.gz -C <dir> .` → SFTP 单文件下载（复用
+//!   download_file：检查点/进度全继承）→ `GzDecoder` + `tar::Archive::unpack`
+//!   解到同级临时目录 → 目标不存在 rename 落位 / 已存在合并覆盖（C#
+//!   MergeDirectory）。
 //!
-//! 临时命名：目标父目录下 `.ifree-tar-<guid>.tar` / `.ifree-tar-<guid>`；
+//! 临时命名：目标父目录下 `.ifree-tar-<guid>.tar.gz` / `.ifree-tar-<guid>`；
 //! 看门狗 = 每步 256KB 收/发 60s 无进展判僵死（C# 1s 轮询 60s 无进展的等价口径）；
-//! 本机 tar 退出等待 30s 超时杀；exec 快罩顶 60s（探测/计数/清理/切换）、
-//! 长罩顶 600s（服务端打包/解包）。失败语义：走不通（无本机 tar / 非 POSIX /
-//! 本地盘根）→ Fallback 静默回退逐文件；执行中失败 → 整体失败（reason 前缀
-//! 「tar 模式为整体传输…」，C# TarFailWrapped，含 TarStalledException）；
-//! finally 清理远端 rm -f/rm -rf 与本地临时件（失败仅记日志）。
+//! exec 快罩顶 60s（探测/计数/清理/切换）、长罩顶 600s（服务端打包/解包）。
+//! 回退链两级：远端 tar+gzip 走不通（非 POSIX / 缺 gzip）→ 带日志回退逐文件；
+//! 执行中失败 → 整体失败（reason 前缀「tar 模式为整体传输…」，C# TarFailWrapped，
+//! 含 TarStalledException）；finally 清理远端 rm -f/rm -rf 与本地临时件
+//! （失败仅记日志）。tar 头按 PAX/UTF-8 写，中文文件名不依赖系统代码页
+//! （有意优于 C# 的 bsdtar 代码页风险，MIGRATION.md 有分歧记录）；
 //! tar 天然保留 mtime/权限；tar 任务无 verify、无文件级续传（重试整体重来）。
 
-use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
 
 use super::{
-    CHUNK, Outcome, Profile, SPEED_WINDOW, Shared, checkpoint, download_file, ensure_conn,
+    CHUNK, Outcome, Profile, SPEED_WINDOW, Shared, cfg_of, checkpoint, download_file, ensure_conn,
     join_remote, log, progress,
 };
 use crate::i18n::{t, tfmt};
 use crate::ssh::{self, SftpConn};
 
-/// 看门狗：单步（256KB 收/发、通道消息、rename）60s 无进展判僵死。
-const STALL: Duration = Duration::from_secs(60);
+// ── 决策子集（门判据/打包流协议/回退条件/罩顶常量）：official 随闭源 core
+//    分发（ifree-core/src/transfer/tar.rs）；源码编译版保留等价钉子，行为不变。
+#[cfg(feature = "official")]
+use crate::ifree_core::transfer::tar::{EXEC_LONG_SECS, EXEC_QUICK_SECS, STALL_SECS};
+#[cfg(not(feature = "official"))]
+const STALL_SECS: u64 = 60;
+#[cfg(not(feature = "official"))]
+const EXEC_QUICK_SECS: u64 = 60;
+#[cfg(not(feature = "official"))]
+const EXEC_LONG_SECS: u64 = 600;
+
+/// 看门狗：单步（256KB 收/发、通道消息、rename）无进展判僵死。
+const STALL: Duration = Duration::from_secs(STALL_SECS);
 /// exec 快罩顶（POSIX 探测 / 文件计数 / 临时件清理 / rename 降级命令）。
-const EXEC_QUICK: Duration = Duration::from_secs(60);
+const EXEC_QUICK: Duration = Duration::from_secs(EXEC_QUICK_SECS);
 /// exec 长罩顶（服务端打包 / 服务端解包大目录）。
-const EXEC_LONG: Duration = Duration::from_secs(600);
-/// 本机 tar 进程退出等待秒数（超时杀，C# WaitForExit(30s) 同口径）。
-const TAR_EXIT_WAIT: u64 = 30;
+const EXEC_LONG: Duration = Duration::from_secs(EXEC_LONG_SECS);
 
 /// tar 子流程结局：Fallback = 走不通，静默回退逐文件展开（C# return false）。
 enum TarOut {
@@ -52,14 +63,6 @@ enum TarOut {
     Paused,
     Cancelled,
     Fallback,
-}
-
-/// 本机 tar 管理线程 → async 侧消息（stdout 数据 / EOF / 进程退出）。
-enum TarMsg {
-    Chunk(Vec<u8>),
-    Eof,
-    /// Ok = 退出码；Err = 超时杀 / wait 失败（C# KilledProcess 同位）。
-    Exited(Result<i32, ()>),
 }
 
 /// 目录任务领取时尝试 tar 加速；None = 不走 tar（设置关 / 文件数不足 /
@@ -72,24 +75,40 @@ pub(super) async fn maybe_run(
     kind: &super::Kind,
     profile: &Option<Profile>,
 ) -> Option<Outcome> {
-    let (on, threshold) = crate::settings::with(|s| (s.tar_accel, s.tar_threshold));
+    // CR-4：tar 门与建连超时读该任务行固化的批次快照（与扫描线程预检同一份）。
+    let cfg = cfg_of(shared, id);
+    let (on, threshold) = (cfg.tar_accel, cfg.tar_threshold);
     if !on || threshold <= 0 {
         return None;
     }
-    // 本机 tar 可用性两方向共用（进程内缓存一次探测）。
-    if !local_tar_available() {
-        log(
-            shared,
-            profile.as_ref(),
-            t("[tar 加速] 本机没有 tar 命令，回退逐文件传输").to_owned(),
-        );
-        return None;
-    }
+    // 扫描线程 tar 预检旗标（T20-2）：预检已达标回交的行免重复计数——
+    // 失败日志与远端计数在扫描线程已出过，此处直接按阈值放行。
+    let prechecked = shared
+        .st
+        .lock()
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.id == id)
+        .map(|i| i.precheck)
+        == Some(true);
     match kind {
         super::Kind::UploadDir { local, remote } => {
+            if let Err(e) = ensure_conn(profile, conn, conn_of, &cfg).await {
+                return Some(Outcome::Failed(e));
+            }
+            // 远端探测（T15：POSIX + gzip；本地打包是内嵌实现，无需探测本机）。
+            // 不过 = 已带日志，回退逐文件。
+            if !probe_remote_tar(shared, profile.as_ref(), conn).await {
+                return None;
+            }
             // 本地有界计数（数到阈值即停）。扫描失败 = 显式 Err（带路径）：
             // 记日志后不走 tar，回退展开逐文件（错误由逐文件路径显式报）。
-            let count = count_local_files(local, threshold as i64);
+            let count = if prechecked {
+                Ok(threshold as i64)
+            } else {
+                count_local_files(local, threshold as i64)
+            };
             if let Err(e) = &count {
                 log(
                     shared,
@@ -100,9 +119,6 @@ pub(super) async fn maybe_run(
             // 门判据收口（C# CanUse 口径，gate_open 见下）。
             if !gate_open(on, threshold as i64, true, count.ok()) {
                 return None;
-            }
-            if let Err(e) = ensure_conn(profile, conn, conn_of).await {
-                return Some(Outcome::Failed(e));
             }
             let name = local
                 .file_name()
@@ -119,14 +135,24 @@ pub(super) async fn maybe_run(
             to_outcome(upload_dir(shared, conn, id, local, remote, profile.as_ref()).await)
         }
         super::Kind::DownloadDir { remote, local } => {
-            if let Err(e) = ensure_conn(profile, conn, conn_of).await {
+            if let Err(e) = ensure_conn(profile, conn, conn_of, &cfg).await {
                 return Some(Outcome::Failed(e));
             }
-            // 远端有界计数（内含 POSIX 探测；超时/失败/非 POSIX → -1 不走）。
-            let n = match conn.as_ref() {
-                Some(c) => count_remote_files(c, remote, threshold as i64).await,
-                // ensure_conn 已成功，不可达；显式错误替代 unwrap。
-                None => return Some(Outcome::Failed(t("连接不可用（内部状态异常）").to_owned())),
+            // 远端探测（T15：POSIX + gzip）。不过 = 已带日志，回退逐文件。
+            if !probe_remote_tar(shared, profile.as_ref(), conn).await {
+                return None;
+            }
+            // 远端有界计数（探测已过；超时/失败/解析失败 → -1 不走）。
+            let n = if prechecked {
+                threshold as i64
+            } else {
+                match conn.as_ref() {
+                    Some(c) => count_remote_files(c, remote, threshold as i64).await,
+                    // ensure_conn 已成功，不可达；显式错误替代 unwrap。
+                    None => {
+                        return Some(Outcome::Failed(t("连接不可用（内部状态异常）").to_owned()));
+                    }
+                }
             };
             if !gate_open(on, threshold as i64, true, (n >= 0).then_some(n)) {
                 return None;
@@ -151,12 +177,42 @@ pub(super) async fn maybe_run(
     }
 }
 
-/// tar 门判据（C# CanUse 口径）：设置开 && 阈值 >0 && 本机 tar 可用 && 计数达标。
+/// tar 门判据（C# CanUse 口径）：设置开 && 阈值 >0 && tar_ok && 计数达标。
+/// T15 起 tar_ok = 远端探测通过（POSIX shell + gzip 可用，remote_tar_ok）；
 /// count=None = 扫描失败 / 远端计数 -1（不可走）；达标含等于阈值（有界计数
-/// 数到阈值即停）。maybe_run 前置段已把 on/tar_ok 的日志语义分开处理，此处
-/// 为唯一判定点；测试覆盖含 on/tar_ok 的全判据。
-fn gate_open(on: bool, threshold: i64, tar_ok: bool, count: Option<i64>) -> bool {
-    on && threshold > 0 && tar_ok && matches!(count, Some(n) if n >= threshold)
+/// 数到阈值即停）。maybe_run 前置段已把探测与回退日志分开处理，此处为唯一
+/// 判定点；测试覆盖含 on/tar_ok 的全判据。
+pub(super) fn gate_open(on: bool, threshold: i64, tar_ok: bool, count: Option<i64>) -> bool {
+    #[cfg(feature = "official")]
+    {
+        crate::ifree_core::transfer::tar::gate_open(on, threshold, tar_ok, count)
+    }
+    #[cfg(not(feature = "official"))]
+    {
+        on && threshold > 0 && tar_ok && matches!(count, Some(n) if n >= threshold)
+    }
+}
+
+/// 远端 tar+gzip 探测门（T15 两级回退链第一级）：POSIX + gzip 有一项不过 =
+/// 记回退日志后返回 false（调用方回退逐文件；文案在 i18n 表，守卫绿）。
+async fn probe_remote_tar(
+    shared: &Shared,
+    prof: Option<&Profile>,
+    conn: &Option<SftpConn>,
+) -> bool {
+    let Some(c) = conn.as_ref() else {
+        // maybe_run 已 ensure_conn，不可达；按不过处理（静默，避免假日志）。
+        return false;
+    };
+    if remote_tar_ok(c).await {
+        return true;
+    }
+    log(
+        shared,
+        prof,
+        t("[tar 加速] 远端 tar+gzip 不可用，回退逐文件传输").to_owned(),
+    );
+    false
 }
 
 /// TarOut → 队列结局；Fallback = None（调用方回退展开逐文件，不落失败）。
@@ -175,7 +231,7 @@ fn to_outcome(o: TarOut) -> Option<Outcome> {
     }
 }
 
-// ── 上传：本机打包 → 流式直写远端临时 tar → 服务端解包 → 原子切换 ──
+// ── 上传：内嵌打包 → 流式直写远端临时 tar.gz → 服务端解包 → 原子切换 ──
 
 async fn upload_dir(
     shared: &Shared,
@@ -185,23 +241,10 @@ async fn upload_dir(
     remote: &str,
     prof: Option<&Profile>,
 ) -> TarOut {
-    // POSIX 探测（每任务一次；C# IsPosixShellAsync：输出含 Windows_NT/$env
-    // 特征按非 POSIX，探测超时/失败同按非 POSIX，Windows 服务器静默回退）。
-    let posix = {
-        let Some(c) = conn.as_ref() else {
-            return TarOut::Failed(t("连接不可用（内部状态异常）").to_owned());
-        };
-        match tokio::time::timeout(EXEC_QUICK, c.exec("echo $env:OS")).await {
-            Ok(Ok((_, out, _))) => is_posix_output(out.trim()),
-            _ => false,
-        }
-    };
-    if !posix {
-        return TarOut::Fallback;
-    }
+    // POSIX + gzip 探测已在 maybe_run（probe_remote_tar）完成，此处直走。
     let guid = guid();
     let parent = remote_parent(remote);
-    let tar_path = join_remote(&parent, &format!(".ifree-tar-{guid}.tar"));
+    let tar_path = join_remote(&parent, &format!(".ifree-tar-{guid}.tar.gz"));
     let tmp_dir = join_remote(&parent, &format!(".ifree-tar-{guid}"));
     let dest_exists = match conn.as_ref() {
         Some(c) => c.sftp.metadata(remote).await.is_ok(),
@@ -238,89 +281,19 @@ async fn upload_body(
     dest_exists: bool,
     prof: Option<&Profile>,
 ) -> TarOut {
-    set_phase(shared, id, 1);
+    // 打包线程（T15 内嵌化：tar::Builder + GzEncoder 纯 Rust，删除本机 tar
+    // 子进程/管理线程桥/stderr 收集/30s 超时杀整段）：有界扫描逐条 append，
+    // 压缩块经通道桥进 async 侧。接收端断开（检查点暂停/取消/失败结算或写
+    // 远端出错）→ blocking_send 报错 → 打包线程自行收尾退出。
+    // 注意：上传打包在本地进行（phase=1 专指下载方向的服务端打包，此处不置，
+    // 免得「服务端打包中」文案在本地打包/流式上传期间误导用户）。
     progress(shared, id, 0, 0);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    let root = local.to_path_buf();
+    let packer = tokio::task::spawn_blocking(move || pack_dir(&root, PackerW(tx)));
 
-    // 本机 tar 打包到 stdout（tokio 无 process 特性：std 子进程 + 管理线程桥进
-    // async；C# Process tar -cf - 同命令）。
-    let mut child = match std::process::Command::new("tar")
-        .args(["-cf", "-", "-C"])
-        .arg(local)
-        .arg(".")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return TarOut::Failed(tfmt("启动本机 tar 失败：{0}", &[&e])),
-    };
-    // stderr 收集（tar 报错文本留给退出码非 0 的失败详情）。
-    let Some(mut stderr) = child.stderr.take() else {
-        return TarOut::Failed(t("本机 tar 进程无 stderr 管道（内部异常）").to_owned());
-    };
-    let err_buf = Arc::new(Mutex::new(String::new()));
-    let err_sink = err_buf.clone();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        // 锁中毒（持有方 panic）只丢报错详情，不致命——显式退出而非 unwrap。
-        let Ok(mut tail) = err_sink.lock() else {
-            return;
-        };
-        loop {
-            match stderr.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    tail.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    // 只留尾部（退出详情够用，防超大输出占内存）。
-                    if tail.len() > 8192 {
-                        let cut = tail.len() - 4096;
-                        tail.drain(..cut);
-                    }
-                }
-            }
-        }
-    });
-
-    // 管理线程：stdout 分块转发；接收端断开（暂停/取消/失败）即杀进程收尾；
-    // EOF 后等退出 30s，超时杀（C# WaitForExit 30s 同口径）。
-    let Some(mut stdout) = child.stdout.take() else {
-        return TarOut::Failed(t("本机 tar 进程无 stdout 管道（内部异常）").to_owned());
-    };
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<TarMsg>(2);
-    std::thread::spawn(move || {
-        let mut buf = vec![0u8; CHUNK];
-        loop {
-            match stdout.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if tx.blocking_send(TarMsg::Chunk(buf[..n].to_vec())).is_err() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return;
-                    }
-                }
-            }
-        }
-        let _ = tx.blocking_send(TarMsg::Eof);
-        let deadline = Instant::now() + Duration::from_secs(TAR_EXIT_WAIT);
-        let code = loop {
-            match child.try_wait() {
-                Ok(Some(st)) => break Ok(st.code().unwrap_or(-1)),
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break Err(());
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(_) => break Err(()),
-            }
-        };
-        let _ = tx.blocking_send(TarMsg::Exited(code));
-    });
-
-    // 流式直写远端临时 .tar（检查点/看门狗/速度窗与逐文件同口径）。
+    // 流式直写远端临时 .tar.gz：256KB 聚包后落 SFTP（与旧子进程 256KB 块同档，
+    // 防 gzip 输出的小碎块拖慢 SFTP 大包）；进度按压缩流实际字节数（口径不变）。
     let sftp = &match conn.as_ref() {
         Some(c) => &c.sftp,
         None => return TarOut::Failed(t("连接不可用（内部状态异常）").to_owned()),
@@ -340,68 +313,60 @@ async fn upload_body(
     let mut win_at = Instant::now();
     let mut win_bytes = 0u64;
     let mut cur_speed = 0u64;
+    let mut out_buf: Vec<u8> = Vec::with_capacity(CHUNK);
     loop {
-        // 检查点：tar 整体任务暂停/取消即断（重试整体重来，无文件级续传）。
+        // 检查点：tar 整体任务暂停/取消即断（重试整体重来，无文件级续传）；
+        // 返回即 drop 接收端 → 打包线程 send 报错自行退出。
         if let Some(o) = checkpoint(shared, id) {
             return match o {
                 Outcome::Paused => TarOut::Paused,
                 _ => TarOut::Cancelled,
             };
         }
-        let msg = match tokio::time::timeout(STALL, rx.recv()).await {
-            Err(_) => return TarOut::Failed(stalled()),
-            // 管理线程异常消失（防御）。
-            Ok(None) => return TarOut::Failed(t("本机 tar 进程异常退出").into()),
-            Ok(Some(m)) => m,
-        };
-        match msg {
-            TarMsg::Chunk(buf) => {
-                match tokio::time::timeout(STALL, rf.write_all(&buf)).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => return TarOut::Failed(tfmt("写入远端失败：{0}", &[&e])),
-                    Err(_) => return TarOut::Failed(stalled()),
-                }
-                transferred += buf.len() as u64;
-                let now = Instant::now();
-                if now.duration_since(win_at) >= SPEED_WINDOW {
-                    let dt = now.duration_since(win_at).as_secs_f64();
-                    cur_speed = ((transferred - win_bytes) as f64 / dt) as u64;
-                    win_at = now;
-                    win_bytes = transferred;
-                }
-                progress(shared, id, transferred, cur_speed);
+        // 聚包满 → 落 SFTP（含速度窗与进度上报）。
+        if out_buf.len() >= CHUNK {
+            if let Err(e) = flush_to_remote(&mut rf, &mut out_buf, &mut transferred).await {
+                return TarOut::Failed(e);
             }
-            TarMsg::Eof => {}
-            TarMsg::Exited(res) => match res {
-                Ok(0) => break,
-                Ok(code) => {
-                    // 锁中毒（stderr 收集线程 panic）只丢详情文本，不影响失败结算。
-                    let detail = err_buf
-                        .lock()
-                        .map(|b| b.trim().to_owned())
-                        .unwrap_or_default();
-                    return TarOut::Failed(tfmt(
-                        "[tar 加速] 本机 tar 失败（退出码 {0}）：{1}",
-                        &[&code, &detail],
-                    ));
-                }
-                Err(()) => return TarOut::Failed(hang_killed()),
-            },
+            let now = Instant::now();
+            if now.duration_since(win_at) >= SPEED_WINDOW {
+                let dt = now.duration_since(win_at).as_secs_f64();
+                cur_speed = ((transferred - win_bytes) as f64 / dt) as u64;
+                win_at = now;
+                win_bytes = transferred;
+            }
+            progress(shared, id, transferred, cur_speed);
+        }
+        // 取压缩块（看门狗：打包线程 60s 无产出判僵死）。
+        match tokio::time::timeout(STALL, rx.recv()).await {
+            Err(_) => return TarOut::Failed(stalled()),
+            Ok(None) => break, // 通道关闭 = 打包完成
+            Ok(Some(chunk)) => out_buf.extend_from_slice(&chunk),
         }
     }
-    drop(rf); // 发送 close：临时 .tar 闭合，服务端解包前必须完整落盘
+    // 收尾落包尾（含 GzEncoder finish 冲出的剩余压缩块）。
+    if !out_buf.is_empty()
+        && let Err(e) = flush_to_remote(&mut rf, &mut out_buf, &mut transferred).await
+    {
+        return TarOut::Failed(e);
+    }
+    drop(rf); // 发送 close：临时 .tar.gz 闭合，服务端解包前必须完整落盘
+
+    // 打包线程结果：Err = 本地扫描/打包失败（带路径）或线程崩溃。
+    let packed = match packer.await {
+        Ok(r) => r,
+        Err(je) => Err(je.to_string()),
+    };
+    if let Err(e) = packed {
+        return TarOut::Failed(tfmt("[tar 加速] 本地打包失败：{0}", &[&e]));
+    }
 
     set_phase(shared, id, 2);
     progress(shared, id, transferred, 0);
 
     if !dest_exists {
         // 原子切换：解包到同级临时目录 → sftp rename（C# RENAME 语义）。
-        let cmd = format!(
-            "mkdir -p {} && tar -xf {} -C {}",
-            ssh::shell_quote(tmp_dir),
-            ssh::shell_quote(tar_path),
-            ssh::shell_quote(tmp_dir)
-        );
+        let cmd = unpack_cmd(tar_path, tmp_dir);
         if let Err(e) = exec_cmd(conn, &cmd, EXEC_LONG).await {
             return TarOut::Failed(e);
         }
@@ -427,12 +392,7 @@ async fn upload_body(
         }
     }
     // 直接解包覆盖（目标已存在，或 rename 降级）。
-    let cmd = format!(
-        "mkdir -p {} && tar -xf {} -C {}",
-        ssh::shell_quote(remote),
-        ssh::shell_quote(tar_path),
-        ssh::shell_quote(remote)
-    );
+    let cmd = unpack_cmd(tar_path, remote);
     match exec_cmd(conn, &cmd, EXEC_LONG).await {
         Ok(()) => TarOut::Done,
         Err(e) => TarOut::Failed(e),
@@ -454,8 +414,8 @@ async fn download_dir(
         return TarOut::Fallback;
     };
     let guid = guid();
-    let remote_tar = format!("/tmp/.ifree-tar-{guid}.tar");
-    let local_tar = parent.join(format!(".ifree-tar-{guid}.tar"));
+    let remote_tar = format!("/tmp/.ifree-tar-{guid}.tar.gz");
+    let local_tar = parent.join(format!(".ifree-tar-{guid}.tar.gz"));
     let local_tmp = parent.join(format!(".ifree-tar-{guid}"));
 
     let out = download_body(
@@ -492,18 +452,14 @@ async fn download_body(
 ) -> TarOut {
     set_phase(shared, id, 1);
     progress(shared, id, 0, 0);
-    // 服务端打包（C# 同命令 tar -cf /tmp/… -C <dir> .）。
-    let cmd = format!(
-        "tar -cf {} -C {} .",
-        ssh::shell_quote(remote_tar),
-        ssh::shell_quote(remote)
-    );
+    // 服务端打包（gzip 统一压缩，T15 改 -czf；C# 同结构 tar -c）。
+    let cmd = pack_remote_cmd(remote_tar, remote);
     if let Err(e) = exec_cmd(conn, &cmd, EXEC_LONG).await {
         return TarOut::Failed(e);
     }
 
     // SFTP 单文件下载（复用逐文件下载：检查点/进度/速度窗全继承；
-    // 本地临时 tar 名每次新 guid，无续传干扰）。
+    // 本地临时 tar.gz 名每次新 guid，无续传干扰）。
     match download_file(shared, conn, id, remote_tar, local_tar, 0, prof).await {
         Outcome::Done => {}
         Outcome::Paused => return TarOut::Paused,
@@ -515,36 +471,16 @@ async fn download_body(
     if let Err(e) = std::fs::create_dir_all(local_tmp) {
         return TarOut::Failed(tfmt("创建临时目录失败：{0}", &[&e]));
     }
-    // 本机解包（阻塞走 spawn_blocking；C# Process tar -xf 同语义）。
+    // 本地解包（T15 内嵌化：GzDecoder + tar::Archive::unpack 纯 Rust，删除本机
+    // tar 子进程；spawn_blocking 保留，阻塞点仍在。unpack 内建路径逃逸守卫，
+    // 默认保留 mtime 与 Unix 权限位；PAX/UTF-8 读头，中文文件名不依赖代码页）。
     let lt = local_tar.to_path_buf();
     let ltd = local_tmp.to_path_buf();
-    let joined = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("tar")
-            .arg("-xf")
-            .arg(lt)
-            .arg("-C")
-            .arg(ltd)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| e.to_string())
-    })
-    .await;
-    let res = match joined {
-        Ok(r) => r,
-        Err(e) => return TarOut::Failed(tfmt("本机解包任务失败：{0}", &[&e])),
-    };
-    match res {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            let detail = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-            let code = out.status.code().unwrap_or(-1);
-            return TarOut::Failed(tfmt(
-                "[tar 加速] 本机 tar 失败（退出码 {0}）：{1}",
-                &[&code, &detail],
-            ));
-        }
-        Err(e) => return TarOut::Failed(tfmt("启动本机 tar 失败：{0}", &[&e])),
+    let joined = tokio::task::spawn_blocking(move || unpack_gz_tar(&lt, &ltd)).await;
+    match joined {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return TarOut::Failed(tfmt("本机解包任务失败：{0}", &[&e])),
+        Err(e) => return TarOut::Failed(tfmt("本机解包任务失败：{0}", &[&e.to_string()])),
     }
 
     // 落位：目标已存在 → 合并覆盖（C# MergeDirectory）；否则 rename 原子落位。
@@ -618,41 +554,52 @@ async fn cleanup_remote(
     }
 }
 
-/// 远端有界文件计数：POSIX 探测 + `find <dir> -type f | head -n <limit> | wc -l`；
-/// 超时/失败/非 POSIX/解析失败 → -1（不走 tar，C# CountRemoteFilesAsync 同口径）。
-async fn count_remote_files(c: &SftpConn, remote: &str, limit: i64) -> i64 {
-    let posix = match tokio::time::timeout(EXEC_QUICK, c.exec("echo $env:OS")).await {
-        Ok(Ok((_, out, _))) => {
-            let out = out.trim();
-            !(out.contains("Windows_NT") || out.contains("$env"))
-        }
-        _ => false,
-    };
-    if !posix {
-        return -1;
-    }
-    let cmd = format!(
-        "find {} -type f | head -n {} | wc -l",
-        ssh::shell_quote(remote),
-        limit
-    );
-    match tokio::time::timeout(EXEC_QUICK, c.exec(&cmd)).await {
+/// 远端有界文件计数：`find <dir> -type f | head -n <limit> | wc -l`；
+/// 超时/失败/解析失败 → -1（不走 tar，C# CountRemoteFilesAsync 同口径）。
+/// POSIX + gzip 探测已上收至 probe_remote_tar/remote_tar_ok（T15：gate_open
+/// 的 tar_ok 语义改为远端探测，计数不再内含探测）。
+pub(super) async fn count_remote_files(c: &SftpConn, remote: &str, limit: i64) -> i64 {
+    match tokio::time::timeout(EXEC_QUICK, c.exec(&count_cmd(remote, limit))).await {
         Ok(Ok((0, out, _))) => out.trim().parse::<i64>().unwrap_or(-1),
         _ => -1,
     }
 }
 
+/// 远端 tar 能力探测（T15 新语义：gate_open 的 tar_ok）= POSIX shell
+/// （is_posix_output，沿用现 exec 探测与判定口径）+ gzip 可用（`command -v
+/// gzip` 退出码 0）。每任务一次，与旧 POSIX 探测同节奏。
+async fn remote_tar_ok(c: &SftpConn) -> bool {
+    let posix = match tokio::time::timeout(EXEC_QUICK, c.exec("echo $env:OS")).await {
+        Ok(Ok((_, out, _))) => is_posix_output(out.trim()),
+        _ => false,
+    };
+    if !posix {
+        return false;
+    }
+    matches!(
+        tokio::time::timeout(EXEC_QUICK, c.exec("command -v gzip")).await,
+        Ok(Ok((0, _, _)))
+    )
+}
+
 /// POSIX 探测输出判定（C# IsPosixShellAsync 口径）：输出含 Windows_NT/$env
 /// 特征即非 POSIX；探测超时/执行失败由调用点按 false（非 POSIX → Fallback）。
 fn is_posix_output(out: &str) -> bool {
-    !(out.contains("Windows_NT") || out.contains("$env"))
+    #[cfg(feature = "official")]
+    {
+        crate::ifree_core::transfer::tar::is_posix_output(out)
+    }
+    #[cfg(not(feature = "official"))]
+    {
+        !(out.contains("Windows_NT") || out.contains("$env"))
+    }
 }
 
 /// 本地有界文件计数（数到 limit 即停）。显式栈迭代（禁递归防爆栈）：
 /// 深度上限 128、symlink_metadata 不跟链接（符号链接一律不计）、规范化路径
 /// visited 集合防环（目录联接/循环符号链接）。扫描失败 = 显式 Err（带路径），
 /// 绝不静默跳过 —— 调用方记日志后回退逐文件传输。
-fn count_local_files(root: &Path, limit: i64) -> Result<i64, String> {
+pub(super) fn count_local_files(root: &Path, limit: i64) -> Result<i64, String> {
     use std::path::PathBuf;
     const MAX_DEPTH: usize = 128;
     let mut n = 0i64;
@@ -794,18 +741,163 @@ fn merge_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 本机 tar 可用性（进程内缓存一次探测；`tar --version` 可启动即成功）。
-fn local_tar_available() -> bool {
-    static OK: OnceLock<bool> = OnceLock::new();
-    *OK.get_or_init(|| {
-        std::process::Command::new("tar")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    })
+/// 本机打包（T15 内嵌化）：tar::Builder + GzEncoder（级别固定 6，无设置项）
+/// 纯 Rust 实现。复用 T5 有界扫描范式：显式栈迭代（禁递归防爆栈）、深度上限
+/// 128、symlink 不盲跟（一律跳过，与计数口径一致）、规范化路径 visited 集合
+/// 防环；逐条 append（禁 append_dir_all 裸奔），header 保 mtime/权限
+/// （append_path_with_data 读文件元数据写入 tar 头）。压缩块经 W 流出——
+/// 上传侧传通道桥（PackerW）实现流式直写远端；测试侧传内存/文件。
+fn pack_dir<W: std::io::Write>(root: &Path, w: W) -> Result<(), String> {
+    use flate2::{Compression, write::GzEncoder};
+    let gz = GzEncoder::new(w, Compression::new(6));
+    let mut b = tar::Builder::new(gz);
+    const MAX_DEPTH: usize = 128;
+    let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    visited.insert(std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()));
+    // 栈元素：(待扫目录绝对路径, 归档内相对前缀, 深度)。LIFO + 每层按名排序
+    // = 确定性顺序；根自身不进档（内容落在档根，与 `tar -C <dir> .` 同布局）。
+    let mut stack: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
+    while let Some((dir, prefix, depth)) = stack.pop() {
+        let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&dir)
+            .map_err(err_at(&dir))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(err_at(&dir))?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let p = e.path();
+            let meta = std::fs::symlink_metadata(&p).map_err(err_at(&p))?;
+            // 链接/目录联接不盲跟：一律跳过（与 count_local_files 计数口径
+            // 一致；环守卫因此天然不触及链接）。
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            let rel = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if meta.is_dir() {
+                if depth + 1 >= MAX_DEPTH {
+                    return Err(format!("目录嵌套超过 {MAX_DEPTH} 层上限：{}", p.display()));
+                }
+                let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+                if !visited.insert(canon) {
+                    return Err(format!(
+                        "检测到目录环（符号链接/联接循环）：{}",
+                        p.display()
+                    ));
+                }
+                b.append_dir(Path::new(&rel), &p).map_err(err_at(&p))?;
+                stack.push((p, rel, depth + 1));
+            } else if meta.is_file() {
+                // mtime/权限随文件元数据入 tar 头（T15：中文文件名按 PAX/UTF-8
+                // 写头，不依赖系统代码页——有意优于 C# 的 bsdtar 代码页风险）。
+                b.append_path_with_name(&p, Path::new(&rel))
+                    .map_err(err_at(&p))?;
+            }
+        }
+    }
+    let gz = b.into_inner().map_err(err_at(root))?;
+    gz.finish().map_err(err_at(root))?;
+    Ok(())
+}
+
+/// 通道桥写端（std::io::Write → tokio mpsc）：打包线程（spawn_blocking，非
+/// async 上下文）用 blocking_send 推压缩块；接收端断开（检查点暂停/取消/
+/// 失败结算或写远端出错）即报错，打包线程据此自行收尾退出。
+struct PackerW(tokio::sync::mpsc::Sender<Vec<u8>>);
+
+impl std::io::Write for PackerW {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.0.blocking_send(buf.to_vec()).is_err() {
+            return Err(std::io::Error::other(
+                "打包接收端已断开（任务已暂停/取消/失败）",
+            ));
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// 压缩块落 SFTP：256KB 聚包一次 write_all（与旧子进程 256KB 块同档，防
+/// gzip 输出小碎块拖慢 SFTP 大包）；成功后清空缓冲并累加已传字节（压缩流
+/// 实际字节数，进度口径不变）。
+async fn flush_to_remote<W: tokio::io::AsyncWrite + Unpin>(
+    rf: &mut W,
+    out_buf: &mut Vec<u8>,
+    transferred: &mut u64,
+) -> Result<(), String> {
+    match tokio::time::timeout(STALL, rf.write_all(out_buf.as_slice())).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(tfmt("写入远端失败：{0}", &[&e])),
+        Err(_) => return Err(stalled()),
+    }
+    *transferred += out_buf.len() as u64;
+    out_buf.clear();
+    Ok(())
+}
+
+/// 本地解包（T15 内嵌化）：GzDecoder + tar::Archive::unpack 纯 Rust。
+/// unpack 默认保留 mtime（preserve_mtime 默认开）与 Unix 基本权限位；
+/// 内建路径逃逸守卫（拒绝 .. 与绝对路径条目）；PAX/UTF-8 读头，中文文件名
+/// 不依赖系统代码页。删除原本机 tar -xf 子进程段。
+fn unpack_gz_tar(tar_path: &Path, dest: &Path) -> Result<(), String> {
+    let f = std::fs::File::open(tar_path).map_err(err_at(tar_path))?;
+    let dec = flate2::read::GzDecoder::new(f);
+    tar::Archive::new(dec).unpack(dest).map_err(err_at(dest))?;
+    Ok(())
+}
+
+/// 远端打包命令（纯函数化供单测）：gzip 统一压缩（T15 由 -cf 改 -czf）。
+fn pack_remote_cmd(tar_path: &str, dir: &str) -> String {
+    #[cfg(feature = "official")]
+    {
+        crate::ifree_core::transfer::tar::pack_remote_cmd(tar_path, dir)
+    }
+    #[cfg(not(feature = "official"))]
+    {
+        format!(
+            "tar -czf {} -C {} .",
+            ssh::shell_quote(tar_path),
+            ssh::shell_quote(dir)
+        )
+    }
+}
+
+/// 远端解包命令（纯函数化供单测）：-z 对应统一 gzip 压缩流（T15 由 -xf 改 -xzf）。
+fn unpack_cmd(tar_path: &str, dir: &str) -> String {
+    #[cfg(feature = "official")]
+    {
+        crate::ifree_core::transfer::tar::unpack_cmd(tar_path, dir)
+    }
+    #[cfg(not(feature = "official"))]
+    {
+        format!(
+            "mkdir -p {} && tar -xzf {} -C {}",
+            ssh::shell_quote(dir),
+            ssh::shell_quote(tar_path),
+            ssh::shell_quote(dir)
+        )
+    }
+}
+
+/// 远端有界计数命令（纯函数化供单测）。
+fn count_cmd(dir: &str, limit: i64) -> String {
+    #[cfg(feature = "official")]
+    {
+        crate::ifree_core::transfer::tar::count_cmd(dir, limit)
+    }
+    #[cfg(not(feature = "official"))]
+    {
+        format!(
+            "find {} -type f | head -n {} | wc -l",
+            ssh::shell_quote(dir),
+            limit
+        )
+    }
 }
 
 /// 临时件名 guid（16hex：纳秒时钟 + 进程内序号混合；C# Guid 等价用途）。
@@ -822,14 +914,21 @@ fn guid() -> String {
 /// 远端父目录（临时件落点；C# GetRemoteParentDirectory：末段去掉；
 /// 无 `/` 或仅根 → 根目录）。
 fn remote_parent(p: &str) -> String {
-    let t = p.trim_end_matches('/');
-    match t.rfind('/') {
-        Some(0) | None => "/".to_owned(),
-        Some(i) => t[..i].to_owned(),
+    #[cfg(feature = "official")]
+    {
+        crate::ifree_core::transfer::tar::remote_parent(p)
+    }
+    #[cfg(not(feature = "official"))]
+    {
+        let t = p.trim_end_matches('/');
+        match t.rfind('/') {
+            Some(0) | None => "/".to_owned(),
+            Some(i) => t[..i].to_owned(),
+        }
     }
 }
 
-/// tar 阶段旗标（队列第四列文案用；0 无 / 1 服务端打包中 / 2 解包中）。
+/// tar 阶段旗标（队列第四列文案用；0 无 / 1 服务端打包中（仅下载方向）/ 2 解包中）。
 fn set_phase(shared: &Shared, id: u64, phase: u8) {
     let mut st = shared.st.lock().unwrap();
     if let Some(i) = st.items.iter_mut().find(|i| i.id == id) {
@@ -845,21 +944,14 @@ fn stalled() -> String {
     )
 }
 
-/// 本机 tar 超时杀文案（i18n 键「本地 tar 进程」）。
-fn hang_killed() -> String {
-    tfmt(
-        "[tar 加速] 本地 tar 进程 {0} 秒未退出，已终止",
-        &[&TAR_EXIT_WAIT],
-    )
-}
-
 #[cfg(test)]
 mod gate_tests {
     use super::*;
 
-    /// 门判据·本机 tar 可用：设置开 + 阈值正 + 计数达标（含恰等阈值）→ 走 tar。
+    /// 门判据·远端探测通过（T15 新语义：tar_ok = POSIX + gzip 远端探测通过）：
+    /// 设置开 + 阈值正 + 计数达标（含恰等阈值）→ 走 tar。
     #[test]
-    fn tar_available_and_count_reaches_threshold() {
+    fn remote_probe_ok_and_count_reaches_threshold() {
         assert!(gate_open(true, 50, true, Some(60)));
         // 有界计数数到阈值即停，恰等阈值同样达标（C# >= 口径）。
         assert!(gate_open(true, 50, true, Some(50)));
@@ -867,10 +959,10 @@ mod gate_tests {
         assert!(!gate_open(true, 50, true, Some(49)));
     }
 
-    /// 门判据·本机 tar 不可用：任何计数下整门不过（回退逐文件，绝不走 tar）；
-    /// 设置关 / 阈值非正同样整门不过。
+    /// 门判据·远端探测不过（T15 新语义：非 POSIX / 缺 gzip）：任何计数下整门
+    /// 不过（回退逐文件，绝不走 tar）；设置关 / 阈值非正同样整门不过。
     #[test]
-    fn tar_unavailable_or_disabled_never_takes_tar() {
+    fn remote_probe_failed_or_disabled_never_takes_tar() {
         assert!(!gate_open(true, 50, false, Some(999_999)));
         assert!(!gate_open(false, 50, true, Some(999_999)));
         assert!(!gate_open(true, 0, true, Some(999_999)));
@@ -1035,5 +1127,83 @@ mod gate_tests {
         {
             std::os::unix::fs::symlink(dir, dir.join("loop")).expect("symlink 失败");
         }
+    }
+
+    /// T15 ① round-trip：Builder+GzEncoder 打包 → GzDecoder+unpack 还原；
+    /// 覆盖中文文件名（PAX/UTF-8 往返，不依赖系统代码页）、mtime 不同
+    /// （tar 头按秒存，还原值与原值逐文件对拍）、子目录嵌套。
+    #[test]
+    fn gz_tar_roundtrip_preserves_names_content_and_mtime() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let base = std::env::temp_dir().join(format!("ifree-tar-rt-{}", std::process::id()));
+        let src = base.join("源目录");
+        let sub = src.join("子目录");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(src.join("报告.txt"), "中文内容——第一版".as_bytes()).unwrap();
+        // 两文件 mtime 落不同秒（tar 头按秒存，同秒无法验证保留）。
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(sub.join("data.bin"), [0u8, 1, 2, 250, 255]).unwrap();
+        let m1 = std::fs::metadata(src.join("报告.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let m2 = std::fs::metadata(sub.join("data.bin"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let secs = |t: SystemTime| t.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        assert_ne!(secs(m1), secs(m2), "用例前置：两文件 mtime 须不同秒");
+
+        // 打包到内存（压缩级别 6 由 pack_dir 内定，无设置项）。
+        let mut buf: Vec<u8> = Vec::new();
+        pack_dir(&src, &mut buf).expect("打包成功");
+
+        // 解包还原（与 download_body 同构造：GzDecoder + Archive::unpack）。
+        let out = base.join("还原目录");
+        std::fs::create_dir_all(&out).unwrap();
+        let dec = flate2::read::GzDecoder::new(std::io::Cursor::new(buf));
+        tar::Archive::new(dec).unpack(&out).unwrap();
+
+        // 内容对拍（中文名 UTF-8 往返 + 二进制字节对拍）。
+        assert_eq!(
+            std::fs::read(out.join("报告.txt")).unwrap(),
+            "中文内容——第一版".as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(out.join("子目录").join("data.bin")).unwrap(),
+            [0u8, 1, 2, 250, 255]
+        );
+        // mtime 对拍：逐文件还原一致，两文件差异保持。
+        let m1o = std::fs::metadata(out.join("报告.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let m2o = std::fs::metadata(out.join("子目录").join("data.bin"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(secs(m1), secs(m1o), "mtime 须还原一致（报告.txt）");
+        assert_eq!(secs(m2), secs(m2o), "mtime 须还原一致（data.bin）");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// T15 ③ 远端命令构造纯函数：shell_quote 嵌入与命令骨架（-z 统一 gzip）。
+    #[test]
+    fn remote_command_construction_quotes_and_shape() {
+        // 打包：tar -czf <tar> -C <dir> .
+        assert_eq!(
+            pack_remote_cmd("/tmp/a b.tar.gz", "/src/dir"),
+            "tar -czf '/tmp/a b.tar.gz' -C '/src/dir' ."
+        );
+        // 解包：mkdir -p <dir> && tar -xzf <tar> -C <dir>
+        assert_eq!(
+            unpack_cmd("/tmp/a.tar.gz", "/dst dir"),
+            "mkdir -p '/dst dir' && tar -xzf '/tmp/a.tar.gz' -C '/dst dir'"
+        );
+        // 计数：find | head | wc -l
+        assert_eq!(
+            count_cmd("/some dir", 50),
+            "find '/some dir' -type f | head -n 50 | wc -l"
+        );
     }
 }

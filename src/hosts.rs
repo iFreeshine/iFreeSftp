@@ -7,9 +7,11 @@
 //!   前缀 `enc:`；旧版明文原样读入、下次保存升级为密文；已带 enc: 前缀幂等。
 //!   DPAPI 经 crypt32 原生 FFI（CryptProtectData/CryptUnprotectData），
 //!   零新依赖（R5）；
-//! - 损坏存档：parse_into 逐行容错（坏记录跳过、可解析部分照常载入），不让
-//!   应用启动失败；**无 .bak 备份逻辑**（i18n 表内两条「已备份到」为 C# resw
-//!   迁移残留，Rust 无调用点，见 README 能力矩阵）；
+//! - 损坏存档（S-10，对齐 C# BackupCorruptedStore）：读取失败或结构损坏
+//!   （记录未闭合 / 记录外游离字段）时原文复制为时间戳备份件
+//!   `hosts.json.corrupt-{yyyyMMdd-HHmmss}.bak`，备份路径存全局通知，主机
+//!   设置面板打开时弹红色 InfoBar 提示数据去向（C# HostPanel ctor 同款）；
+//!   可解析部分照常载入（比 C# 整档作废多保一分数据），不让应用启动失败；
 //! - 指纹确认流程（首连弹窗/密钥变更拒绝）随 SSH 实连验证任务接入，字段先行。
 
 use std::sync::Mutex;
@@ -50,6 +52,9 @@ pub struct HostProfile {
     pub username: String,
     /// 内存明文（运行时需要）；落盘时 DPAPI 密文（enc: 前缀）。
     pub password: String,
+    /// 本平台解不开存档里的 enc: 密文：password 已清空、需用户重新输入。
+    /// 仅内存工作集标记，不写进 hosts.json（存档格式零变更）。
+    pub credential_unavailable: bool,
     pub local_sync_path: String,
     pub remote_sync_path: String,
     pub sync_enabled: bool,
@@ -77,6 +82,7 @@ impl Default for HostProfile {
             key_file_path: String::new(),
             username: String::new(),
             password: String::new(),
+            credential_unavailable: false,
             local_sync_path: String::new(),
             remote_sync_path: String::new(),
             sync_enabled: false,
@@ -110,18 +116,94 @@ impl HostProfile {
 
 static HOSTS: Mutex<Vec<HostProfile>> = Mutex::new(Vec::new());
 
-/// 启动载入（main.rs 调用；parse_into 逐行容错，无备份逻辑）。
+/// 损坏存档通知（S-10）：Some((备份件路径, 原因))。load 时置位/清空，主机
+/// 设置面板打开时消费显示（C# HostStoreService.LoadFailedBackupPath 同款，
+/// 面板每次打开都提示，直到下次 load 翻新）。
+static LOAD_NOTICE: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// 损坏存档通知快照（面板打开时读）。
+pub fn load_notice() -> Option<(String, String)> {
+    LOAD_NOTICE.lock().unwrap().clone()
+}
+
+/// 解密失败待投递日志（S-6，C# HostStoreService.Unprotect :266-268 失败即
+/// TerminalLogService.Log 同款）：unprotect 在启动 load / 导入期跑，此时终端
+/// 日志尚属 UI 态拿不到句柄——先入全局队列，首帧排空投递（main.rs）。
+static PENDING_LOGS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// 排空待投递日志（UI 每帧调用；返回并清空）。
+pub fn drain_pending_logs() -> Vec<(String, String)> {
+    std::mem::take(&mut *PENDING_LOGS.lock().unwrap())
+}
+
+/// 解密失败日志（键 LogPasswordUndecryptable，{0}=失败原因）。
+fn push_decrypt_fail_log(reason: &str) {
+    PENDING_LOGS.lock().unwrap().push((
+        crate::local::now_hms(),
+        crate::i18n::tfmt(
+            "主机密码解密失败（{0}），已保留原密文；换回原 Windows 账户可恢复，或重新输入密码",
+            &[&reason],
+        ),
+    ));
+}
+
+/// 启动载入（main.rs 调用；损坏备份见模块注释 S-10）。
 pub fn load() {
-    let mut loaded = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(store_path()) {
-        parse_into(&mut loaded, &text);
-        for h in &mut loaded {
-            h.password = unprotect(&h.password);
-        }
-    } else {
-        return;
-    }
+    let (loaded, notice) = load_from(&store_path());
+    *LOAD_NOTICE.lock().unwrap() = notice;
     *HOSTS.lock().unwrap() = loaded;
+}
+
+/// 载入核心（路径注入便于测试；返回 (工作集, 损坏通知)）：
+/// - 读取成功且结构完整 → 正常载入（密码 DPAPI 解密）；
+/// - 读取失败（权限/占用/非 UTF-8，非「文件不存在」）→ 原文备份 + 载入为空
+///   （C# JsonDocument.Parse 外层 catch 同口径）；
+/// - 结构损坏（坏记录跳过=静默丢数据的兜底）→ 原文备份，可解析部分照常载入。
+/// 备份失败（权限/占用）静默不通知，不影响启动（C# 同口径）。
+fn load_from(path: &std::path::Path) -> (Vec<HostProfile>, Option<(String, String)>) {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let mut loaded = Vec::new();
+            let loss = parse_into_report(&mut loaded, &text);
+            for h in &mut loaded {
+                // C 方案（Linux 本期发版）：在数据入口堵死——解不开的 enc: 密文
+                // 一律清空并打标，绝不留在工作集当密码用。所有认证消费点因此
+                // 天然拿不到密文，不必逐个出口加判断（防漏点）。
+                match unprotect_checked(&h.password) {
+                    Credential::Plain(s) => h.password = s,
+                    Credential::Unavailable => {
+                        h.password.clear();
+                        h.credential_unavailable = true;
+                    }
+                }
+            }
+            match loss {
+                Some(reason) => {
+                    let notice = backup_corrupt(path).map(|b| (b, reason));
+                    (loaded, notice)
+                }
+                None => (loaded, None),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
+        Err(e) => {
+            let notice = backup_corrupt(path).map(|b| (b, e.to_string()));
+            (Vec::new(), notice)
+        }
+    }
+}
+
+/// 损坏存档备份（C# BackupCorruptedStore）：原文复制为
+/// `{存档}.corrupt-{yyyyMMdd-HHmmss}.bak`（fs::copy 不要求 UTF-8，读失败场景
+/// 也能备份）；失败静默返回 None（C# 备份失败照常启动）。
+fn backup_corrupt(path: &std::path::Path) -> Option<String> {
+    let backup = path.with_file_name(format!(
+        "{}.corrupt-{}.bak",
+        path.file_name()?.to_str()?,
+        crate::local::now_stamp()
+    ));
+    std::fs::copy(path, &backup).ok()?;
+    Some(backup.to_string_lossy().into_owned())
 }
 
 /// 只读快照访问（HostPicker 列表）。
@@ -129,10 +211,15 @@ pub fn with<R>(f: impl FnOnce(&[HostProfile]) -> R) -> R {
     f(&HOSTS.lock().unwrap())
 }
 
+/// 只替换内存工作集，不写盘（C 方案：交互式密码仅本次会话有效，绝不落盘）。
+pub fn replace_working_set(hs: Vec<HostProfile>) {
+    *HOSTS.lock().unwrap() = hs;
+}
+
 /// 显式全量落盘（主机设置面板「保存」：工作集整表替换盘上记录，C# Save 语义）。
 /// 落盘失败 → Err（H4：UI 显式报错；改动仍在内存工作集，可修复后重试）。
 pub fn replace_all(hs: Vec<HostProfile>) -> std::io::Result<()> {
-    *HOSTS.lock().unwrap() = hs;
+    replace_working_set(hs);
     save()
 }
 
@@ -183,8 +270,10 @@ pub(crate) fn unprotect_pub(stored: &str) -> String {
     unprotect(stored)
 }
 
-/// DPAPI 密文加密（registration.dat 注册码存取用；空串/已带前缀幂等原样返回；
+/// DPAPI 密文加密（registration.dat 注册码存取原语，经函数指针注入闭源 core
+/// DpapiStore 用，仅 official 形态装配；空串/已带前缀幂等原样返回；
 /// 加密失败 → Err，调用方不得明文落盘）。
+#[cfg(feature = "official")]
 pub(crate) fn protect_pub(stored: &str) -> Result<String, String> {
     protect(stored)
 }
@@ -338,11 +427,23 @@ fn host_label(h: &HostProfile) -> String {
     }
 }
 
-/// 逐行解析：`{` 深度计记录边界（只数独占一行的花括号，字符串值不参与），
-/// kv 行写入当前记录；非法键/缺失保持默认（单条坏值不毁存档）。
+/// 逐行解析（丢弃损失报告；append_to_disk/save_single_session 等容错照旧）。
 fn parse_into(out: &mut Vec<HostProfile>, text: &str) {
+    parse_into_report(out, text);
+}
+
+/// 逐行解析 + 结构损失报告（S-10）：`{` 深度计记录边界（只数独占一行的
+/// 花括号，字符串值不参与），kv 行写入当前记录；非法键/缺失保持默认（单条
+/// 坏值不毁存档）。Some(原因) = 存档存在无法还原的内容（坏记录静默跳过的
+/// 人工可读证据），调用方据此备份原文并提示面板。判定三条：
+/// - 记录未闭合：`{` 开了记录但存档结束（截断/花括号失衡），整条丢失；
+/// - 已知字段出现在记录外：坏结构散落的字段值（正常包裹层 `"hosts"` 不算）；
+/// - 全文无 `"hosts"` 包裹层：不是本程序写出的内容（C# JsonDocument.Parse 同判）。
+fn parse_into_report(out: &mut Vec<HostProfile>, text: &str) -> Option<String> {
     let mut depth = 0usize;
     let mut cur: Option<HostProfile> = None;
+    let mut unclosed = 0usize;
+    let mut stray = 0usize;
     for line in text.lines() {
         let t = line.trim();
         let t = t.strip_suffix(',').unwrap_or(t);
@@ -367,7 +468,13 @@ fn parse_into(out: &mut Vec<HostProfile>, text: &str) {
                 let Some((k, v)) = split_kv(t) else {
                     continue;
                 };
-                let Some(p) = cur.as_mut() else { continue };
+                let Some(p) = cur.as_mut() else {
+                    // 记录外的已知字段 = 坏结构散落的字段值（包裹层 "hosts" 正常放行）。
+                    if !k.eq_ignore_ascii_case("hosts") {
+                        stray += 1;
+                    }
+                    continue;
+                };
                 // C# HostImportParser 存档字典 OrdinalIgnoreCase（小写键兼容有
                 // HostImportParserTests 守护）：键统一小写匹配，写出仍 PascalCase。
                 match k.to_ascii_lowercase().as_str() {
@@ -400,6 +507,21 @@ fn parse_into(out: &mut Vec<HostProfile>, text: &str) {
             }
         }
     }
+    if cur.is_some() {
+        unclosed += 1;
+    }
+    if unclosed > 0 {
+        return Some(format!(
+            "记录未闭合（存档可能被截断），{unclosed} 条记录不完整"
+        ));
+    }
+    if stray > 0 {
+        return Some(format!("记录外存在游离字段 {stray} 处（存档结构损坏）"));
+    }
+    if out.is_empty() && !text.trim().is_empty() && !text.contains("\"hosts\"") {
+        return Some("存档结构无法识别（不是本程序写出的格式）".to_owned());
+    }
+    None
 }
 
 /// 拆 `"key": value`（行首尾空白容忍；与 settings.rs 同式）。
@@ -472,7 +594,6 @@ pub(crate) fn json_escape(s: &str) -> String {
 // ── DPAPI（crypt32 FFI，零新依赖）────────────────────────────
 
 const ENC_PREFIX: &str = "enc:";
-pub(crate) const ENC_PREFIX_PUB: &str = ENC_PREFIX;
 
 // H5：crypt32 FFI 与常量仅 Windows 编译；其他平台无凭据加密能力（Keychain/
 // libsecret 后续平台接入时再加），protect 返回 Err（调用方不得明文落盘）、
@@ -513,6 +634,8 @@ unsafe extern "system" {
 #[cfg(windows)]
 unsafe extern "system" {
     fn LocalFree(h: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    /// CryptUnprotectData 扩展错误码（S-6 解密失败日志取码用）。
+    fn GetLastError() -> u32;
 }
 
 // 测试桩：强制 DPAPI 失败（save_locked 整批不落盘 / 注册激活 SaveFailed
@@ -585,6 +708,7 @@ fn unprotect(stored: &str) -> String {
     #[cfg(windows)]
     {
         let Some(cipher) = base64_decode(&stored[ENC_PREFIX.len()..]) else {
+            push_decrypt_fail_log("密文 Base64 解码失败"); // S-6 静默→日志
             return stored.to_owned();
         };
         let input = CryptBlob {
@@ -608,6 +732,9 @@ fn unprotect(stored: &str) -> String {
             )
         };
         if ok == 0 || out.data.is_null() || out.cb == 0 {
+            // S-6 静默→日志：补 Win32 错误码（C# CryptographicException.Message 同位）
+            let e = unsafe { GetLastError() };
+            push_decrypt_fail_log(&format!("DPAPI 解密失败（Win32 错误码 {e}）"));
             return stored.to_owned();
         }
         let plain = unsafe { std::slice::from_raw_parts(out.data, out.cb as usize) };
@@ -619,6 +746,33 @@ fn unprotect(stored: &str) -> String {
     {
         // 无 DPAPI 可解：密文原样返回（fail-closed）。
         stored.to_owned()
+    }
+}
+
+/// 凭据加载结果（C 方案）：可用明文 / 本平台解不开。类型层强制调用方处理
+/// 「不可用」，杜绝把 enc: 密文原样当密码送进 SSH 认证。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Credential {
+    Plain(String),
+    Unavailable,
+}
+
+/// 结构化解密：无前缀 = 旧版明文兼容（直接可用）；enc: 密文解不开
+/// （非 Windows 恒解不开、Windows DPAPI 失败）一律 Unavailable。
+/// 沿用 unprotect 的幂等 / fail-closed / S-6 日志语义，不改其签名。
+fn unprotect_checked(stored: &str) -> Credential {
+    if stored.is_empty() || !stored.starts_with(ENC_PREFIX) {
+        return Credential::Plain(stored.to_owned());
+    }
+    let s = unprotect(stored);
+    if s.starts_with(ENC_PREFIX) {
+        #[cfg(not(windows))]
+        {
+            push_decrypt_fail_log("当前平台不支持凭据加密（DPAPI）");
+        }
+        Credential::Unavailable
+    } else {
+        Credential::Plain(s)
     }
 }
 
@@ -708,6 +862,77 @@ mod tests {
         h
     }
 
+    /// C 方案夹具：pid + 进程内计数独占名，默认并行档不互抢（CR-10 铁律）。
+    fn unique_store(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "ifree-cr3-{tag}-{}-{}.json",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        p
+    }
+
+    /// 旧版明文 / 空值直接可用（存档格式零变更）。
+    #[test]
+    fn unprotect_checked_legacy_plain_is_plain() {
+        assert_eq!(unprotect_checked(""), Credential::Plain(String::new()));
+        assert_eq!(
+            unprotect_checked("pw123"),
+            Credential::Plain("pw123".to_owned())
+        );
+    }
+
+    /// 解不开的 enc: 密文一律 Unavailable，绝不把密文当密码返回。
+    #[test]
+    fn unprotect_checked_undecryptable_is_unavailable() {
+        assert_eq!(unprotect_checked("enc:AAAA"), Credential::Unavailable);
+    }
+
+    /// 数据入口钉：盘上 enc: 密文载入后 password 清空 + 打标，盘上字节不变。
+    #[test]
+    fn load_from_clears_unavailable_credential() {
+        let p = unique_store("unavailable");
+        let text = concat!(
+            "{\r\n  \"hosts\": [\r\n",
+            "    {\r\n",
+            "      \"Name\": \"web1\",\r\n",
+            "      \"Host\": \"10.0.0.1\",\r\n",
+            "      \"Port\": 22,\r\n",
+            "      \"Username\": \"root\",\r\n",
+            "      \"AuthMode\": \"Password\",\r\n",
+            "      \"Password\": \"enc:AAAA\",\r\n",
+            "      \"LastRemotePath\": \"\"\r\n",
+            "    }\r\n",
+            "  ]\r\n}"
+        );
+        std::fs::write(&p, text).unwrap();
+        let (loaded, notice) = load_from(&p);
+        assert!(notice.is_none(), "结构完整不得误报损坏: {notice:?}");
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].password.is_empty(), "密文不得留在工作集");
+        assert!(loaded[0].credential_unavailable, "必须打标待重录");
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            text.as_bytes(),
+            "载入不得改写存档"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// 内存标记不写进 hosts.json（存档格式零变更）。
+    #[test]
+    fn credential_unavailable_not_serialized() {
+        let mut h = sample("");
+        h.credential_unavailable = true;
+        let (text, skips) = serialize(&[h], true);
+        assert!(skips.is_empty());
+        assert!(!text.contains("credential_unavailable"));
+        assert!(text.contains("\"Password\": \"\""));
+    }
+
     /// 非 Windows：protect 无加密能力恒 Err → 整批不落盘，盘上存档字节不变。
     #[cfg(not(windows))]
     #[test]
@@ -739,6 +964,79 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), b"ORIGINAL");
         // 明文红线：盘上不得出现密码原文
         assert!(!String::from_utf8_lossy(&std::fs::read(&p).unwrap()).contains("secret"));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    // ── S-10 损坏注入用例（构造坏 hosts.json → 备份件生成 + 通知带路径）──
+
+    fn corrupt_store(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "ifree-hosts-corrupt-{tag}-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    /// 截断记录（`{` 未闭合）→ 可解析部分照常载入 + 时间戳备份件原文完整 + 通知带路径。
+    #[test]
+    fn load_from_truncated_backs_up() {
+        let p = corrupt_store("trunc");
+        // 完整记录 + 截断记录（serialize 行式同构；末条 `{` 未闭合）。
+        let good = "{\r\n  \"hosts\": [\r\n    {\r\n      \"Name\": \"web1\",\r\n      \"Host\": \"10.0.0.1\",\r\n      \"Port\": 22,\r\n      \"Username\": \"root\",\r\n      \"Password\": \"\",\r\n      \"LastRemotePath\": \"\"\r\n    },\r\n    {\r\n      \"Name\": \"broken";
+        std::fs::write(&p, good).unwrap();
+        let (loaded, notice) = load_from(&p);
+        assert_eq!(loaded.len(), 1); // 可解析部分照常载入
+        assert_eq!(loaded[0].name, "web1");
+        let (backup, reason) = notice.expect("损坏存档必须出通知");
+        assert!(reason.contains("未闭合"), "原因可读: {reason}");
+        assert!(backup.contains(".corrupt-") && backup.ends_with(".bak"));
+        let bpath = std::path::PathBuf::from(&backup);
+        assert!(bpath.is_file(), "备份件必须生成: {backup}");
+        assert_eq!(std::fs::read(&bpath).unwrap(), good.as_bytes()); // 原文完整保留
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(&bpath);
+    }
+
+    /// 非 UTF-8 内容（read_to_string 失败）→ 原文备份 + 载入为空 + 通知带路径。
+    #[test]
+    fn load_from_undecodable_backs_up() {
+        let p = corrupt_store("bin");
+        let raw: &[u8] = &[0xFF, 0xFE, 0x00, 0x01, 0x9C];
+        std::fs::write(&p, raw).unwrap();
+        let (loaded, notice) = load_from(&p);
+        assert!(loaded.is_empty());
+        let (backup, _) = notice.expect("读取失败必须出通知");
+        let bpath = std::path::PathBuf::from(&backup);
+        assert!(bpath.is_file());
+        assert_eq!(std::fs::read(&bpath).unwrap(), raw); // 原文按字节保留
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(&bpath);
+    }
+
+    /// 正常存档 → 无备份件、无通知（防误报）。
+    #[test]
+    fn load_from_clean_no_notice() {
+        let p = corrupt_store("clean");
+        let (text, _) = serialize(&[sample("")], true);
+        std::fs::write(&p, &text).unwrap();
+        let (loaded, notice) = load_from(&p);
+        assert!(notice.is_none());
+        assert_eq!(loaded.len(), 1);
+        // 同目录不残留 .corrupt-*.bak 备份件。
+        let dir = p.parent().unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map_while(Result::ok)
+            .filter(|e| {
+                e.file_name().to_string_lossy().contains(&format!(
+                    "ifree-hosts-corrupt-clean-{}.corrupt-",
+                    std::process::id()
+                ))
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "正常存档不得生成备份件");
         let _ = std::fs::remove_file(&p);
     }
 }

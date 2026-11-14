@@ -7,7 +7,7 @@
 //!
 //! 注意：不要持有 `ui.painter()` 跨 allocate_rect（Painter 借用 Ui）。
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke};
+use egui::{Align2, Color32, FontId, Pos2, Rect};
 
 use crate::i18n::t;
 use crate::theme;
@@ -16,8 +16,6 @@ use crate::theme;
 const CAPTION_W: f32 = 46.0;
 /// caption 字形半宽（Fluent 10px 线长）。
 const GLYPH: f32 = 5.0;
-/// 关闭钮 hover 红（WinUI caption CloseButtonBackgroundPointerOver，明暗同值）。
-const CLOSE_HOVER: Color32 = Color32::from_rgb(0xC4, 0x2B, 0x1C);
 
 /// C# FontIcon 14 档（Header.xaml：设置 E713 / 主题 E706·E708 / 语言 E8C1）的
 /// Phosphor 渲染边长。Phosphor 字形留白大于 Segoe Fluent Icons，同框视觉偏小
@@ -50,7 +48,7 @@ pub fn draw(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &theme::Pal
         Pos2::new(rect.left() + 10.0 + 26.0 + 10.0, cy),
         Align2::LEFT_CENTER,
         "iFreeSftp",
-        FontId::new(16.0, egui::FontFamily::Name("brand".into())),
+        theme::font_title(true),
         p.text_primary,
     );
 
@@ -98,6 +96,7 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
             "translate",
             ICON14,
             p.text_primary,
+            lang_tip,
             p,
         ),
         lang_tip,
@@ -118,7 +117,16 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
         egui::vec2(W36, content.height()),
     );
     let theme_btn = super::accent_tip(
-        icon_button(ui, theme_r, st, theme_icon, ICON14, p.text_primary, p),
+        icon_button(
+            ui,
+            theme_r,
+            st,
+            theme_icon,
+            ICON14,
+            p.text_primary,
+            t("切换主题"),
+            p,
+        ),
         t("切换主题"),
     );
     if theme_btn.clicked() {
@@ -127,6 +135,9 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
             egui::Theme::Dark => egui::Theme::Light,
         };
         crate::theme::install(ui.ctx(), next);
+        // 显式值落盘 settings.json theme 键（T19-1，C# ThemeService.Toggle :59
+        // 即时落盘同语义；空=跟随系统仅存在于从未配置状态）。
+        crate::settings::set_theme(next == egui::Theme::Dark);
     }
     x -= GAP + W36;
     let settings_r = Rect::from_min_size(
@@ -134,19 +145,30 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
         egui::vec2(W36, content.height()),
     );
     let settings_btn = super::accent_tip(
-        icon_button(ui, settings_r, st, "gear", ICON14, p.text_primary, p),
+        icon_button(
+            ui,
+            settings_r,
+            st,
+            "gear",
+            ICON14,
+            p.text_primary,
+            t("设置"),
+            p,
+        ),
         t("设置"),
     );
     if settings_btn.clicked() {
-        // 打开时同步当前主题到设置面板（C# SettingsPanel 初始化同步）。
-        st.settings.theme_dark = matches!(ui.ctx().theme(), egui::Theme::Dark);
+        // 每次打开重读存档快照（C# SettingsPanel 构造即读当前值同语义）：
+        // theme/language 的 loaded 基线必须新鲜，否则面板未动的字段会把期间
+        // 经标题栏钮写入的显式值按旧快照覆盖回去（T19-1/T19-3）。
+        st.settings = super::dialogs::Settings::from_store();
         st.dialog = super::dialogs::Dialog::Settings {
             win_drag: egui::Vec2::ZERO,
         };
     }
 
     // 主机钮：蓝底白字 + 图标（C# HostBtn）。
-    let host_font = FontId::proportional(13.0);
+    let host_font = theme::font(theme::TextRole::Compact);
     let text_w = ui
         .painter()
         .layout_no_wrap(t("主机").to_owned(), host_font.clone(), Color32::WHITE)
@@ -167,7 +189,7 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
     // 打开下载页（C# UrlGuard.TryLaunchAsync(UpdateUrl)）。
     let reg = crate::registration::service::global().state();
     if st.settings.update_check && reg.update_available && !reg.latest_version.is_empty() {
-        let font = FontId::proportional(12.0);
+        let font = theme::font_small();
         let label = crate::i18n::tfmt("新版本 v{0}", &[&reg.latest_version]);
         let tw = ui
             .painter()
@@ -204,7 +226,7 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
     pr.rect_stroke(
         capsule,
         16.0,
-        Stroke::new(1.0, p.separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.separator),
         egui::StrokeKind::Inside,
     );
 
@@ -231,6 +253,7 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
         "arrows-clockwise",
         synced,
         has_remote,
+        t("同步浏览"),
     );
     // tooltip（C# HeaderSyncBrowse）：禁用钮不参与命中测试 → 不挂。
     let sync = if has_remote {
@@ -258,7 +281,16 @@ fn function_buttons(ui: &mut egui::Ui, rect: Rect, st: &mut super::State, p: &th
     }
     // 比对开关（依赖同步浏览活动对；开启时按挂接对两侧列表立即重排，C# ApplyBoth）。
     let cmp_ready = has_remote && synced;
-    let cmp = capsule_toggle(ui, tg_rect(1), st, p, "files", st.compare, cmp_ready);
+    let cmp = capsule_toggle(
+        ui,
+        tg_rect(1),
+        st,
+        p,
+        "files",
+        st.compare,
+        cmp_ready,
+        t("文件比对"),
+    );
     // tooltip（C# HeaderCompare）：禁用钮不参与命中测试 → 不挂。
     let cmp = if cmp_ready {
         super::accent_tip(cmp, t("文件比对"))
@@ -284,9 +316,13 @@ fn icon_button(
     icon: &str,
     icon_size: f32,
     fg: Color32,
+    // 无障碍名（M-12：与 tooltip 同源；C# XAML Button 的 AutomationProperties.Name 同位）。
+    label: &'static str,
     p: &theme::Palette,
 ) -> egui::Response {
     let resp = ui.allocate_rect(rect, egui::Sense::click());
+    // M-12：自绘图标钮无控件语义，补 widget_info（屏幕阅读器 / AccessKit 检视可见）。
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     if resp.hovered() {
         let bg = if resp.is_pointer_button_down_on() {
             p.control_pressed
@@ -312,6 +348,8 @@ fn host_button(
     font: FontId,
 ) -> egui::Response {
     let resp = ui.allocate_rect(rect, egui::Sense::click());
+    // M-12：自绘主机钮无控件语义，补 widget_info（C# HostBtn 内容文字同位）。
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, t("主机")));
     let bg = if resp.is_pointer_button_down_on() {
         theme::ACCENT_PRESSED
     } else if resp.hovered() {
@@ -357,6 +395,8 @@ fn update_badge(
     font: FontId,
 ) -> egui::Response {
     let resp = ui.allocate_rect(rect, egui::Sense::click());
+    // M-12：自绘更新徽标无控件语义，补 widget_info（C# UpdateBadgeBtn 同位）。
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     let fg = if resp.is_pointer_button_down_on() {
         theme::ACCENT_PRESSED
     } else if resp.hovered() {
@@ -393,8 +433,13 @@ fn capsule_toggle(
     icon: &str,
     checked: bool,
     enabled: bool,
+    // 无障碍名（M-12：与 tooltip 同源，C# HeaderSyncBrowse/HeaderCompare 同位）。
+    label: &'static str,
 ) -> egui::Response {
     let resp = ui.allocate_rect(rect, egui::Sense::click());
+    // M-12：胶囊开关自绘无控件语义，补 widget_info（C# ToggleButton → AccessKit
+    // Switch 双态语义等价）+ 选中态；禁用态如实上报 enabled=false。
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, enabled, checked, label));
     let (bg, fg) = if checked {
         (Some(theme::SUCCESS), Color32::WHITE)
     } else if !enabled {
@@ -408,7 +453,7 @@ fn capsule_toggle(
         (None, p.text_primary)
     };
     if let Some(bg) = bg {
-        ui.painter().rect_filled(rect, 12.0, bg);
+        ui.painter().rect_filled(rect, theme::PILL_RADIUS, bg);
     }
     if let Some(img) = st.icons.get(ui.ctx(), icon, fg, ICON13) {
         img.paint_at(
@@ -447,7 +492,8 @@ fn caption_buttons(ui: &mut egui::Ui, rect: Rect, p: &theme::Palette) {
         };
         let is_close = matches!(kind, Kind::Close);
         let fg = if resp.hovered() && is_close {
-            ui.painter().rect_filled(brect, 0.0, CLOSE_HOVER);
+            ui.painter()
+                .rect_filled(brect, 0.0, theme::CAPTION_CLOSE_HOVER);
             Color32::WHITE
         } else {
             if resp.hovered() {
@@ -464,7 +510,7 @@ fn caption_buttons(ui: &mut egui::Ui, rect: Rect, p: &theme::Palette) {
         }
 
         let c = brect.center();
-        let stroke = Stroke::new(1.0, fg);
+        let stroke = theme::stroke(ui.ctx().pixels_per_point(), 1.0, fg);
         let pr = ui.painter();
         match kind {
             Kind::Minimize => {

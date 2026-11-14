@@ -12,8 +12,8 @@
 //!
 //! T4 起暴露独立连接入口给传输队列（connect_sftp_silent 静默门，不复用主会话，C# 同语义）。
 //! T5 起增加：Delete（SFTP 递归删除，C# 回退路径同款）+ 独立 exec 通道
-//! （独立线程每命令新建连接，命令超时 10s，exit 超时归一 -1 —— C# §2 语义，
-//! 未沿用其常驻 exec 客户端，按命令重建更简单且 C# 异常时同样重建）。
+//! （独立线程；CR-7-S4 起缓存已认证连接按档案复用，命令超时 10s / 目录删除
+//! 120s，exit 超时归一 -1 —— C# §2 语义；档案变化或连接失败即丢缓存重建）。
 //!
 //! IMPL-connect P1（对齐 C# S3.2-3.5 / S5.5 / S6）：
 //! - G5 重试：connect_with_retry 闭环，maxAttempts = 1 + MaxRetries；认证失败与
@@ -79,6 +79,11 @@ fn keepalive_interval() -> Option<Duration> {
 /// exec 命令超时（含建连；C# CommandTimeout 默认 10s，ExitStatus null 归一 -1）。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// SFTP 批量请求并发度（StatBatch / DeleteBatch 共用）：块内 join_all 同时在途，
+/// 块耗时 ≈ 单次 RTT 而非 n×RTT；russh-sftp 按请求 id 配对响应，天然支持多在途。
+/// CR-7 前为 StatBatch 分支内的局部常量，批量删除复用同一口径故提升为模块级。
+const STAT_CONCURRENCY: usize = 32;
+
 /// UI → 工作线程命令。
 pub enum Cmd {
     Connect {
@@ -102,12 +107,28 @@ pub enum Cmd {
         path: String,
         req: u64,
     },
-    /// 删除远端条目（目录递归；逐项经 Ev::Log 留终端日志 —— C5 不可逆操作）。
-    /// tag 随 Ev::Deleted 原样回声。
-    Delete {
+    /// 批量探测远端目标（T20-G③ 批量传输冲突预检）：paths 逐条回 Ev::Stat
+    /// （同 req）。会话 worker 分块并发——此前逐条串行 = O(n×RTT)，万级批次
+    /// 分钟级才回流，队列长时间无法形成；russh-sftp 底层按请求 id 配对响应，
+    /// 天然支持多在途。
+    StatBatch {
+        paths: Vec<String>,
+        req: u64,
+    },
+    /// 批量删除远端条目（CR-7）：文件项按 STAT_CONCURRENCY 分块并发发 REMOVE，
+    /// 目录项不进并发块仍逐个走 exec / SFTP 递归；逐项成败经 Ev::Log 留终端日志
+    /// （C5 不可逆操作）。整批只回一条 Ev::Deleted，tag 原样回声 —— UI 的
+    /// del_pending 按「批」计数（发批 +1、回执 -1），不是按项。
+    DeleteBatch {
         tag: u64,
-        path: String,
-        is_dir: bool,
+        items: Vec<(String, bool)>,
+    },
+    /// CR-7-S4 内部回执：exec 线程跑完一条目录删除命令后送回主 worker，
+    /// 由 worker 继续做迟到删净核对 / 回退，并在整批目录结束时发唯一一条
+    /// Ev::Deleted。不是 UI 命令——仅 `exec_run` 经 worker_tx 回送。
+    ExecDone {
+        tag: u64,
+        result: Result<(i32, String, String), String>,
     },
     /// 读远端文件（远程编辑下载；req 丢弃过期响应，max 字节上限）。
     ReadFile {
@@ -133,13 +154,25 @@ pub enum Cmd {
         tag: u64,
         path: String,
     },
+    /// 远端重命名（SSH_FXP_RENAME，P0-1 落盘；成败细节走 Ev::Log，完成统一
+    /// Ev::Created）。tag 随 Ev::Created 原样回声。
+    Rename {
+        tag: u64,
+        path: String,
+        new_path: String,
+    },
     Disconnect,
 }
 
-/// exec 通道请求（独立线程）。
-pub struct ExecReq {
-    pub req: u64,
-    pub cmd: String,
+/// exec 作业（tokio unbounded —— std 阻塞 recv 会冻结 current_thread 调度器，
+/// 缓存连接的后台任务没人轮询，下一次 exec_on_channel 会挂死，G8 同款教训）。
+/// CR-7-S4：命令窗与目录删除走两条独立通道，避免 120s 长删除把命令窗排队饿死；
+/// 两条通道各自持一份缓存，均只在创建它的任务内复用 / 丢弃，不跨 runtime 传 Handle。
+pub enum ExecReq {
+    /// 命令窗：结果走 Ev::Exec，req 原样回声。
+    Command { req: u64, cmd: String },
+    /// 服务端命令删除目录：结果经 Cmd::ExecDone 回主 worker（worker 再核对 / 回退）。
+    Delete { tag: u64, cmd: String },
 }
 
 /// 工作线程 → UI 事件（UI 每帧 poll 取空）。
@@ -194,7 +227,8 @@ pub enum Ev {
         path: String,
         result: Result<Option<i64>, String>,
     },
-    /// 删除完成（无论成败；成败细节已走 Ev::Log）；tag = Cmd::Delete 回声。
+    /// 删除完成（无论成败；成败细节已走 Ev::Log）；tag = Cmd::DeleteBatch 回声。
+    /// CR-7：一条回执代表整批，del_pending 按批归零。
     Deleted { tag: u64 },
     /// 新建条目完成（无论成败；成败细节已走 Ev::Log；UI 收到即重列当前目录）；
     /// tag = Cmd::Mkdir / Cmd::CreateFile 回声。
@@ -218,7 +252,7 @@ pub struct Ssh {
     /// std 阻塞 recv 会冻结 current_thread 调度器，饿死 tokio::spawn 的
     /// fire-and-forget 探测任务，G8 日志永不出现）。
     tx: tokio::sync::mpsc::UnboundedSender<Cmd>,
-    exec_tx: mpsc::Sender<ExecReq>,
+    exec_tx: tokio::sync::mpsc::UnboundedSender<ExecReq>,
     rx: Arc<Mutex<mpsc::Receiver<Ev>>>,
     /// 会话探针（C# SftpSessionService.IsConnected 等价）：工作线程当前是否有
     /// 已认证会话——连接成功置位、连接失败/主动断开复位；被动掉线随 keepalive
@@ -244,7 +278,8 @@ impl Ssh {
         // G8：命令通道走 tokio unbounded（见 Ssh.tx 注释）；Ev 通道保持 std
         // （UI 侧 try_recv 同步轮询，worker 侧 unbounded send 永不阻塞）。
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
-        let (exec_tx, exec_rx) = mpsc::channel::<ExecReq>();
+        let (exec_tx, exec_rx) = tokio::sync::mpsc::unbounded_channel::<ExecReq>();
+        let (delete_tx, delete_rx) = tokio::sync::mpsc::unbounded_channel::<ExecReq>();
         let (etx, erx) = mpsc::channel();
         let erx = Arc::new(Mutex::new(erx));
         let etx2 = etx.clone();
@@ -256,13 +291,24 @@ impl Ssh {
         let exec_spec: Arc<Mutex<Option<ExecSpec>>> = Arc::new(Mutex::new(None));
         let exec_spec_run = exec_spec.clone();
         let exec_spec_exec = exec_spec.clone();
+        // CR-7-S4：worker 只发删除作业；exec 线程把回执送回 worker 的命令队列。
+        let worker_tx = tx.clone();
         std::thread::Builder::new()
             .name("ssh".into())
-            .spawn(move || run(rx, etx2, connected_worker, probe_worker, exec_spec_run))
+            .spawn(move || {
+                run(
+                    rx,
+                    etx2,
+                    connected_worker,
+                    probe_worker,
+                    exec_spec_run,
+                    delete_tx,
+                )
+            })
             .expect("spawn ssh worker");
         std::thread::Builder::new()
             .name("ssh-exec".into())
-            .spawn(move || exec_run(exec_rx, etx, exec_spec_exec))
+            .spawn(move || exec_run(exec_rx, delete_rx, etx, exec_spec_exec, worker_tx))
             .expect("spawn ssh exec worker");
         Self {
             tx,
@@ -301,8 +347,16 @@ impl Ssh {
         let _ = self.tx.send(Cmd::Stat { path, req });
     }
 
-    pub fn delete(&self, tag: u64, path: String, is_dir: bool) {
-        let _ = self.tx.send(Cmd::Delete { tag, path, is_dir });
+    /// 批量探测远端目标（T20-G③）：一次批请求替代逐条 stat——会话 worker
+    /// 分块并发，万级批次秒级回流；单条 stat 保留给外部编辑等单点探测。
+    pub fn stat_batch(&self, paths: Vec<String>, req: u64) {
+        let _ = self.tx.send(Cmd::StatBatch { paths, req });
+    }
+
+    /// 批量删除（CR-7）：一次发一个批、一个 tag；文件项块内并发、目录项串行。
+    /// 全库仅 ui/dialogs.rs::apply_delete 一个调用点，单条 Delete 已随之取消。
+    pub fn delete_batch(&self, tag: u64, items: Vec<(String, bool)>) {
+        let _ = self.tx.send(Cmd::DeleteBatch { tag, items });
     }
 
     /// 读远端文件（远程编辑下载；结果走 Ev::FileData）。
@@ -325,9 +379,18 @@ impl Ssh {
         let _ = self.tx.send(Cmd::CreateFile { tag, path });
     }
 
+    /// 远端重命名（P0-1 落盘；结果走 Ev::Created，成败细节走 Ev::Log）。
+    pub fn rename(&self, tag: u64, path: String, new_path: String) {
+        let _ = self.tx.send(Cmd::Rename {
+            tag,
+            path,
+            new_path,
+        });
+    }
+
     /// exec 通道命令（独立线程；结果走 Ev::Exec）。
     pub fn exec(&self, req: u64, cmd: String) {
-        let _ = self.exec_tx.send(ExecReq { req, cmd });
+        let _ = self.exec_tx.send(ExecReq::Command { req, cmd });
     }
 
     pub fn disconnect(&self) {
@@ -368,12 +431,13 @@ fn run(
     connected: Arc<AtomicBool>,
     probe: Arc<Mutex<(u64, Option<HashProbe>)>>,
     exec_spec: Arc<Mutex<Option<ExecSpec>>>,
+    delete_jobs: tokio::sync::mpsc::UnboundedSender<ExecReq>,
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
-    rt.block_on(worker(rx, etx, connected, probe, exec_spec));
+    rt.block_on(worker(rx, etx, connected, probe, exec_spec, delete_jobs));
 }
 
 /// 一条已认证的 SFTP 连接（主会话与传输连接共用；drop 即断开）。
@@ -829,14 +893,54 @@ where
     }
 }
 
+/// CR-7 删除批拆分：文件项进并发块，目录项保持原顺序串行（exec rm / SFTP 递归
+/// 都要独占 sftp 句柄与回退路径，不与其它删除同时在途）。
+fn split_delete_items(items: &[(String, bool)]) -> (Vec<&str>, Vec<&str>) {
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    for (path, is_dir) in items {
+        if *is_dir {
+            dirs.push(path.as_str());
+        } else {
+            files.push(path.as_str());
+        }
+    }
+    (files, dirs)
+}
+
+/// CR-7 文件项分块计划：块数 = ceil(n / STAT_CONCURRENCY)，每块 ≤ 并发度；
+/// 块内 join_all 首 poll 全发，请求总数恒等于文件项数（不多发不漏发）。
+fn delete_file_chunks<'a, 'b>(files: &'b [&'a str]) -> Vec<&'b [&'a str]> {
+    files.chunks(STAT_CONCURRENCY).collect()
+}
+
+/// CR-7 单文件删除成败日志：文案与单条 Delete 时代逐字一致，返回 (日志, 是否成功)。
+/// 每项独立判定，块内某一项失败不影响其余项执行，也不写「已删除 N 项」汇总。
+fn delete_file_log_msg(label: &str, path: &str, r: Result<(), String>) -> (String, bool) {
+    match r {
+        Ok(_) => (
+            format!("[{label}] {}", tfmt("远程删除：{0}", &[&path])),
+            true,
+        ),
+        Err(e) => (
+            format!("[{label}] {}", tfmt("删除失败：{0}（{1}）", &[&path, &e])),
+            false,
+        ),
+    }
+}
+
 async fn worker(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
     etx: mpsc::Sender<Ev>,
     connected: Arc<AtomicBool>,
     probe: Arc<Mutex<(u64, Option<HashProbe>)>>,
     exec_spec: Arc<Mutex<Option<ExecSpec>>>,
+    delete_jobs: tokio::sync::mpsc::UnboundedSender<ExecReq>,
 ) {
     let mut ctx: Option<Ctx> = None;
+    // CR-7-S4：在途的目录删除批（exec 等待移到 exec 线程后，主 worker 只在
+    // 收回执时做核对 / 回退；期间 Cmd::List / 传输等照常处理，不占死命令循环）。
+    let mut pending_deletes: Vec<PendingDelete> = Vec::new();
     // G8：首个列表成功后只触发一次哈希探测（重连 Connect 时复位）。
     let mut listed_once = false;
     // 真 async recv：空闲 Pending 让出调度器，tokio::spawn 的探测任务才被轮询。
@@ -850,6 +954,9 @@ async fn worker(
                 label,
                 fingerprint,
             } => {
+                // CR-7-S4：换主机 / 重连先作废在途目录删除，且必须给每个 tag 补发
+                // 回执（否则 UI 的 del_pending 永不归零，卡「正在删除…」）。
+                cancel_pending_deletes(&mut pending_deletes, &etx);
                 // 重连场景：先丢弃旧会话。
                 ctx = None;
                 // G8 S3.1：重连/换主机清探测缓存并推进代际（作废在途探测回写）。
@@ -956,6 +1063,46 @@ async fn worker(
                 };
                 let _ = etx.send(reply);
             }
+            Cmd::StatBatch { paths, req } => {
+                // T20-G③：块内并发（join_all 首 poll 全发，块耗时 ≈ 单次 RTT 而非
+                // n×RTT），逐条走 sftp_op 保单条超时语义；无会话时全部按不存在回。
+                let stat_ev =
+                    |path: String, r: Result<russh_sftp::protocol::FileAttributes, String>| match r
+                    {
+                        Ok(meta) => Ev::Stat {
+                            req,
+                            path,
+                            exists: true,
+                            size: meta.size,
+                            mtime: meta.mtime.map(|t| t as i64),
+                        },
+                        Err(_) => Ev::Stat {
+                            req,
+                            path,
+                            exists: false,
+                            size: None,
+                            mtime: None,
+                        },
+                    };
+                match &ctx {
+                    Some(c) => {
+                        let sftp = &c.conn.sftp;
+                        for chunk in paths.chunks(STAT_CONCURRENCY) {
+                            let futs = chunk.iter().map(|p| async move {
+                                (p.clone(), sftp_op(sftp.metadata(p)).await)
+                            });
+                            for (path, r) in futures_util::future::join_all(futs).await {
+                                let _ = etx.send(stat_ev(path, r));
+                            }
+                        }
+                    }
+                    None => {
+                        for path in paths {
+                            let _ = etx.send(stat_ev(path, Err("无会话".to_owned())));
+                        }
+                    }
+                }
+            }
             Cmd::ReadFile { path, req, max } => {
                 let reply = match &mut ctx {
                     Some(c) => read_file_with_mtime(&c.conn.sftp, &path, max)
@@ -997,43 +1144,83 @@ async fn worker(
                 };
                 let _ = etx.send(reply);
             }
-            Cmd::Delete { tag, path, is_dir } => {
+            Cmd::DeleteBatch { tag, items } => {
+                // CR-7：文件项按 STAT_CONCURRENCY 分块并发（对齐 StatBatch 范式），
+                // 目录项不进并发块；逐项独立走 sftp_op 超时 + 独立 Ev::Log 成败留痕，
+                // 整批只回一条 Ev::Deleted（UI 侧 del_pending 按批计数）。
                 if let Some(c) = &mut ctx {
                     let label = c.label.clone();
-                    let r = if is_dir {
-                        // G10：设置「服务端命令删除」开 → 优先经 exec rm -rf（海量文件
-                        // 秒级）；命令不可用或未删净时回退 SFTP 递归（rm 幂等，按现存
-                        // 条目重列，部分删除状态无影响。C# DeleteAsync 同语义）。
-                        if crate::settings::with(|s| s.remote_delete_exec)
-                            && delete_dir_via_exec(&c.conn.sftp, &path, &label, &etx, &exec_spec)
-                                .await
-                        {
-                            Ok(())
-                        } else {
-                            delete_dir_recursive(&c.conn.sftp, &path, &label, &etx).await
+                    let (files, dirs) = split_delete_items(&items);
+                    let sftp = &c.conn.sftp;
+                    for chunk in delete_file_chunks(&files) {
+                        let futs = chunk
+                            .iter()
+                            .map(|p| async move { (*p, sftp_op(sftp.remove_file(*p)).await) });
+                        for (path, r) in futures_util::future::join_all(futs).await {
+                            let (msg, _) = delete_file_log_msg(&label, path, r);
+                            let _ = etx.send(Ev::Log { msg });
                         }
+                    }
+                    if dirs.is_empty() {
+                        let _ = etx.send(Ev::Deleted { tag });
+                    } else if crate::settings::with(|s| s.remote_delete_exec) {
+                        // CR-7-S4：exec 等待不留在主 worker —— 首个目录送 exec 线程
+                        // （已认证连接缓存在该线程内复用），本帧即返回命令循环，
+                        // Cmd::List / 传输照常处理；回执到 Cmd::ExecDone 再核对 / 回退。
+                        let first = dirs[0].to_owned();
+                        let _ = delete_jobs.send(ExecReq::Delete {
+                            tag,
+                            cmd: delete_dir_exec_cmd(&first),
+                        });
+                        pending_deletes.push(PendingDelete {
+                            tag,
+                            label,
+                            dirs: dirs.iter().map(|p| (*p).to_owned()).collect(),
+                            next: 0,
+                        });
                     } else {
-                        match sftp_op(c.conn.sftp.remove_file(&path)).await {
-                            Ok(_) => {
-                                let _ = etx.send(Ev::Log {
-                                    msg: format!("[{label}] {}", tfmt("远程删除：{0}", &[&path])),
-                                });
-                                Ok(())
-                            }
-                            Err(e) => {
-                                let _ = etx.send(Ev::Log {
-                                    msg: format!(
-                                        "[{label}] {}",
-                                        tfmt("删除失败：{0}（{1}）", &[&path, &e])
-                                    ),
-                                });
-                                Err(())
-                            }
+                        // 「服务端命令删除」关：仍走 SFTP 递归（无 exec 等待，保持原语义）。
+                        for path in dirs {
+                            let _ = delete_dir_recursive(sftp, path, &label, &etx).await;
                         }
-                    };
-                    let _ = r;
+                        let _ = etx.send(Ev::Deleted { tag });
+                    }
+                } else {
+                    let _ = etx.send(Ev::Deleted { tag });
                 }
-                let _ = etx.send(Ev::Deleted { tag });
+            }
+            Cmd::ExecDone { tag, result } => {
+                let Some(pos) = pending_deletes.iter().position(|p| p.tag == tag) else {
+                    continue; // 换主机 / 断连后迟到的回执：已作废，不碰新会话
+                };
+                let (path, label) = {
+                    let p = &pending_deletes[pos];
+                    (p.dirs[p.next].clone(), p.label.clone())
+                };
+                if let Some(c) = &mut ctx {
+                    // 四项语义全部保留：shell_quote 已在发作业时用；退出码 0 才成功；
+                    // 非 0 / 超时 / 断连先经 SFTP 核对迟到删净；仍存在则回退递归。
+                    delete_dir_settle(&c.conn.sftp, &path, &label, &etx, result).await;
+                } else {
+                    let _ = etx.send(Ev::Log {
+                        msg: format!(
+                            "[{label}] {}",
+                            tfmt("删除失败：{0}（{1}）", &[&path, &t("未连接远程主机")])
+                        ),
+                    });
+                }
+                match advance_pending_delete(&mut pending_deletes[pos]) {
+                    PendingStep::Next { tag, path } => {
+                        let _ = delete_jobs.send(ExecReq::Delete {
+                            tag,
+                            cmd: delete_dir_exec_cmd(&path),
+                        });
+                    }
+                    PendingStep::Done { tag } => {
+                        pending_deletes.remove(pos);
+                        let _ = etx.send(Ev::Deleted { tag });
+                    }
+                }
             }
             Cmd::Mkdir { tag, path } => {
                 // 新建目录（SSH_FXP_MKDIR）；成败日志与 C# CreateRemoteEntryAsync
@@ -1095,7 +1282,43 @@ async fn worker(
                 }
                 let _ = etx.send(Ev::Created { tag });
             }
+            Cmd::Rename {
+                tag,
+                path,
+                new_path,
+            } => {
+                // 重命名（SSH_FXP_RENAME，C# SftpClient.RenameAsync FileView
+                // :2560-2562）；成败留终端日志，完成统一回 Ev::Created 触发重列。
+                if let Some(c) = &mut ctx {
+                    let label = c.label.clone();
+                    match sftp_op(c.conn.sftp.rename(&path, &new_path)).await {
+                        Ok(_) => {
+                            let _ = etx.send(Ev::Log {
+                                msg: format!(
+                                    "[{label}] {}",
+                                    tfmt("远程重命名：{0} → {1}", &[&path, &new_path])
+                                ),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = etx.send(Ev::Log {
+                                msg: format!(
+                                    "[{label}] {}",
+                                    tfmt("重命名失败：{0}（{1}）", &[&path, &e])
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    let _ = etx.send(Ev::Log {
+                        msg: t("未连接远程主机").to_owned(),
+                    });
+                }
+                let _ = etx.send(Ev::Created { tag });
+            }
             Cmd::Disconnect => {
+                // CR-7-S4：断连同样作废在途目录删除并补发回执。
+                cancel_pending_deletes(&mut pending_deletes, &etx);
                 if let Some(c) = &ctx {
                     let _ = etx.send(Ev::Log {
                         msg: format!("[{}] {}", c.label, t("已断开")),
@@ -1176,32 +1399,70 @@ pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// G10 服务端命令删除目录（C# TryDeleteDirViaExecAsync）：exec `rm -rf`（海量文件秒级）。
-/// 成功判定严格：退出码 0 才算成功（防 Windows 服务器 shell 下 rm 非法被误判成功，
-/// 与服务端 cp 直达同款）；超时/通道异常时命令可能「迟到删净」，回退前先经 SFTP 核对
-/// ——目录已不存在同样视为成功，仍存在则打回退日志交由调用方回退 SFTP 递归；核对
-/// 失败（断连等）静默回退，由 SFTP 递归路径给出明确报错。命令超时独立 120s（C#
-/// RunCommandAsync 同值；不动 EXEC_TIMEOUT=10s——那是命令窗口径），经 exec_once
-/// 单命令独立连接。
-async fn delete_dir_via_exec(
+/// CR-7-S4 目录 exec 命令：shell_quote 与 `rm -rf --` 语义逐字保留（G10）。
+fn delete_dir_exec_cmd(path: &str) -> String {
+    format!("rm -rf -- {}", shell_quote(path))
+}
+
+/// 退出码 0 才成功（防 Windows 服务器 shell 下 rm 非法被误判成功）；
+/// 非零 / 超时 / 断连一律走 SFTP 迟到删净核对，不写假成功。
+fn exec_delete_succeeded(result: &Result<(i32, String, String), String>) -> bool {
+    matches!(result, Ok((0, _, _)))
+}
+
+/// CR-7-S4 在途目录删除批：主 worker 等 Cmd::ExecDone 时靠它记住整批上下文。
+struct PendingDelete {
+    tag: u64,
+    label: String,
+    dirs: Vec<String>,
+    /// 当前已发出 exec 作业的目录下标。
+    next: usize,
+}
+
+enum PendingStep {
+    Next { tag: u64, path: String },
+    Done { tag: u64 },
+}
+
+/// 推进到下一目录；整批结束才给出「发 Ev::Deleted」的信号。纯函数，便于钉住
+/// 「20 目录 = 19 次续发 + 1 次结算」与「发作业当帧不结算」。
+fn advance_pending_delete(p: &mut PendingDelete) -> PendingStep {
+    p.next += 1;
+    if p.next < p.dirs.len() {
+        PendingStep::Next {
+            tag: p.tag,
+            path: p.dirs[p.next].clone(),
+        }
+    } else {
+        PendingStep::Done { tag: p.tag }
+    }
+}
+
+/// 换主机 / 重连 / 断连时作废在途批：每个 tag 补发一条 Ev::Deleted，
+/// 防 UI 的 del_pending 永不归零卡在「正在删除…」。
+fn cancel_pending_deletes(pending: &mut Vec<PendingDelete>, etx: &mpsc::Sender<Ev>) {
+    for p in pending.drain(..) {
+        let _ = etx.send(Ev::Deleted { tag: p.tag });
+    }
+}
+
+/// CR-7-S4 目录 exec 结果结算（原 delete_dir_via_exec 的核对 / 回退段逐字保留）。
+/// 严格四项：shell_quote（发作业侧）、退出码 0 才成功、NoSuchFile 迟到删净核对、
+/// 失败回退 SFTP 递归。exec 的等待已移到 exec 线程，这里只跑主 worker 的 SFTP 操作。
+async fn delete_dir_settle(
     sftp: &russh_sftp::client::SftpSession,
     path: &str,
     label: &str,
     etx: &mpsc::Sender<Ev>,
-    exec_spec: &Arc<Mutex<Option<ExecSpec>>>,
-) -> bool {
-    let ran = tokio::time::timeout(
-        Duration::from_secs(120),
-        exec_once(&format!("rm -rf -- {}", shell_quote(path)), exec_spec),
-    )
-    .await;
-    if matches!(ran, Ok(Ok((0, _, _)))) {
+    result: Result<(i32, String, String), String>,
+) {
+    if exec_delete_succeeded(&result) {
         let _ = etx.send(Ev::Log {
             msg: format!("[{label}] {}", tfmt("远程删除：{0}", &[&path])),
         });
-        return true;
+        return;
     }
-    // 回退前核对「迟到删净」：rm 可能已完成，只是回执丢失/超时。
+    // 回退前核对「迟到删净」：rm 可能已完成，只是回执丢失 / 超时。
     // 不经 sftp_op（此处错误需保留类型判「不存在」），OperationTimeout 手工罩顶。
     let secs = operation_timeout_secs();
     let meta = if secs > 0 {
@@ -1210,16 +1471,15 @@ async fn delete_dir_via_exec(
         Ok(sftp.metadata(path).await)
     };
     match meta {
-        // 目录已不存在 = 迟到删净成功（rm 已完成，只是回执丢失/超时）。
+        // 目录已不存在 = 迟到删净成功（rm 已完成，只是回执丢失 / 超时）。
         Ok(Err(russh_sftp::client::error::Error::Status(s)))
             if s.status_code == russh_sftp::protocol::StatusCode::NoSuchFile =>
         {
             let _ = etx.send(Ev::Log {
                 msg: format!("[{label}] {}", tfmt("远程删除：{0}", &[&path])),
             });
-            true
         }
-        // 仍存在 → 打回退日志，交由调用方回退 SFTP 递归。
+        // 仍存在 → 打回退日志并回退 SFTP 递归。
         Ok(Ok(_)) => {
             let _ = etx.send(Ev::Log {
                 msg: format!(
@@ -1227,27 +1487,68 @@ async fn delete_dir_via_exec(
                     t("服务端命令删除失败，已回退 SFTP 递归删除")
                 ),
             });
-            false
+            let _ = delete_dir_recursive(sftp, path, label, etx).await;
         }
-        // 核对失败（断连/超时等）: 静默回退，由 SFTP 递归路径给出明确报错。
-        _ => false,
+        // 核对失败（断连 / 超时等）：静默回退，由 SFTP 递归路径给出明确报错。
+        _ => {
+            let _ = delete_dir_recursive(sftp, path, label, etx).await;
+        }
+    }
+}
+
+/// CR-7 递归删除结果累计：整树只发一条汇总日志，不再逐子文件刷屏。
+#[derive(Default)]
+struct DeleteTreeReport {
+    /// 已成功删除的条目数（含空目录本身）。
+    ok: usize,
+    /// 首错 (路径, 原因)：首错即止，失败路径仍逐条可定位。
+    first_err: Option<(String, String)>,
+}
+
+/// 整树一条汇总（CR-7）：全成功带成功数；首错带失败路径 + 原因 + 首错前成功数。
+/// 部分失败绝不出现「已删除 N 项」的假成功汇总；全部复用既有中英键，零新增文案。
+fn delete_tree_summary_msg(label: &str, dir: &str, r: &DeleteTreeReport) -> String {
+    match &r.first_err {
+        None => format!(
+            "[{label}] {}（{}）",
+            tfmt("远程删除：{0}", &[&dir]),
+            tfmt("已删除 {0} 项", &[&r.ok])
+        ),
+        Some((path, err)) => format!(
+            "[{label}] {}；{}（{}）",
+            tfmt("远程删除：{0}", &[&dir]),
+            tfmt("删除失败：{0}（{1}）", &[&path, &err]),
+            tfmt("{0} 项", &[&r.ok])
+        ),
     }
 }
 
 /// SFTP 递归删除（C# DeleteRemoteDirRecursive 同语义：子文件逐个删、目录空后删、
-/// 符号链接按文件处理不跟随；逐项留终端日志 —— C5）。首错即止，路径已留日志。
+/// 符号链接按文件处理不跟随 —— C5）。首错即止；CR-7 起每棵树只在结束时发一条
+/// 汇总 Ev::Log（成功数 / 首错路径），日志条数与子文件数无关。
 async fn delete_dir_recursive(
     sftp: &russh_sftp::client::SftpSession,
     dir: &str,
     label: &str,
     etx: &mpsc::Sender<Ev>,
 ) -> Result<(), ()> {
+    let mut report = DeleteTreeReport::default();
+    let r = delete_dir_recursive_into(sftp, dir, &mut report).await;
+    let _ = etx.send(Ev::Log {
+        msg: delete_tree_summary_msg(label, dir, &report),
+    });
+    r
+}
+
+async fn delete_dir_recursive_into(
+    sftp: &russh_sftp::client::SftpSession,
+    dir: &str,
+    report: &mut DeleteTreeReport,
+) -> Result<(), ()> {
     let rd = match sftp_op(sftp.read_dir(dir)).await {
         Ok(rd) => rd,
         Err(e) => {
-            let _ = etx.send(Ev::Log {
-                msg: format!("[{label}] {}", tfmt("删除失败：{0}（{1}）", &[&dir, &e])),
-            });
+            report.first_err = Some((dir.to_owned(), e));
             return Err(());
         }
     };
@@ -1259,29 +1560,21 @@ async fn delete_dir_recursive(
             format!("{dir}/{name}")
         };
         if de.metadata().is_dir() {
-            Box::pin(delete_dir_recursive(sftp, &child, label, etx)).await?;
+            Box::pin(delete_dir_recursive_into(sftp, &child, report)).await?;
         } else if let Err(e) = sftp_op(sftp.remove_file(&child)).await {
-            let _ = etx.send(Ev::Log {
-                msg: format!("[{label}] {}", tfmt("删除失败：{0}（{1}）", &[&child, &e])),
-            });
+            report.first_err = Some((child, e));
             return Err(());
         } else {
-            let _ = etx.send(Ev::Log {
-                msg: format!("[{label}] {}", tfmt("远程删除：{0}", &[&child])),
-            });
+            report.ok += 1;
         }
     }
     match sftp_op(sftp.remove_dir(dir)).await {
         Ok(_) => {
-            let _ = etx.send(Ev::Log {
-                msg: format!("[{label}] {}", tfmt("远程删除：{0}", &[&dir])),
-            });
+            report.ok += 1;
             Ok(())
         }
         Err(e) => {
-            let _ = etx.send(Ev::Log {
-                msg: format!("[{label}] {}", tfmt("删除失败：{0}（{1}）", &[&dir, &e])),
-            });
+            report.first_err = Some((dir.to_owned(), e));
             Err(())
         }
     }
@@ -1290,24 +1583,49 @@ async fn delete_dir_recursive(
 // ── exec 通道（独立线程；C# §2 命令窗命令路径）──────────────
 
 fn exec_run(
-    rx: mpsc::Receiver<ExecReq>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<ExecReq>,
+    mut del_rx: tokio::sync::mpsc::UnboundedReceiver<ExecReq>,
     etx: mpsc::Sender<Ev>,
     exec_spec: Arc<Mutex<Option<ExecSpec>>>,
+    worker_tx: tokio::sync::mpsc::UnboundedSender<Cmd>,
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime (exec)");
     rt.block_on(async move {
-        while let Ok(r) = rx.recv() {
-            let (exit, out, err) =
-                match tokio::time::timeout(EXEC_TIMEOUT, exec_once(&r.cmd, &exec_spec)).await {
-                    Ok(Ok(v)) => v,
-                    Ok(Err(msg)) => (-1, String::new(), msg),
-                    Err(_) => (-1, String::new(), t("命令超时（10 秒）").to_owned()),
+        // CR-7-S4：目录删除（最长 120s）单独一个 task，不与命令窗排队；
+        // 两条路径各自持一份缓存，Handle 只在创建它的任务内复用 / 丢弃，
+        // 不跨 runtime 传（russh 后台任务绑定创建它的 runtime）。
+        // 20 个目录由主 worker 逐个发、逐个等回执，故删除缓存只建 1 次连接。
+        let del_spec = exec_spec.clone();
+        tokio::spawn(async move {
+            let mut cached: Option<(ExecSpec, russh::client::Handle<Handler>)> = None;
+            while let Some(job) = del_rx.recv().await {
+                let ExecReq::Delete { tag, cmd } = job else {
+                    continue;
                 };
+                let current = del_spec.lock().unwrap().clone();
+                let outcome = run_exec_job(&cmd, 120, current, &mut cached).await;
+                let _ = worker_tx.send(Cmd::ExecDone {
+                    tag,
+                    result: outcome,
+                });
+            }
+        });
+        let mut cached: Option<(ExecSpec, russh::client::Handle<Handler>)> = None;
+        while let Some(job) = rx.recv().await {
+            let ExecReq::Command { req, cmd } = job else {
+                continue;
+            };
+            let current = exec_spec.lock().unwrap().clone();
+            let outcome = run_exec_job(&cmd, EXEC_TIMEOUT.as_secs(), current, &mut cached).await;
+            let (exit, out, err) = match outcome {
+                Ok(v) => v,
+                Err(msg) => (-1, String::new(), msg),
+            };
             let _ = etx.send(Ev::Exec {
-                req: r.req,
+                req,
                 exit,
                 out,
                 err,
@@ -1316,20 +1634,67 @@ fn exec_run(
     });
 }
 
-/// 单命令独立连接：connect → channel_open_session → exec → wait 收流。
-/// 连接档案来自 `Ssh::set_exec_profile`（UI 在连接提交/断开时注入；双会话
-/// 改造后档案随 Ssh 实例走，左右会话各自的 exec 落到各自主机）。
-async fn exec_once(
+/// 单条 exec 作业：罩顶超时 + 复用 / 重建缓存 + 失败丢缓存。
+/// 命令窗 10s / 目录删除 120s / 探测 10s 共用，语义一致。
+async fn run_exec_job(
     cmd: &str,
-    exec_spec: &Arc<Mutex<Option<ExecSpec>>>,
+    secs: u64,
+    current: Option<ExecSpec>,
+    cached: &mut Option<(ExecSpec, russh::client::Handle<Handler>)>,
 ) -> Result<(i32, String, String), String> {
+    let outcome =
+        match tokio::time::timeout(Duration::from_secs(secs), exec_cached(cmd, current, cached))
+            .await
+        {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(msg)) => Err(msg),
+            Err(_) => {
+                *cached = None; // 超时后连接可能半死，丢弃重建
+                Err(tfmt("操作超时（{0} 秒）", &[&secs]))
+            }
+        };
+    if should_drop_exec_cache(&outcome) {
+        *cached = None; // 建连 / 认证 / 通道失败：下一次作业重建
+    }
+    outcome
+}
+
+/// 缓存命中判据（CR-7-S4 红线）：连接档案逐字段相同才复用；换主机 / 重连 /
+/// 改指纹 / 档案清空立即失效，绝不拿旧主机的已认证连接去删新主机目录。
+fn exec_cache_usable(cached: Option<&ExecSpec>, current: Option<&ExecSpec>) -> bool {
+    cached.is_some() && cached == current
+}
+
+/// 连接级失败才丢缓存；命令非零退出是服务端结果，连接仍可复用。
+fn should_drop_exec_cache(result: &Result<(i32, String, String), String>) -> bool {
+    result.is_err()
+}
+
+/// 复用缓存连接跑一条命令：档案变了 / 缓存为空才新建连接并认证。
+async fn exec_cached(
+    cmd: &str,
+    current: Option<ExecSpec>,
+    cached: &mut Option<(ExecSpec, russh::client::Handle<Handler>)>,
+) -> Result<(i32, String, String), String> {
+    if !exec_cache_usable(cached.as_ref().map(|(s, _)| s), current.as_ref()) {
+        *cached = None;
+    }
+    let spec = current.ok_or_else(|| t("未连接远程主机").to_owned())?;
+    if cached.is_none() {
+        let handle = exec_connect(&spec).await?;
+        *cached = Some((spec, handle));
+    }
+    exec_on_channel(&cached.as_ref().unwrap().1, cmd).await
+}
+
+/// 新建 + 认证一条 exec 独立连接（原 exec_once 的建连段，语义逐字保留）。
+async fn exec_connect(spec: &ExecSpec) -> Result<russh::client::Handle<Handler>, String> {
     let config = russh::client::Config {
         nodelay: true,
         inactivity_timeout: None,
         keepalive_interval: keepalive_interval(),
         ..Default::default()
     };
-    let spec = exec_profile(exec_spec)?;
     let addr = (spec.host.clone(), spec.port);
     // S5.2：exec 独立连接静默信任（仅存档精确匹配才接受，fail-closed，无弹窗无日志）。
     let handler = Handler {
@@ -1364,12 +1729,12 @@ async fn exec_once(
     if !authed.success() {
         return Err(t("认证失败").to_owned());
     }
-    exec_on_channel(&handle, cmd).await
+    Ok(handle)
 }
 
 /// 已建立会话上开 exec 通道跑命令：channel_open_session → exec → wait 收流，
 /// 返回 (退出码, stdout, stderr)；通道开/执行失败归 Err。wait 无界，调用方
-/// 按需罩超时（exec_once 上层 EXEC_TIMEOUT；G12 校验走 120s VERIFY_TIMEOUT）。
+/// 按需罩超时（exec_run 的 EXEC_TIMEOUT / 目录删除 120s；G12 校验走 VERIFY_TIMEOUT）。
 async fn exec_on_channel(
     handle: &russh::client::Handle<Handler>,
     cmd: &str,
@@ -1404,7 +1769,7 @@ async fn exec_on_channel(
 /// exec 通道连接档案槽（per-Ssh 实例；双会话改造：原全局 static EXEC_PROFILE
 /// 改为实例字段，由 `Ssh::set_exec_profile` 注入，worker 确认指纹后回写）。
 /// exec 独立连接用的连接规格。
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ExecSpec {
     pub host: String,
     pub port: u16,
@@ -1430,25 +1795,18 @@ fn set_exec_fingerprint(exec_spec: &Arc<Mutex<Option<ExecSpec>>>, fp: Option<Str
     }
 }
 
-fn exec_profile(exec_spec: &Arc<Mutex<Option<ExecSpec>>>) -> Result<ExecSpec, String> {
-    exec_spec
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| t("未连接远程主机").to_owned())
-}
-
 // ── G8 服务端哈希能力探测（C# S6；首个列表成功后 fire-and-forget）──
 
-/// 探测单命令：exec 独立连接 + EXEC_TIMEOUT 罩顶（exec_once 的 channel.wait
-/// 无界，外层超时兜底）；超时/错误/非零退出归一 Err。
+/// 探测单命令：在探测任务自己的缓存连接上跑（两次探测复用一条连接），
+/// EXEC_TIMEOUT 罩顶；超时 / 错误 / 非零退出归一 Err。不进 exec 线程的作业队列
+/// —— 长删除排队超时会被误报成「Windows 服务器」的假诊断。
 async fn probe_once(
     cmd: &str,
     exec_spec: &Arc<Mutex<Option<ExecSpec>>>,
+    cached: &mut Option<(ExecSpec, russh::client::Handle<Handler>)>,
 ) -> Result<(i32, String), String> {
-    let (exit, out, err) = tokio::time::timeout(EXEC_TIMEOUT, exec_once(cmd, exec_spec))
-        .await
-        .map_err(|_| t("命令超时（10 秒）").to_owned())??;
+    let current = exec_spec.lock().unwrap().clone();
+    let (exit, out, err) = run_exec_job(cmd, EXEC_TIMEOUT.as_secs(), current, cached).await?;
     if exit != 0 {
         let e = err.trim();
         return Err(if e.is_empty() {
@@ -1470,15 +1828,17 @@ fn probe_store(cur: u64, probe: &Mutex<(u64, Option<HashProbe>)>, v: Option<Hash
 
 /// 探测流程（C# S6.2-6.4）：先 POSIX（`echo $env:OS`；输出含 Windows_NT/$env
 /// 或探测失败按非 POSIX）→ 非 POSIX 打禁用文案即止；POSIX 后一次往返探测
-/// sha256sum / sha512sum / openssl SM3，解析 3 位。三条日志硬编码中文
-/// （C# 原文照抄，不走 i18n），前缀「[命令通道] 」。
+/// sha256sum / sha512sum / openssl SM3，解析 3 位。日志前缀「[命令通道] 」
+/// （英文态 [cmd]），走 i18n 跟随应用语言。
 async fn hash_probe_run(
     cur: u64,
     probe: Arc<Mutex<(u64, Option<HashProbe>)>>,
     etx: mpsc::Sender<Ev>,
     exec_spec: Arc<Mutex<Option<ExecSpec>>>,
 ) {
-    let posix = match probe_once("echo $env:OS", &exec_spec).await {
+    // 探测任务自己的缓存：两次探测复用一条连接，随任务结束释放。
+    let mut cached: Option<(ExecSpec, russh::client::Handle<Handler>)> = None;
+    let posix = match probe_once("echo $env:OS", &exec_spec, &mut cached).await {
         Ok((_, out)) => {
             let out = out.trim();
             !(out.contains("Windows_NT") || out.contains("$env"))
@@ -1488,7 +1848,7 @@ async fn hash_probe_run(
     };
     if !posix {
         let _ = etx.send(Ev::Log {
-            msg: "[命令通道] Windows 服务器, 暂不支持服务端哈希, 校验码菜单已禁用".to_owned(),
+            msg: t("[命令通道] Windows 服务器, 暂不支持服务端哈希, 校验码菜单已禁用").to_owned(),
         });
         probe_store(cur, &probe, None);
         return;
@@ -1496,7 +1856,7 @@ async fn hash_probe_run(
     let cmd = "a=0; b=0; c=0; command -v sha256sum >/dev/null 2>&1 && a=1; \
                command -v sha512sum >/dev/null 2>&1 && b=1; \
                openssl dgst -sm3 /dev/null >/dev/null 2>&1 && c=1; echo \"$a$b$c\"";
-    let h = match probe_once(cmd, &exec_spec).await {
+    let h = match probe_once(cmd, &exec_spec, &mut cached).await {
         Ok((_, out)) => {
             let s = out.trim();
             if s.len() == 3 && s.bytes().all(|b| b == b'0' || b == b'1') {
@@ -1508,10 +1868,11 @@ async fn hash_probe_run(
                 }
             } else {
                 let _ = etx.send(Ev::Log {
-                    msg: format!(
-                        // 注意：本机拉流回退未实现（C# 原文案承诺了不存在的能力），
-                        // 探测失败 = 校验跳过，不承诺回退。
-                        "[命令通道] 不可用, 校验跳过（本机回退未实现）: 解析异常输出 {s:?}"
+                    // 注意：本机拉流回退未实现（C# 原文案承诺了不存在的能力），
+                    // 探测失败 = 校验跳过，不承诺回退。
+                    msg: tfmt(
+                        "[命令通道] 不可用, 校验跳过（本机回退未实现）: 解析异常输出 {0}",
+                        &[&format!("{s:?}")],
                     ),
                 });
                 probe_store(cur, &probe, None);
@@ -1520,19 +1881,17 @@ async fn hash_probe_run(
         }
         Err(e) => {
             let _ = etx.send(Ev::Log {
-                msg: format!("[命令通道] 不可用, 校验跳过（本机回退未实现）: {e}"),
+                msg: tfmt("[命令通道] 不可用, 校验跳过（本机回退未实现）: {0}", &[&e]),
             });
             probe_store(cur, &probe, None);
             return;
         }
     };
-    let mark = |ok| if ok { "可用" } else { "不可用" };
+    let mark = |ok| if ok { t("可用") } else { t("不可用") };
     let _ = etx.send(Ev::Log {
-        msg: format!(
-            "[命令通道] 服务端哈希探测: sha256sum={} sha512sum={} SM3(openssl)={}",
-            mark(h.sha256),
-            mark(h.sha512),
-            mark(h.sm3)
+        msg: tfmt(
+            "[命令通道] 服务端哈希探测: sha256sum={0} sha512sum={1} SM3(openssl)={2}",
+            &[&mark(h.sha256), &mark(h.sha512), &mark(h.sm3)],
         ),
     });
     probe_store(cur, &probe, Some(h));
@@ -1593,6 +1952,11 @@ async fn write_file_with_mtime(
             .await
             .map_err(|e| tfmt("写入失败：{0}", &[&e]))?;
     }
+    // 收尾 flush：drain 所有 FXP_WRITE 的 ACK。File::Drop 只 close_nowait，
+    // 不 flush 则写错误被静默吞掉、假报「已回传」（只读远端必须在此报失败）。
+    file.flush()
+        .await
+        .map_err(|e| tfmt("写入失败：{0}", &[&e]))?;
     let meta = sftp_op(sftp.metadata(path))
         .await
         .map_err(|e| tfmt("写入后取元数据失败：{0}", &[&e]))?;
@@ -1762,5 +2126,364 @@ mod fp_wait_tests {
             wait_fingerprint_confirm(&rx, std::time::Duration::from_secs(1)),
             FpConfirm::Disconnected
         ));
+    }
+}
+
+// ============================================================================
+// CR-7 批量删除 / 递归日志节流钉子（纯逻辑：本机无远程 SSH 主机，受控 RTT
+// 计时与真实连接计数按「未取证」留账，不用钉子绿冒充）。
+// ============================================================================
+#[cfg(test)]
+mod cr7_delete_batch_tests {
+    use super::*;
+
+    fn file_items(n: usize) -> Vec<(String, bool)> {
+        (0..n).map(|i| (format!("/r/f{i:04}.bin"), false)).collect()
+    }
+
+    /// 200 文件 → ceil(200/32)=7 块，块内 ≤32，计划 REMOVE 请求数恒等于项数。
+    #[test]
+    fn delete_batch_chunks_by_stat_concurrency() {
+        let items = file_items(200);
+        let (files, dirs) = split_delete_items(&items);
+        assert!(dirs.is_empty());
+        let chunks = delete_file_chunks(&files);
+        assert_eq!(STAT_CONCURRENCY, 32);
+        assert_eq!(chunks.len(), 200_usize.div_ceil(STAT_CONCURRENCY));
+        assert_eq!(chunks.len(), 7, "200 项分 7 个并发块");
+        assert!(chunks.iter().all(|c| c.len() <= STAT_CONCURRENCY));
+        assert_eq!(chunks[0].len(), 32);
+        assert_eq!(chunks[6].len(), 8);
+        let planned: usize = chunks.iter().map(|c| c.len()).sum();
+        assert_eq!(planned, 200, "计划 REMOVE 请求数 = 文件项数，不多发不漏发");
+        let logs: Vec<String> = chunks
+            .iter()
+            .flat_map(|c| {
+                c.iter()
+                    .map(|p| delete_file_log_msg("srv", p, Ok(())).0)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(logs.len(), 200, "每项独立一条成败日志");
+    }
+
+    /// 块内一项失败其余仍执行：成功+失败=入参数，失败路径逐条可定位。
+    #[test]
+    fn delete_batch_partial_failure_still_reports_each_path() {
+        let items = file_items(32);
+        let (files, _) = split_delete_items(&items);
+        let (mut ok, mut fail) = (0usize, 0usize);
+        let mut logs = Vec::new();
+        for (i, p) in files.iter().enumerate() {
+            let r = if i % 11 == 0 {
+                Err("permission denied".to_owned())
+            } else {
+                Ok(())
+            };
+            let (msg, good) = delete_file_log_msg("srv", p, r);
+            if good {
+                ok += 1;
+            } else {
+                fail += 1;
+            }
+            logs.push(msg);
+        }
+        assert_eq!(ok + fail, 32, "每项独立判定成败，无静默吞项");
+        assert_eq!(fail, 3);
+        assert_eq!(logs.len(), 32, "失败不阻断其余项执行");
+        for (i, p) in files.iter().enumerate() {
+            if i % 11 == 0 {
+                assert!(
+                    logs.iter()
+                        .any(|m| m.contains(*p) && m.contains("permission denied")),
+                    "失败路径 {p} 与原因逐条可定位"
+                );
+            }
+        }
+        assert!(
+            !logs
+                .iter()
+                .any(|m| m.contains("已删除") || m.contains("Deleted "))
+        );
+    }
+
+    /// 单文件仍只发一条 REMOVE；混合批里目录项不进并发块且保持原顺序。
+    #[test]
+    fn single_file_delete_still_one_remove_and_dirs_stay_serial() {
+        let single = [("/r/a.bin".to_owned(), false)];
+        let (files, dirs) = split_delete_items(&single);
+        let chunks = delete_file_chunks(&files);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 1, "单文件删除仍只发一条 REMOVE");
+        assert!(dirs.is_empty());
+        let mixed = vec![
+            ("/r/a.bin".to_owned(), false),
+            ("/r/d1".to_owned(), true),
+            ("/r/b.bin".to_owned(), false),
+            ("/r/d2".to_owned(), true),
+        ];
+        let (files, dirs) = split_delete_items(&mixed);
+        assert_eq!(files, vec!["/r/a.bin", "/r/b.bin"]);
+        assert_eq!(dirs, vec!["/r/d1", "/r/d2"], "目录项不进并发块、保持原顺序");
+        assert_eq!(delete_file_chunks(&files).len(), 1);
+    }
+
+    /// 递归删 1000 / 10000 子文件：整树恒定 1 条汇总日志，条数有上界。
+    #[test]
+    fn recursive_delete_log_has_upper_bound() {
+        for n in [1usize, 1000, 10000] {
+            let mut report = DeleteTreeReport::default();
+            for _ in 0..n {
+                report.ok += 1; // 模拟逐子文件删除成功，不再产生 Ev::Log
+            }
+            report.ok += 1; // 目录本身
+            let lines = [delete_tree_summary_msg("srv", "/r/tree", &report)];
+            assert_eq!(lines.len(), 1, "n={n} 时整树日志条数仍为 1（上界）");
+            assert!(
+                lines[0].contains(&(n + 1).to_string()),
+                "汇总带成功数 {n} 子文件 + 目录本身"
+            );
+        }
+    }
+
+    /// 部分失败不写「已删除 N 项」的假成功汇总；失败路径、原因、成功数都留痕。
+    #[test]
+    fn no_fake_success_summary_on_partial_failure() {
+        let report = DeleteTreeReport {
+            ok: 999,
+            first_err: Some(("/r/tree/f0999".to_owned(), "permission denied".to_owned())),
+        };
+        let line = delete_tree_summary_msg("srv", "/r/tree", &report);
+        assert!(
+            !line.contains("已删除") && !line.contains("Deleted "),
+            "部分失败不写假成功汇总：{line}"
+        );
+        assert!(line.contains("/r/tree/f0999"), "首错路径可定位");
+        assert!(line.contains("permission denied"), "首错原因可定位");
+        assert!(line.contains("999"), "首错前成功数留痕");
+        let all_ok = DeleteTreeReport {
+            ok: 1000,
+            first_err: None,
+        };
+        let ok_line = delete_tree_summary_msg("srv", "/r/tree", &all_ok);
+        assert!(!ok_line.contains("删除失败") && !ok_line.contains("Delete failed"));
+    }
+
+    /// 一个批 = 一条 Ev::Deleted 回执（无会话 worker 直接回执，不产生逐条日志）；
+    /// 与 UI 侧 del_pending 按批 -1 闭环，200 项不会等 200 条回执。
+    #[test]
+    fn delete_batch_emits_single_deleted_reply() {
+        let ssh = Ssh::spawn();
+        let items: Vec<(String, bool)> =
+            (0..200).map(|i| (format!("/r/f{i}.bin"), false)).collect();
+        ssh.delete_batch(77, items);
+        let mut evs = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while evs.is_empty() && std::time::Instant::now() < deadline {
+            evs.extend(ssh.poll());
+            if evs.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        assert_eq!(evs.len(), 1, "整批只回一条 Deleted");
+        assert!(matches!(&evs[0], Ev::Deleted { tag } if *tag == 77));
+    }
+}
+
+// ============================================================================
+// CR-7-S4 exec 连接复用 / 目录删除异步化钉子（纯逻辑 + 离线 worker）。
+// 实机连接计数 20→1、主链路不阻塞、同主机受控计时须真实 SSH 主机，
+// 本机取不到，按「未取证」留账，不用钉子绿冒充。
+// ============================================================================
+#[cfg(test)]
+mod cr7_s4_tests {
+    use super::*;
+
+    /// 档案占位：按 R3，单测示例不放任何真实密码 / 私钥内容，只用私钥路径字符串。
+    fn mk_spec(host: &str, port: u16, user: &str, fp: Option<&str>, key: &str) -> ExecSpec {
+        ExecSpec {
+            host: host.to_owned(),
+            port,
+            user: user.to_owned(),
+            auth: Auth::KeyFile(key.to_owned()),
+            fingerprint: fp.map(str::to_owned),
+        }
+    }
+
+    /// 换主机 / 换端口 / 换用户 / 改指纹 / 换密钥 / 档案清空，任一变化即丢缓存。
+    #[test]
+    fn exec_cache_invalidated_on_profile_change() {
+        let a = mk_spec("h1", 22, "u", Some("fp1"), "k1");
+        assert!(exec_cache_usable(Some(&a), Some(&a)), "同一档案才复用");
+        assert!(!exec_cache_usable(Some(&a), None), "档案清空即失效");
+        assert!(!exec_cache_usable(None, Some(&a)), "无缓存不算复用");
+        let variants = [
+            mk_spec("h2", 22, "u", Some("fp1"), "k1"),
+            mk_spec("h1", 2222, "u", Some("fp1"), "k1"),
+            mk_spec("h1", 22, "u2", Some("fp1"), "k1"),
+            mk_spec("h1", 22, "u", Some("fp2"), "k1"),
+            mk_spec("h1", 22, "u", None, "k1"),
+            mk_spec("h1", 22, "u", Some("fp1"), "k2"),
+        ];
+        for b in &variants {
+            assert!(
+                !exec_cache_usable(Some(&a), Some(b)),
+                "任一档案字段变化即丢缓存，绝不拿旧主机连接删新主机目录"
+            );
+        }
+    }
+
+    /// 连接级失败丢缓存；命令非零退出保留连接。20 目录同一档案的「复用计划」恒命中
+    /// （计划层断言，不等于实机连接计数）。
+    #[test]
+    fn exec_cache_dropped_on_failure_kept_on_nonzero_exit() {
+        assert!(should_drop_exec_cache(&Err("connect refused".to_owned())));
+        assert!(!should_drop_exec_cache(&Ok((
+            0,
+            String::new(),
+            String::new()
+        ))));
+        assert!(!should_drop_exec_cache(&Ok((
+            1,
+            String::new(),
+            "rm: denied".to_owned()
+        ))));
+        let a = mk_spec("h1", 22, "u", Some("fp1"), "k1");
+        let reuse: Vec<bool> = (0..20)
+            .map(|_| exec_cache_usable(Some(&a), Some(&a)))
+            .collect();
+        assert_eq!(
+            reuse.iter().filter(|v| **v).count(),
+            20,
+            "20 个目录作业档案不变 → 计划只建 1 次连接（非实机计数）"
+        );
+    }
+
+    /// 四项语义里可纯逻辑钉住的两项：shell_quote 转义、退出码 0 才成功。
+    /// NoSuchFile 迟到核对与失败回退递归在 delete_dir_settle 内，须真实 sftp 句柄。
+    #[test]
+    fn exec_reuse_keeps_quote_and_exit_zero_semantics() {
+        let cmd = delete_dir_exec_cmd("/r/a'b");
+        assert!(cmd.starts_with("rm -rf -- '"), "命令式保留: {cmd}");
+        assert!(cmd.contains("'\\''"), "单引号按 POSIX 转义保留: {cmd}");
+        assert!(exec_delete_succeeded(&Ok((
+            0,
+            String::new(),
+            String::new()
+        ))));
+        assert!(!exec_delete_succeeded(&Ok((
+            1,
+            String::new(),
+            String::new()
+        ))));
+        assert!(!exec_delete_succeeded(&Ok((
+            -1,
+            String::new(),
+            String::new()
+        ))));
+        assert!(!exec_delete_succeeded(&Err("timeout".to_owned())));
+    }
+
+    /// 20 目录 = 19 次续发 + 1 次结算；结算只在整批末尾，故 Ev::Deleted 恒一条。
+    #[test]
+    fn twenty_dirs_need_nineteen_more_jobs_before_one_reply() {
+        let mut p = PendingDelete {
+            tag: 9,
+            label: "srv".to_owned(),
+            dirs: (0..20).map(|i| format!("/r/d{i}")).collect(),
+            next: 0,
+        };
+        let (mut nexts, mut done) = (0, 0);
+        for _ in 0..20 {
+            match advance_pending_delete(&mut p) {
+                PendingStep::Next { tag, path } => {
+                    assert_eq!(tag, 9);
+                    assert!(path.starts_with("/r/d"));
+                    nexts += 1;
+                }
+                PendingStep::Done { tag } => {
+                    assert_eq!(tag, 9);
+                    done += 1;
+                }
+            }
+        }
+        assert_eq!(nexts, 19, "前 19 个目录各续发一条 exec 作业");
+        assert_eq!(done, 1, "整批只结算一次 → 只发一条 Ev::Deleted");
+    }
+
+    /// 换主机 / 断连作废在途批：每个 tag 补发回执，UI 不会卡「正在删除…」。
+    #[test]
+    fn cancel_pending_deletes_replies_every_tag() {
+        let (tx, rx) = mpsc::channel::<Ev>();
+        let mut pending: Vec<PendingDelete> = (0..3)
+            .map(|i| PendingDelete {
+                tag: 10 + i,
+                label: "srv".to_owned(),
+                dirs: vec![format!("/r/d{i}")],
+                next: 0,
+            })
+            .collect();
+        cancel_pending_deletes(&mut pending, &tx);
+        assert!(pending.is_empty(), "在途批全部作废");
+        let tags: Vec<u64> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                Ev::Deleted { tag } => Some(tag),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tags, vec![10, 11, 12], "三个 tag 各补一条回执");
+    }
+
+    /// 无 pending 的迟到 ExecDone 必须丢弃，且不污染随后一批的回执。
+    #[test]
+    fn orphan_exec_done_is_dropped_and_next_batch_still_one_reply() {
+        let ssh = Ssh::spawn();
+        let _ = ssh.tx.send(Cmd::ExecDone {
+            tag: 999,
+            result: Ok((0, String::new(), String::new())),
+        });
+        ssh.delete_batch(7, vec![("/r/a.bin".to_owned(), false)]);
+        let mut evs = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while evs.is_empty() && std::time::Instant::now() < deadline {
+            evs.extend(ssh.poll());
+            if evs.is_empty() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        evs.extend(ssh.poll());
+        let tags: Vec<u64> = evs
+            .iter()
+            .filter_map(|e| match e {
+                Ev::Deleted { tag } => Some(*tag),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tags, vec![7], "孤儿回执不产生事件，后续批仍只回一条");
+    }
+
+    /// 命令窗走新通道后，无连接档案时仍归一回执（exit=-1、原因留痕），
+    /// 不因 recv / 缓存空档挂死；也钉住 exec_run 不再被 std 阻塞 recv 冻住。
+    #[test]
+    fn command_job_without_profile_replies_exit_minus_one() {
+        let ssh = Ssh::spawn();
+        ssh.exec(42, "echo hi".to_owned());
+        let mut evs = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while evs.is_empty() && std::time::Instant::now() < deadline {
+            evs.extend(ssh.poll());
+            if evs.is_empty() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        assert_eq!(evs.len(), 1, "一条命令只回一条 Ev::Exec");
+        let Ev::Exec { req, exit, err, .. } = &evs[0] else {
+            panic!("期望 Ev::Exec");
+        };
+        assert_eq!(*req, 42);
+        assert_eq!(*exit, -1, "无档案按失败归一，不假成功");
+        assert!(!err.is_empty(), "失败原因留痕");
     }
 }

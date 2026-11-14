@@ -2,9 +2,9 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A dual-pane, multi-tab SFTP client for Windows — fast, secure, and completely free. Native Rust + egui, single exe, zero bundled runtime.
+A dual-pane, multi-tab SFTP client for Windows & Linux — fast, secure, and completely free. Native Rust + egui, single-file binary, zero bundled runtime.
 
-![Version](https://img.shields.io/badge/version-0.9.0-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.9.0-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
 
 Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSftp/releases> · Get a registration code <https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115>
 
@@ -14,18 +14,25 @@ Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSft
 
 ---
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Dual panes, dark theme](docs/screenshots/1.png) | ![Dual panes, light theme](docs/screenshots/2.png) |
+| ![Session import](docs/screenshots/3.png) | ![Checksum](docs/screenshots/4.png) |
+
 ## Why iFreeSftp
 
+- **Blazing multi-folder transfers** — directories above the threshold are tar-packed into a single stream on the server and unpacked on arrival: a 10,000-file tree moves in one round trip instead of per-file chatter; uploads, downloads and same-host remote→remote all get the same treatment, with automatic per-file fallback, byte-offset resume, and optional post-transfer hashing (SHA-256/512/SM3, computed locally and on the server) to catch corruption early
+- **Per-file conflict decisions** — the overwrite dialog is a checklist: tick exactly which files to overwrite and untick the rest, with select-all for the batch; items whose target is newer than the source start unticked, so one changed file never forces an all-or-nothing choice
 - **Dual panes, IDE-style multi-tab** — both folder windows host independent tabs (local or remote), so you can work on several hosts at once without juggling windows
-- **tar-accelerated directory transfers** — large directories are packed into a single stream on the server and unpacked locally (or vice versa), so a 10,000-file tree arrives in one round trip instead of per-file chatter; falls back to per-file transfer automatically
-- **Resumable & verified transfers** — interrupted transfers resume from the byte offset, and optional post-transfer hashing (server-side `sha256sum`/`sha512sum`/`openssl` SM3 over the exec channel) flags corrupted files
 - **One-click host import** — switching from WinSCP, FileZilla, PuTTY or OpenSSH config? Your hosts come with you: consent-first local scan, duplicate-aware preview, tick what to import; only connection metadata moves, passwords are never read
-- **Secure by default** — host fingerprints are confirmed on first connect (SHA256) and pinned afterwards; a changed server key is rejected outright to stop man-in-the-middle attacks; passwords are stored encrypted
+- **Secure by default** — host fingerprints are confirmed on first connect (SHA256) and pinned afterwards; a changed server key is rejected outright to stop man-in-the-middle attacks; passwords are stored encrypted; every remote-issued link (announcements, update, purchase) passes a strict http(s)-only launcher guard before it is ever opened
 - **Built-in editor with remote edit & save-back** — download a temp copy, edit, save, auto-upload; mtime conflict detection warns you when the file changed underneath you
 - **Real file-manager ergonomics** — drag & drop transfer, rubber-band multi-select, sync-browse file comparison, transfer queue with per-file progress and retry
 - **Server tooling on tap** — chmod grid with live fetch, server-side checksums, host command console with full session log; server-side `rm -rf` for fast directory deletion with SFTP recursion fallback
 - **Thoughtful connection handling** — connect/operation timeouts, retry with delay, keep-alive; errors surface in the status bar and log panel instead of hanging forever
-- **Single exe, no install** — one file, no runtime to install (import table verified to contain only Windows system DLLs), dark/light themes, English & Chinese UI switchable at runtime
+- **Single file, no install** — one portable file, no runtime to install: a Windows exe whose import table contains only system DLLs, or a Linux tar.gz; dark/light themes, English & Chinese UI switchable at runtime
 
 ## How it compares
 
@@ -94,7 +101,7 @@ MIGRATION.md                   # Update & release rules for this repository (rea
 | Connection security | First-connect host-fingerprint (SHA256) confirmation, remembered afterwards; changed server key is rejected outright (MITM protection) |
 | Timeouts & retries | Connect timeout, per-operation timeout (errors surfaced in status bar and log panel), max retries, retry delay, keep-alive interval |
 | Transfer | Drag & drop and context-menu transfer; directory transfers pack into one tar stream when the file count crosses the threshold (per-file fallback); resumable transfers; transfer queue with waiting/failed tabs and full re-run; directory loop and 128-level depth protection |
-| Post-transfer verification | Optional server-side hashing over the exec channel (SHA-256/512, SM3 via openssl); mismatched files are flagged failed; skipped when the command channel is unavailable (see capability matrix) |
+| Post-transfer verification | Optional dual-side hashing (SHA-256/512/SM3): always computed locally, plus server-side commands over the exec channel when available; mismatched files are flagged failed; skipped when either side cannot produce a hash (see capability matrix) |
 | Settings | Categories (appearance/connection/editor/transfer/registration), live-apply, persisted as JSON under `%LOCALAPPDATA%\iFreeSftp\` |
 | Supporter badge | Registration-code activation in the release from ifrees.top (offline ECDsa P-256 verification), gold "Supporter" badge, remote announcements (activation is not included in a build compiled from this repository's source); registration never changes functionality |
 | Localization | Chinese / English runtime switching, all strings bilingual |
@@ -121,14 +128,14 @@ Where behaviour differs from the C# edition or naive expectations, this table is
 
 | Capability | Status | Notes |
 |---|---|---|
-| Per-file mtime preservation | **Not supported** | The setting has been removed from the UI (implementation needs the unapproved `filetime` dependency); the `preserveMtimeEnabled` key in `settings.json` is kept only for C# archive compatibility and has no effect |
+| Per-file mtime preservation | **Supported** | Uploads set the remote mtime (SFTP SETSTAT); downloads restore the local mtime; tar transfers carry mtime natively; toggle in Transfer settings ("Preserve modification time after transfer") |
 | mtime preservation in tar transfers | Supported | tar archives carry mtime/permissions natively, both directions |
-| Transfer conflict decisions | Batch-level only | The overwrite dialog offers "overwrite all / skip conflicts / cancel" — **no per-item decision** (same as C#) |
-| Post-transfer verification fallback | No local fallback | Verification is **skipped** when the command channel is unavailable or the server lacks hash commands; no local pull-and-hash fallback |
-| SM3 | Server-side openssl only | Local SM3 is explicitly unsupported (`ring` has no SM3; new dependencies unapproved); works when the server provides `openssl dgst -sm3` |
+| Transfer conflict decisions | Per-item | The overwrite dialog is a per-file checklist — tick to overwrite, untick to skip, select-all for the batch; items whose target is newer than the source default to unticked; cancel drops the whole pending batch |
+| Post-transfer verification structure | Dual-side | The local side is always computed (M-11, including SM3); the server side depends on the exec channel — if either side cannot produce a hash, verification is skipped for that file |
+| SM3 | **Supported locally** | Bundled streaming implementation of GB/T 32905-2016 (`src/sm3.rs`, zero new dependencies, pinned to the standard's appendix-A test vectors); server-side SM3 works via `openssl dgst -sm3` when available |
 | Server-side hashing on Windows servers | Not supported | Non-POSIX shell; the checksum menu is disabled |
 | `.ppk` private keys | Not supported | russh only reads OpenSSH/PEM keys |
-| Corrupted hosts.json | Per-line tolerance | Bad records are skipped, the parseable remainder loads; **no backup file is generated** |
+| Corrupted hosts.json | Timestamped backup | The unreadable archive is copied verbatim to `hosts.json.corrupt-{timestamp}.bak`, a red notice in the host panel shows where the data went, and the parseable remainder still loads |
 
 ## Registration / supporter badge
 

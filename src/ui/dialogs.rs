@@ -3,35 +3,45 @@
 //!
 //! 统一外壳（README 3.9 弹框统一原则，令牌清单 §7.2）：
 //! 遮罩 #80000000（点击关闭）→ 居中卡片（DialogTitleBarBrush 一体底 + 1px 描边 +
-//! 圆角 8 + 阴影）→ 标题行（padding 14,5,5,2 / 关闭钮 28×28 / 标题 14 或 16）→
-//! 内容圆弧容器（距边 5 / 圆角 6 / CardBackgroundFill 底）。
+//! 圆角 8 + 阴影）→ 标题行（padding 左右 = inset5+15 / 上5 下2 / 关闭钮 28×28 /
+//! 标题 14 或 16）→ 内容圆弧容器（距边 5 / 圆角 6 / CardBackgroundFill 底 /
+//! 内边距 15）。
 //! ESC / 遮罩 / 关闭钮 均关闭；标题行拖动窗口（C# TitleBar_PointerMoved 同效果）：
 //! 主机/设置面板在主窗口内平移（C# 无边框窗口语义），小弹窗保持视口拖动。
-//! 设置面板值为演示态内存值，落盘随 T3+ 的 AppSettingsService 接入。
+//! 设置面板值每帧经 `Settings::sync_to_store` 整包回写 AppSettings（T19-1/T19-3
+//! 主题/语言「未动保快照」语义，见 from_store / theme_write_back / lang_write_back）。
 
 use egui::{
-    Align, Align2, Area, Color32, FontFamily, FontId, Id, Layout, Margin, Order, Pos2, Rect,
-    RichText, Sense, Stroke, Vec2,
+    Align, Align2, Area, Color32, FontId, Id, Layout, Margin, Order, Pos2, Rect, RichText, Sense,
+    Stroke, Vec2,
 };
 
 use crate::i18n::{t, t_ctx, tfmt};
-use crate::theme;
+use crate::theme::{self, BTN_H, CLOSE_SIZE, CONTENT_INSET, CONTENT_PAD, GROUP_GAP, TITLE_BAR_H};
 
 use super::State;
+use super::{CursorLayer, cursor_intent};
 
-// ── 外壳令牌（theme-tokens-csharp.md §7.2）──────────────────
-/// 标题行 padding（左,上,右,下）。
-const TITLE_PAD: (f32, f32, f32, f32) = (14.0, 5.0, 5.0, 2.0);
-/// 关闭钮边长。
-const CLOSE_SIZE: f32 = 28.0;
-/// 内容区 padding（横,纵）。
-const CONTENT_PAD: (f32, f32) = (16.0, 12.0);
-/// 组间距。
-const GROUP_GAP: f32 = 14.0;
-/// 标题行总高（上 5 + 关闭钮 28 + 下 2）。
-const TITLE_BAR_H: f32 = 35.0;
-/// 标准钮 / 输入框高（WinUI 控件默认 32）。
-const BTN_H: f32 = 32.0;
+/// C3①（F-9/F5）：本帧有 card_combo 展开态（模块级旗标——card_combo 无 State
+/// 入参）。语义：shell 入口 swap 读走「上一帧终态」并清底；card_combo 末尾
+/// 终态仍展开才写 true（关闭的组合不写 false——同帧其他组合可能仍展开，
+/// store-only-true 防互踩；旗标底由 shell 入口每帧 swap 清，无残留窗口）。
+/// Esc 展开态先收组合（F5：Esc 不再一击关掉整个弹窗），Enter 不触发主钮。
+static COMBO_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// ── 外壳令牌（theme-tokens-csharp.md §7.2 + 用户定案 15px 口径）──────────────
+// 布局常量统一收口 theme.rs（F-11：dialogs / import_dialog / host_panel 三份
+// 合一，经顶部 use 导入 TITLE_BAR_H / CLOSE_SIZE / CONTENT_PAD / CONTENT_INSET /
+// GROUP_GAP / BTN_H）。此处仅保留派生量与弹窗专属量（MENU_* / TBL_*）。
+/// 标题行 padding（左,上,右,下）。左/右 = 内容 inset 5 + 内容 padding 15：
+/// 标题文本与 content 文本左对齐、关闭钮右缘与 content 右界（按钮行右缘）
+/// 对齐（2026-11-11 用户定：title 两侧与 content 对齐，非距卡片边 15）。
+const TITLE_PAD: (f32, f32, f32, f32) = (
+    CONTENT_INSET + CONTENT_PAD.0,
+    5.0,
+    CONTENT_INSET + CONTENT_PAD.0,
+    2.0,
+);
 /// 右键菜单宽（令牌清单 §7.3）。
 pub(super) const MENU_W: f32 = 200.0;
 /// 右键菜单项高（MenuFlyoutItem：Padding `11,8,11,9` + 14px 字行高 ≈ 19，
@@ -42,15 +52,15 @@ const MENU_SEP_H: f32 = 3.0;
 /// 菜单体上下留白（MenuFlyoutPresenterThemePadding `0,2,0,2`）。
 pub(super) const MENU_BODY_PAD: f32 = 2.0;
 
-// ── 主题相关取值 ────────────────────────────────────────────
-/// CardBackgroundFillColorDefault（弹窗内容圆弧容器底；host_panel、import_dialog 消费）。
-/// 精确值：亮 = 30% 白叠层 / 暗 = 5.1% 白。
-pub(crate) fn card_bg(t: egui::Theme) -> Color32 {
-    match t {
-        egui::Theme::Light => Color32::from_rgba_unmultiplied(255, 255, 255, 0xB3),
-        egui::Theme::Dark => Color32::from_white_alpha(0x0D),
-    }
-}
+// ── 冲突对比表令牌（TransferConfirm：批量队列 / 单文件覆盖警告共用）──────
+/// 表头字号。
+const TBL_HEAD_SIZE: f32 = 12.0;
+/// 表身字号（比表头小一号，2026-11-11 用户定）。
+const TBL_BODY_SIZE: f32 = 11.0;
+/// 单元格内边距（四周各 2px，2026-11-11 用户定）。
+const TBL_CELL_PAD: i8 = 2;
+/// size 与日期同行之间的空隔（同一行不换行，中间留空隔开）。
+const TBL_VAL_GAP: f32 = 12.0;
 
 // ── 弹窗状态 ────────────────────────────────────────────────
 /// 当前弹窗。`None` = 无弹窗。
@@ -61,6 +71,8 @@ pub enum Dialog {
         pane: usize,
         orig: String,
         name: String,
+        /// 打开首帧旗标（C# :64-68 打开即全选原名 + 聚焦；首帧消费置 false）。
+        fresh: bool,
     },
     /// 删除确认：窗格 + 待删行号。
     Delete {
@@ -92,10 +104,15 @@ pub enum Dialog {
         new_tab: bool,
     },
     /// 传输覆盖确认（C# 冲突确认对话框）：冲突清单对比表（名称/源/目标的
-    /// 大小+mtime），批级一次决策（全部覆盖/跳过冲突项/取消）。
+    /// 大小+mtime），逐项勾选分流（F-10 方案A：勾 = 覆盖上传 / 不勾 = 跳过，
+    /// 「应用」只处理勾选项；取消整批）。勾选态存 State.conflict_sel。
     TransferConfirm {
         /// 冲突清单行（目标较新行目标列标警示色）。
         rows: Vec<ConflictRow>,
+        /// 范围行（T20-H 流式落位）：Some = 「已落位 M 项已开始传输，本次
+        /// 确认只处理剩余 N 项」——流式已落位项不可逆，弹窗必须写明范围；
+        /// None = 无流式前置（整批在手）。
+        note: Option<String>,
     },
     /// 设置面板（920×640）。win_drag = 标题栏面板拖动偏移（C# 无边框窗口）。
     Settings {
@@ -129,8 +146,8 @@ pub enum Dialog {
         fp_rx: Option<std::sync::mpsc::Receiver<crate::ssh::Ev>>,
         /// 测试连接进行中。
         testing: bool,
-        /// 卡片拖拽排序来源下标。
-        drag: Option<usize>,
+        /// 卡片拖拽状态（幽灵卡跟随/落点高亮，见 host_panel::CardDrag）。
+        drag: Option<super::host_panel::CardDrag>,
         /// 标题栏面板拖动偏移（C# HostPanel 无边框窗口拖动语义）。
         win_drag: Vec2,
     },
@@ -185,15 +202,66 @@ pub enum Dialog {
         name: String,
         remote_path: String,
     },
-    /// 外部编辑器远端冲突确认（C# ShowRemoteConflictAsync）：回传前探测到
-    /// 远端 mtime 与下载基准差 ≥1s；「覆盖」→ 直接回传。
+    /// 远端冲突确认（C# ShowRemoteConflictAsync）：回传前探测到远端 mtime
+    /// 与下载基准差 ≥1s；「覆盖」→ 直接回传。外部编辑器与内置编辑器共用
+    /// 本弹层，按 src 分派覆盖动作（文案/按钮两路一致）。
     ExtEditConflict {
         side: usize,
-        /// 发起 tab id（ext_upload 定位该 tab 的会话与槽位）。
+        /// 发起 tab id（ext_upload 定位该 tab 的会话与槽位；内置路仅占位）。
+        tab: u32,
+        name: String,
+        remote_path: String,
+        /// 冲突来源（CR-6）：「覆盖」据此分派 doc_upload / ext_upload。
+        src: ExtConflictSrc,
+    },
+    /// 写锁等待超时兜底（项6）：外部编辑器持写句柄 ≥10s 时的一次性退出
+    /// 对话框——「立即重试探测」重置等待态下轮立即再探 /「取消本次回传」
+    /// 放弃上传（基准更新为当前快照，本地副本保留）/ Esc·遮罩·× = 继续等待。
+    /// 绝不提供「强制上传」。
+    ExtEditLockWait {
+        side: usize,
+        /// 发起 tab id（定位该 tab 的 ext_edits 会话）。
         tab: u32,
         name: String,
         remote_path: String,
     },
+}
+
+impl Dialog {
+    /// C3②（F-9）：变体判别值——与 State.dialog_kind 比对检出「弹窗打开首帧」。
+    fn kind(&self) -> u8 {
+        match self {
+            Dialog::None => 0,
+            Dialog::Rename { .. } => 1,
+            Dialog::Delete { .. } => 2,
+            Dialog::Checksum { .. } => 3,
+            Dialog::Permission { .. } => 4,
+            Dialog::HostPicker { .. } => 5,
+            Dialog::TransferConfirm { .. } => 6,
+            Dialog::Settings { .. } => 7,
+            Dialog::HostPanel { .. } => 8,
+            Dialog::Import { .. } => 9,
+            Dialog::SyncMismatch { .. } => 10,
+            Dialog::TabClose { .. } => 11,
+            Dialog::ExtEditChanged { .. } => 12,
+            Dialog::ExtEditConflict { .. } => 13,
+            Dialog::ExtEditLockWait { .. } => 14,
+        }
+    }
+}
+
+/// 远端冲突确认来源（CR-6）：外部编辑器走 ext_upload（tab 槽位回传），
+/// 内置编辑器走 doc_upload（doc_id + 副本路径回传）。弹层文案、按钮
+/// （取消/覆盖两颗）、焦点逻辑两路一致，仅「覆盖」动作分派不同。
+#[derive(Clone)]
+pub enum ExtConflictSrc {
+    /// 内置编辑器文档：doc_id 定位 EditorDoc，local_path 为本地副本路径。
+    Internal {
+        doc_id: u64,
+        local_path: std::path::PathBuf,
+    },
+    /// 外部编辑器（既有路径，按 side+tab 定位 ext_edits 槽位）。
+    External,
 }
 
 /// 冲突清单行（传输覆盖确认弹窗对比表数据；C# 冲突对话框逐项事实的批级聚合）。
@@ -223,6 +291,9 @@ pub struct MenuState {
     pub row: Option<usize>,
     pub queue: Option<QueueMenu>,
     pub terminal: bool,
+    /// T20-1 列显隐菜单（表头右键；四勾选项，C# FileView.xaml:359-367
+    /// ToggleMenuFlyoutItem 同观感）。
+    pub cols: bool,
 }
 
 /// 主机指纹确认请求（C# HostKeyConfirmDialog；worker 阻塞等 reply 回 bool，
@@ -252,12 +323,22 @@ pub(crate) fn host_tab_naming(name: &str, host: &str) -> String {
     }
 }
 
-/// 设置面板值（AppSettingsService 演示镜像；落盘随 T3+ 接入）。
+/// 设置面板值（打开时 from_store 快照 + 每帧 sync_to_store 整包回写）。
 pub struct Settings {
     /// 当前大类页下标。
     pub category: usize,
-    pub theme_dark: bool,
+    /// 主题下拉选中项（0 跟随系统 / 1 深色 / 2 浅色；打开时由 store theme 派生，
+    /// store "" = 跟随系统 → 0）。切换即时 install，落盘走 theme_write_back。
+    pub theme_picked: usize,
+    /// 打开时 store 的 theme 快照（T19-1：面板内未动主题 = 原样回写，
+    /// ""/显式值语义不被整包回写抹掉）。
+    pub theme_loaded: String,
+    /// 面板内动过主题下拉（仅动过才回写显式值，对齐 C# SetTheme 仅选择时写）。
+    pub theme_touched: bool,
     pub lang_en: bool,
+    /// 打开时 store 的 language 快照（T19-3：面板内未动语言 = 原样回写，
+    /// "" 不被整包回写抹成 "zh-CN"）。
+    pub lang_loaded: String,
     pub timeout: f32,
     pub max_retries: f32,
     pub retry_delay: f32,
@@ -274,6 +355,8 @@ pub struct Settings {
     pub tar_accel: bool,
     pub tar_threshold: f32,
     pub preserve_mtime: bool,
+    /// 流式落位阈值透传（T20-H 内定值不进面板 UI；整包回写原样带过，防抹档）。
+    pub dnd_stream_batch: i32,
     pub editor_builtin: bool,
     /// 外部编辑器路径输入框（编辑方式子卡右侧，C# EditorPathBox）。
     pub editor_path: String,
@@ -294,8 +377,11 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             category: 0,
-            theme_dark: false,
+            theme_picked: 0,
+            theme_loaded: String::new(),
+            theme_touched: false,
             lang_en: false,
+            lang_loaded: String::new(),
             timeout: 20.0,
             max_retries: 2.0,
             retry_delay: 5.0,
@@ -312,6 +398,7 @@ impl Default for Settings {
             tar_accel: false, // 与 settings.rs::default 一致（端到端用例补齐前不默认启用）
             tar_threshold: 50.0,
             preserve_mtime: true,
+            dnd_stream_batch: 256,
             editor_builtin: true,
             editor_path: String::new(),
             reg_code: String::new(),
@@ -323,13 +410,95 @@ impl Default for Settings {
     }
 }
 
+/// 语言回写值（T19-3，C# ThemeService.SetLanguage 仅显式选择时写）：
+/// 面板内未动（lang_en 与打开快照一致）→ 原样保留快照——"" 保持 ""（默认
+/// 中文语义不落盘，C# Language 空值同口径）；动过 → 显式值。
+fn lang_write_back(loaded: &str, lang_en: bool) -> String {
+    if lang_en == (loaded == "en-US") {
+        loaded.to_owned()
+    } else if lang_en {
+        "en-US".into()
+    } else {
+        "zh-CN".into()
+    }
+}
+
+/// 主题回写值（T19-1，C# ThemeService.SetTheme 仅显式选择时写）：面板内动过
+/// 下拉 → 按选中项写（0 跟随系统 = ""，1/2 = "Dark"/"Light"）；未动 → 原样
+/// 保留快照——""（跟随系统）不被抹成显式值，显式值不被抹回 ""。
+fn theme_write_back(loaded: &str, picked: usize, touched: bool) -> String {
+    if touched {
+        match picked {
+            0 => String::new(),
+            1 => "Dark".into(),
+            _ => "Light".into(),
+        }
+    } else {
+        loaded.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod store_write_back_tests {
+    use super::{lang_write_back, theme_write_back};
+
+    /// T19-3：语言未配置（""）打开面板不动 → 仍 ""（不再被整包回写抹成
+    /// "zh-CN"，对齐 C# Language 空值 = 默认中文不落盘）；显式选择 → 写对应值。
+    #[test]
+    fn language_empty_preserved_until_explicit() {
+        assert_eq!(lang_write_back("", false), "");
+        assert_eq!(lang_write_back("", true), "en-US");
+        assert_eq!(lang_write_back("zh-CN", false), "zh-CN");
+        assert_eq!(lang_write_back("zh-CN", true), "en-US");
+        assert_eq!(lang_write_back("en-US", false), "zh-CN");
+        assert_eq!(lang_write_back("en-US", true), "en-US");
+    }
+
+    /// F-6 主题第三项·未动：面板内没动下拉 → 打开快照原样——"" 保持 ""
+    /// （跟随系统语义不被抹掉）；显式 Dark/Light 也不被抹回 ""。
+    #[test]
+    fn theme_untouched_keeps_loaded_snapshot() {
+        assert_eq!(theme_write_back("", 0, false), "");
+        assert_eq!(theme_write_back("Dark", 1, false), "Dark");
+        assert_eq!(theme_write_back("Light", 2, false), "Light");
+    }
+
+    /// F-6 主题第三项·选「跟随系统」：写回 ""，且重启路径 resolve_dark("")
+    /// 按系统偏好解析（系统亮→亮 / 系统暗→暗），即重启后跟随系统。
+    #[test]
+    fn theme_follow_system_writes_empty_and_follows_on_restart() {
+        assert_eq!(theme_write_back("Dark", 0, true), "");
+        assert_eq!(theme_write_back("Light", 0, true), "");
+        let follow = theme_write_back("Dark", 0, true);
+        assert!(!crate::theme::resolve_dark(&follow, true)); // 系统亮 → 亮
+        assert!(crate::theme::resolve_dark(&follow, false)); // 系统暗 → 暗
+    }
+
+    /// F-6 主题第三项·显式选择：动过下拉写显式 "Dark"/"Light"（含从另一
+    /// 显式值切换）。
+    #[test]
+    fn theme_explicit_pick_writes_dark_or_light() {
+        assert_eq!(theme_write_back("", 1, true), "Dark");
+        assert_eq!(theme_write_back("", 2, true), "Light");
+        assert_eq!(theme_write_back("Dark", 2, true), "Light");
+        assert_eq!(theme_write_back("Light", 1, true), "Dark");
+    }
+}
+
 impl Settings {
     /// 启动初值：读 settings::AppSettings（settings.json）。
     pub fn from_store() -> Self {
         crate::settings::with(|s| Self {
             category: 0,
-            theme_dark: s.theme == "Dark",
+            theme_picked: match s.theme.as_str() {
+                "Dark" => 1,
+                "Light" => 2,
+                _ => 0, // ""/未知 = 跟随系统
+            },
+            theme_loaded: s.theme.clone(),
+            theme_touched: false,
             lang_en: s.language == "en-US",
+            lang_loaded: s.language.clone(),
             timeout: s.connect_timeout as f32,
             max_retries: s.max_retries as f32,
             retry_delay: s.retry_delay as f32,
@@ -346,6 +515,7 @@ impl Settings {
             tar_accel: s.tar_accel,
             tar_threshold: s.tar_threshold as f32,
             preserve_mtime: s.preserve_mtime,
+            dnd_stream_batch: s.dnd_stream_batch,
             editor_builtin: s.editor_builtin,
             editor_path: s.editor_path.clone(),
             reg_code: String::new(),
@@ -356,16 +526,13 @@ impl Settings {
         })
     }
 
-    /// 每帧回写 store（内部整包比对置脏，防抖落盘）。主题沿用 window.ini 不回写；
-    /// 语言回写（下拉改动经此生效并随 settings.json 持久化）。
+    /// 每帧回写 store（内部整包比对置脏，防抖落盘）。
+    /// 主题/语言（T19-1/T19-3）：面板内显式改动 → 写显式值；未动 → 原样回写
+    /// 打开快照——"" 的「跟随系统 / 默认中文」语义不被整包回写抹掉。
     fn sync_to_store(&self) {
         crate::settings::sync_from_dialog(crate::settings::AppSettings {
-            theme: String::new(),
-            language: if self.lang_en {
-                "en-US".into()
-            } else {
-                "zh-CN".into()
-            },
+            theme: theme_write_back(&self.theme_loaded, self.theme_picked, self.theme_touched),
+            language: lang_write_back(&self.lang_loaded, self.lang_en),
             connect_timeout: self.timeout as i32,
             max_retries: self.max_retries as i32,
             retry_delay: self.retry_delay as i32,
@@ -385,8 +552,11 @@ impl Settings {
             verify: self.verify,
             verify_algo: self.verify_algo,
             preserve_mtime: self.preserve_mtime,
+            dnd_stream_batch: self.dnd_stream_batch,
             dirty: false,
             last_change: None,
+            // CR-2：退避时刻是 store 内部态，面板不回写；整包比对已忽略它。
+            last_attempt: None,
         });
     }
 }
@@ -411,6 +581,9 @@ pub struct Hooks<'a> {
     pub compare_req: &'a mut bool,
     /// 拖拽传输请求（FV-25：目标侧, 被拖条目行号；root() 走批量传输入队）。
     pub transfer: &'a mut Option<(usize, Vec<usize>)>,
+    /// T20-4 跨窗格拖拽就绪（C# CanTransferToOpposite，root() 每帧按两侧窗格
+    /// 已导航 + 远程侧会话在池折算；false = pane 层禁 chip/DropHint/放置）。
+    pub dnd_ready: bool,
     /// 文件夹选择在途槽（FV-01：open_dir 发起后台 STA 线程弹框；root() 轮询
     /// 回执跳转。Some = 在途，工具栏按钮此间禁用防重复弹框）。
     pub pick: &'a mut Option<crate::local::PickJob>,
@@ -420,7 +593,7 @@ pub struct Hooks<'a> {
 }
 
 /// 任一侧会话池存在待决指纹确认（含测试连接槽）——覆盖层挂载 / Esc 抑制判定共用。
-fn fp_ask_pending(st: &State) -> bool {
+pub(crate) fn fp_ask_pending(st: &State) -> bool {
     st.remotes
         .iter()
         .any(|rs| rs.sessions.iter().any(|s| s.fp_ask.is_some()))
@@ -429,6 +602,18 @@ fn fp_ask_pending(st: &State) -> bool {
 
 // ── 每帧入口 ────────────────────────────────────────────────
 pub fn draw(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
+    // C2（F-9）：root 帧首 stash 的滚轮回填（弹窗内部滚动区消费；无弹窗帧
+    // stash 恒零 no-op）。ScrollArea 读后清零且不看层，frame 内首个命中者
+    // 独占——不回填则设置页/传输确认表/导入预览永远拿不到滚轮。
+    if st.scroll_stash != egui::Vec2::ZERO {
+        let d = std::mem::take(&mut st.scroll_stash);
+        ui.ctx().input_mut(|i| i.smooth_scroll_delta = d);
+    }
+    // C3②（F-9）：弹窗打开首帧判定——变体判别值变更且非 None → dialog_fresh
+    // （body 读它聚焦首控件）；记录判别值供下一帧比对。
+    let kind = st.dialog.kind();
+    st.dialog_fresh = kind != st.dialog_kind && kind != 0;
+    st.dialog_kind = kind;
     draw_menu(ui, st, p);
     match st.dialog {
         Dialog::None => {}
@@ -451,6 +636,7 @@ pub fn draw(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         Dialog::TabClose { .. } => tab_close_dialog(ui, st, p),
         Dialog::ExtEditChanged { .. } => ext_edit_changed_dialog(ui, st, p),
         Dialog::ExtEditConflict { .. } => ext_edit_conflict_dialog(ui, st, p),
+        Dialog::ExtEditLockWait { .. } => ext_edit_lock_wait_dialog(ui, st, p),
     }
     // 指纹确认覆盖层（最顶层；期间底下弹窗的 Esc 已被 shell 抑制）。
     if fp_ask_pending(st) {
@@ -458,7 +644,54 @@ pub fn draw(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     }
 }
 
-/// 统一外壳。返回内容圆弧容器矩形；None = 弹窗已关闭（ESC/遮罩/关闭钮）。
+/// shell 关闭路径的暂存态处置（C1/F-9：关闭回调收口 shell 层，调用方以枚举
+/// 声明关闭时的清理动作——工单「关闭回调须允许调用方清暂存态」）。
+#[derive(Clone, Copy, Default)]
+pub(crate) enum CloseAction {
+    /// 无暂存态（默认）：直接关闭。
+    #[default]
+    None,
+    /// 冲突确认弹窗（宿主 TransferConfirm）：关闭路径（Esc / 遮罩 / ×）与
+    /// 「取消」按钮同语义——按取消结算悬挂 pending（清暂存态 + 已落位行
+    /// 回溯清行 + 终端对账日志），防 seq=0 批次永久驻留（F1）。
+    CancelPendingStream,
+}
+
+/// shell 可选行为（C1/F-9）。默认：遮罩点击可关、无关闭回调。
+#[derive(Clone, Copy)]
+pub(crate) struct ShellOpts {
+    /// 遮罩点击是否关闭（F19：有未保存编辑的面板可配置不关；Esc / × 仍关，
+    /// 遮罩点击仍被吸收不透传）。HostPanel = false（显式保存语义，未保存
+    /// 工作集不允许遮罩一次误点丢弃——用户拍板「保持无提示丢弃」指 Esc/×
+    /// 关闭路径不加 dirty 确认，遮罩防误触与之一致）。
+    pub mask_close: bool,
+    /// 关闭路径回调（见 CloseAction）。
+    pub on_close: CloseAction,
+}
+
+impl Default for ShellOpts {
+    // mask_close 默认 true（bool derive 默认 false，不合遮罩语义），手写。
+    fn default() -> Self {
+        Self {
+            mask_close: true,
+            on_close: CloseAction::None,
+        }
+    }
+}
+
+/// 统一外壳。正文经 `body` 闭包绘制——闭包在弹窗 Foreground Area（= C3⑤
+/// modal 焦点层）内执行，入参（层内 ui / 内容圆弧容器矩形 / State）；本帧已
+/// 关闭（Esc / 关闭钮 / 遮罩点击若 opts.mask_close，C1/F-9）则不调用、返回
+/// false。返回 true = 弹窗存活且正文已绘（正文按钮自行关窗不经此出口）。
+///
+/// 为什么正文必须画进本层（2026-11-12 egui 0.37 源码实证，F-9 收口）：
+/// ① 绘制序——主界面 Middle 层先画、Foreground 层后画，留在 Middle 的正文
+///   被整层盖住（半透明遮罩罩暗 + 卡片不透明底盖死，层内按序、层间按 Order）；
+/// ② 交互——set_modal_layer 提交后 allows_interaction(Middle)=false，正文
+///   从次帧起 hover/点击全灭（interaction.rs 只在允许层收集点击候选）；
+/// ③ 焦点——create_widget 对不允许层控件 interested_in_focus=false 并
+///   ignore_focus 清焦点（含已聚焦控件），Enter 合成点击 has_focus 门随之
+///   失效。正文入层后三层同灭，modal 屏蔽只作用于遮罩下主界面。
 pub(crate) fn shell(
     ui: &mut egui::Ui,
     st: &mut State,
@@ -479,109 +712,180 @@ pub(crate) fn shell(
     // Some = 面板可拖（HostPanel / Settings：对齐 C# 无边框窗口标题栏拖动，
     // 面板整体在主窗口内平移）；None = 保持视口拖动（小弹窗既有行为）。
     mut win_drag: Option<&mut Vec2>,
-) -> Option<Rect> {
-    // 弹窗层清一次光标：egui 0.37 同层 hover 无 z 序排除，被弹窗遮住的
-    // splitter / 列宽 thumb 仍会 hovered 并把 ↔ 写进 output（发生在帧首
-    // 复位之后）；shell 是弹窗最前置绘制点，此处后写胜出，弹窗内部控件的
-    // 光标设置发生在其后不受影响。
-    ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+    // C1/F-9：关闭行为声明（遮罩可关性 + 关闭回调）——调用方自持，shell 不再
+    // 对弹窗变体特判（「统一收口到 shell 层，不要每个弹窗各写一遍」）。
+    opts: ShellOpts,
+    // 正文闭包（详见 fn 文档①②③）。State 由 shell 转借：shell 持有
+    // &mut State，闭包期间经第三参供给——调用方闭包直接捕获会双重可变借用。
+    body: impl FnOnce(&mut egui::Ui, Rect, &mut State),
+) -> bool {
     let full = ui.max_rect();
+    // C7/F3：卡片尺寸与视口各夹一次（MIN_SIZE 900×600 下 920×640 面板高溢 20px、
+    // 关闭钮中心出屏；导入结果页动态高同受保护）——clamp 后关闭钮恒在窗内。
+    let (w, h) = (w.min(full.width()), h.min(full.height()));
     // 指纹确认覆盖层打开时 Esc 归覆盖层（防一击双关：底弹窗不应同时响应）。
-    let esc = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) && !fp_ask_pending(st);
+    // C3①（F-9/F5）：上一帧有 combo 展开态则本帧 Esc 归组合（card_combo 真消费
+    // 收起）——Esc 先收组合再关弹窗，不再一击穿透；consume_key 真消费（NONE
+    // 修饰符匹配忽略额外 Shift/Alt，与原 key_pressed 同口径）。
+    let combo_open = COMBO_OPEN.swap(false, std::sync::atomic::Ordering::Relaxed);
+    let esc = !fp_ask_pending(st)
+        && !combo_open
+        && ui
+            .ctx()
+            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    // C3③（F20/F-9）：Enter→主钮旗标。豁免「焦点在可点控件」——焦点控件收到
+    // Space/Enter 时 egui 直接触发其点击（FAKE_PRIMARY_CLICKED），再全局响应
+    // 即双触发；文本框焦点放行（egui 单行框不消费 Enter，rename 据此提交）。
+    st.shell_enter = !fp_ask_pending(st)
+        && !combo_open
+        && (ui.ctx().memory(|m| m.focused().is_none()) || ui.ctx().text_edit_focused())
+        && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
 
-    // 遮罩：先挂（z 最底），点击即关。
-    let mask = ui.allocate_rect(full, Sense::click());
-    ui.painter().rect_filled(full, 0.0, theme::mask());
+    // C2/C9（方案 A）：弹窗主体升 Foreground 独立层——主界面控件全部在默认层，
+    // 跨层 hover/点击高层胜：遮罩下的 splitter / 列宽 thumb 不再 hovered 抢
+    // 写光标意图（F-8 起全部改上报、帧尾 ui::cursor_decide 唯一一次写入），
+    // edge_resize 边缘带不再抢命中。
+    // 滚轮走 root 帧首 stash + 本函数入口回填（ScrollArea 读后清零且不看层，
+    // Sense 无 scroll 位可用）。
+    Area::new(Id::unique("dialog-shell"))
+        .order(Order::Foreground)
+        .fixed_pos(full.min)
+        .constrain_to(full)
+        .show(ui.ctx(), |ui| {
+            // C3⑤（F-9）：modal 焦点层限定到弹窗层——下一帧起遮罩下控件不再注册
+            // 焦点兴趣，Tab 循环只在弹窗层内（指针交互不受影响，遮罩继续负责）。
+            ui.ctx().memory_mut(|m| m.set_modal_layer(ui.layer_id()));
+            // C3②（F-9）：打开首帧清残留文本输入焦点（Tab/Enter 不串到底下主界面）。
+            if st.dialog_fresh {
+                ui.ctx().memory_mut(|m| m.stop_text_input());
+            }
+            // 遮罩：先挂（层内 z 最底），点击即关。
+            let mask = ui.allocate_rect(full, Sense::click() - Sense::FOCUSABLE);
+            ui.painter().rect_filled(full, 0.0, theme::mask());
 
-    // 卡片：软投影（C# ThemeShadow Z=32 观感近似，统一走 theme::draw_shadow）
-    // + 一体底 + 描边。
-    // 面板偏移仅 HostPanel / Settings 启用（小弹窗零偏移 = 居中）。
-    let card = Rect::from_center_size(
-        full.center() + *win_drag.as_deref().unwrap_or(&Vec2::ZERO),
-        egui::vec2(w, h),
-    );
-    theme::draw_shadow(ui, card, theme::CONTAINER_RADIUS, theme::ShadowKind::Dialog);
-    ui.painter()
-        .rect_filled(card, theme::CONTAINER_RADIUS, p.dialog_title_bar);
-    ui.painter().rect_stroke(
-        card,
-        theme::CONTAINER_RADIUS,
-        Stroke::new(1.0, p.card_stroke),
-        egui::StrokeKind::Inside,
-    );
-    // 卡片命中面：吸收内部点击，避免穿透到遮罩造成误关。
-    ui.allocate_rect(card, Sense::click());
+            // 卡片：软投影（C# ThemeShadow Z=32 观感近似，统一走 theme::draw_shadow）
+            // + 一体底 + 描边。
+            // 面板偏移仅 HostPanel / Settings 启用（小弹窗零偏移 = 居中）。
+            let card = Rect::from_center_size(
+                full.center() + *win_drag.as_deref().unwrap_or(&Vec2::ZERO),
+                egui::vec2(w, h),
+            );
+            theme::draw_shadow(ui, card, theme::CONTAINER_RADIUS, theme::ShadowKind::Dialog);
+            ui.painter()
+                .rect_filled(card, theme::CONTAINER_RADIUS, p.dialog_title_bar);
+            ui.painter().rect_stroke(
+                card,
+                theme::CONTAINER_RADIUS,
+                theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.card_stroke),
+                egui::StrokeKind::Inside,
+            );
+            // 卡片命中面：吸收内部点击，避免穿透到遮罩造成误关（- FOCUSABLE：C3⑤
+            // Tab 不落在无视觉反馈的命中面上，首 Tab 直达首个真控件）。
+            ui.allocate_rect(card, Sense::click() - Sense::FOCUSABLE);
 
-    // 子元素排在描边内缩 1px 的 inner 区（C# Card BorderThickness=1）。
-    let inner = card.shrink(1.0);
-    // 标题行：窄标题栏通栏贴边。面板模式累计指针位移整体平移（阴影/标题/
-    // 内容全由 card 派生，自动跟随）；视口模式拖动 OS 主窗口。
-    let title_bar = Rect::from_min_max(
-        inner.min,
-        Pos2::new(inner.right(), inner.top() + TITLE_BAR_H),
-    );
-    let drag = ui.allocate_rect(title_bar, Sense::click_and_drag());
-    if let Some(off) = win_drag.as_deref_mut() {
-        let delta = drag.drag_delta();
-        if delta != Vec2::ZERO {
-            *off += delta;
-        }
-    } else if drag.drag_started() {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
+            // 子元素排在描边内缩 1px 的 inner 区（C# Card BorderThickness=1）。
+            let inner = card.shrink(1.0);
+            // 标题行：窄标题栏通栏贴边。面板模式累计指针位移整体平移（阴影/标题/
+            // 内容全由 card 派生，自动跟随）；视口模式拖动 OS 主窗口。
+            let title_bar = Rect::from_min_max(
+                inner.min,
+                Pos2::new(inner.right(), inner.top() + TITLE_BAR_H),
+            );
+            let drag = ui.allocate_rect(title_bar, Sense::click_and_drag() - Sense::FOCUSABLE);
+            if let Some(off) = win_drag.as_deref_mut() {
+                let delta = drag.drag_delta();
+                if delta != Vec2::ZERO {
+                    *off += delta;
+                    // C8：偏移钳制在「卡完全留在视口内」的半径（w/h 已夹视口，半径恒
+                    // ≥0）——面板拖不出屏幕，标题栏不会消失导致拖不回来。
+                    let max = (full.size() - egui::vec2(w, h)) * 0.5;
+                    off.x = off.x.clamp(-max.x, max.x);
+                    off.y = off.y.clamp(-max.y, max.y);
+                }
+            } else if drag.drag_started() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
 
-    let title_size = if large { 16.0 } else { 14.0 };
-    let icon_size = if large { 11.0 } else { 10.0 };
-    ui.painter().text(
-        Pos2::new(inner.left() + TITLE_PAD.0, title_bar.center().y),
-        Align2::LEFT_CENTER,
-        title,
-        // FontWeight=SemiBold → brand 字族（theme.rs 注册的 SemiBold 品牌面）。
-        FontId::new(title_size, FontFamily::Name("brand".into())),
-        p.text_primary,
-    );
+            let icon_size = if large { 11.0 } else { 10.0 };
+            ui.painter().text(
+                Pos2::new(inner.left() + TITLE_PAD.0, title_bar.center().y),
+                Align2::LEFT_CENTER,
+                title,
+                // FontWeight=SemiBold → brand 字族（theme.rs 注册的 SemiBold 品牌面）。
+                theme::font_title(large),
+                p.text_primary,
+            );
 
-    // 关闭钮 28×28（hover Subtle 二级 / 按下三级）。
-    let close_r = Rect::from_center_size(
-        Pos2::new(
-            title_bar.right() - TITLE_PAD.2 - CLOSE_SIZE / 2.0,
-            title_bar.center().y,
-        ),
-        egui::vec2(CLOSE_SIZE, CLOSE_SIZE),
-    );
-    let close = ui.allocate_rect(close_r, Sense::click());
-    if close.hovered() {
-        let bg = if close.is_pointer_button_down_on() {
-            p.row_pressed
-        } else {
-            p.row_hover
-        };
-        ui.painter().rect_filled(close_r, 4.0, bg);
-    }
-    if let Some(img) = st.icons.get(ui.ctx(), "x", p.text_primary, icon_size) {
-        img.paint_at(
-            ui,
-            Rect::from_center_size(close_r.center(), egui::vec2(icon_size, icon_size)),
-        );
-    }
+            // 关闭钮 28×28（hover Subtle 二级 / 按下三级）。
+            let close_r = Rect::from_center_size(
+                Pos2::new(
+                    title_bar.right() - TITLE_PAD.2 - CLOSE_SIZE / 2.0,
+                    title_bar.center().y,
+                ),
+                egui::vec2(CLOSE_SIZE, CLOSE_SIZE),
+            );
+            let close = ui.allocate_rect(close_r, Sense::click());
+            // M-12：弹窗关闭钮自绘无控件语义，补 widget_info（C# 自绘 TitleBar 关闭钮同位）。
+            close.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, t("关闭")));
+            if close.hovered() {
+                let bg = if close.is_pointer_button_down_on() {
+                    p.row_pressed
+                } else {
+                    p.row_hover
+                };
+                ui.painter().rect_filled(close_r, 4.0, bg);
+            }
+            // C3④（F18/F-9）：键盘焦点框（Tab 可达关闭钮，2px FocusVisual）。
+            if close.has_focus() {
+                ui.painter().rect_stroke(
+                    close_r,
+                    4.0,
+                    theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if let Some(img) = st.icons.get(ui.ctx(), "x", p.text_primary, icon_size) {
+                img.paint_at(
+                    ui,
+                    Rect::from_center_size(close_r.center(), egui::vec2(icon_size, icon_size)),
+                );
+            }
 
-    // 内容区几何：排在 inner 内、距边 5px、圆角 6；标题行下间距 = row_gap
-    // （C# 弹窗壳内容 Grid RowSpacing：HostPanel / SettingsPanel 4，其余 0）。
-    // 统一圆弧容器底仅在 content_card 时绘制（card_bg 为半透明白叠层，
-    // 与内部自绘子卡片叠加会变浅，C# HostPanel 无此层）。
-    let content = Rect::from_min_max(
-        Pos2::new(inner.left() + 5.0, title_bar.bottom() + row_gap),
-        Pos2::new(inner.right() - 5.0, inner.bottom() - 5.0),
-    );
-    if content_card {
-        ui.painter().rect_filled(content, 6.0, p.card_bg);
-    }
+            // 内容区几何：排在 inner 内、距边 5px、圆角 6；标题行下间距 = row_gap
+            // （C# 弹窗壳内容 Grid RowSpacing：HostPanel / SettingsPanel 4，其余 0）。
+            // 统一圆弧容器底仅在 content_card 时绘制（card_bg 为半透明白叠层，
+            // 与内部自绘子卡片叠加会变浅，C# HostPanel 无此层）。
+            let content = Rect::from_min_max(
+                Pos2::new(inner.left() + CONTENT_INSET, title_bar.bottom() + row_gap),
+                Pos2::new(
+                    inner.right() - CONTENT_INSET,
+                    inner.bottom() - CONTENT_INSET,
+                ),
+            );
+            if content_card {
+                ui.painter()
+                    .rect_filled(content, theme::SHELL_RADIUS, p.card_bg);
+            }
 
-    if esc || close.clicked() || mask.clicked() {
-        st.dialog = Dialog::None;
-        return None;
-    }
-    Some(content)
+            if esc || close.clicked() || (opts.mask_close && mask.clicked()) {
+                // C1/F-9：三路关闭共用调用方声明的暂存态处置（原 TransferConfirm
+                // 特判迁出为 CloseAction::CancelPendingStream——F1：与「取消」按钮
+                // 同语义，清暂存态 + 已落位行回溯清行 + 终端对账日志，防 seq=0
+                // 批次永久驻留）。mask_close=false 时遮罩点击仍被吸收（不透传）
+                // 只是不关（F19：有未保存编辑的面板防一次误点丢弃）。
+                match opts.on_close {
+                    CloseAction::CancelPendingStream => super::cancel_pending_stream(st),
+                    CloseAction::None => {}
+                }
+                st.dialog = Dialog::None;
+                return false;
+            }
+            // 正文画进本 Area 层（modal 层，fn 文档①②③）。正文内部按钮关窗
+            // （st.dialog = None）不经本出口，draw 派发的回填逻辑照旧成立。
+            body(&mut content_ui(ui, content), content, st);
+            true
+        })
+        .inner
 }
 
 /// 在内容容器里建一个自顶向下布局的子 UI。
@@ -602,17 +906,18 @@ pub(crate) fn std_button(
     fg: Color32,
     p: &theme::Palette,
 ) -> bool {
-    std_button_fs(ui, rect, label, fg, p, 14.0)
+    std_button_fs(ui, rect, label, fg, p, theme::font_body())
 }
 
-/// 标准按钮（可指定字号；C# 控件级 FontSize 覆写场景：设置卡 13 / 主机面板 12）。
+/// 标准按钮（可指定字体；C# 控件级 FontSize 覆写场景：设置卡 13 =
+/// `theme::font(TextRole::Compact)` / 主机面板 12 = `theme::font_small()`）。
 pub(crate) fn std_button_fs(
     ui: &mut egui::Ui,
     rect: Rect,
     label: &str,
     fg: Color32,
     p: &theme::Palette,
-    font: f32,
+    font: FontId,
 ) -> bool {
     std_button_en(ui, rect, label, fg, p, font, true)
 }
@@ -625,12 +930,19 @@ pub(crate) fn std_button_en(
     label: &str,
     fg: Color32,
     p: &theme::Palette,
-    font: f32,
+    font: FontId,
     enabled: bool,
 ) -> bool {
     // 描边像素对齐（theme::snap_rect）：半像素坐标会让 1px 边线被抗锯齿摊薄。
     let rect = theme::snap_rect(rect, ui.ctx().pixels_per_point());
     let resp = ui.allocate_rect(rect, Sense::click());
+    // F-8：自绘按钮 hover 手型（禁用态 / 仅焦点态不上报）。
+    if enabled && resp.hovered() {
+        cursor_intent(ui.ctx(), CursorLayer::Hover, egui::CursorIcon::PointingHand);
+    }
+    // C4/C5（F-9/M-12 同款）：自绘无控件语义，补 widget_info（std_button /
+    // std_button_fs / danger_button / button_row 均委托至此，一处覆盖）。
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     let (bg, stroke_c, text_c) = if !enabled {
         // Fluent 默认禁用三件套（C# 未覆写，v11 补录令牌文档）。
         (
@@ -642,6 +954,10 @@ pub(crate) fn std_button_en(
         (p.control_pressed, p.control_stroke, fg)
     } else if resp.hovered() {
         (p.control_hover, p.control_stroke, fg)
+    } else if resp.has_focus() {
+        // C3④（F18/F-9）：键盘焦点底（ControlFillColorInputActive 同源——
+        // 亮实白 / 暗 #1E1E1E；hover/按下态优先级更高，只在静默时显出）。
+        (p.control_bg_focused, p.control_stroke, fg)
     } else {
         (p.control_bg, p.control_stroke, fg)
     };
@@ -652,13 +968,17 @@ pub(crate) fn std_button_en(
         theme::control_border(ui.ctx().pixels_per_point(), stroke_c),
         egui::StrokeKind::Inside,
     );
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        FontId::proportional(font),
-        text_c,
-    );
+    // C3④（F18/F-9）：键盘焦点框（2px FocusVisual；按钮系 has_focus 统一走此）。
+    if resp.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            4.0,
+            theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+            egui::StrokeKind::Inside,
+        );
+    }
+    ui.painter()
+        .text(rect.center(), Align2::CENTER_CENTER, label, font, text_c);
     enabled && resp.clicked()
 }
 
@@ -667,13 +987,83 @@ fn danger_button(ui: &mut egui::Ui, rect: Rect, label: &str, p: &theme::Palette)
     std_button(ui, rect, label, p.critical, p)
 }
 
-/// 按钮宽（文字 + 左右 11）。
-fn btn_w(ui: &egui::Ui, label: &str) -> f32 {
+/// 按钮宽（文字 + 左右 11）——与绘制同源（F-11：btn_w / std_button / accent_button
+/// 共用同一 font 量宽，禁写死宽度；测量色 MEASURE_ONLY 不实际绘制）。
+pub(crate) fn btn_w(ui: &egui::Ui, label: &str, font: &FontId) -> f32 {
     ui.painter()
-        .layout_no_wrap(label.to_owned(), FontId::proportional(14.0), Color32::WHITE)
+        .layout_no_wrap(label.to_owned(), font.clone(), theme::MEASURE_ONLY)
         .size()
         .x
         + 22.0
+}
+
+/// 弹窗文本断行模式（F-11 排版收口：painter.text 不换行 / RichText 内建 /
+/// import_dialog::wrap_text 三套断行收口到 dlg_text）。
+pub(crate) enum TextMode {
+    /// 自动换行（说明 / 长文案；max_w = 换行宽）。
+    Wrap,
+    /// 单行按像素宽截断加省略号（表单元格等，import_dialog::trim_text 语义）。
+    Truncate,
+    /// 单行不换行不截断（标题 / 按钮文字 / 码值）。
+    Single,
+}
+
+/// 弹窗文本统一绘制入口：pos = 左上角，返回 galley 高度供多行文案顺排。
+/// 字体一律具名（theme::font_body() / font_small() / font(TextRole::…) / font_title…）。
+pub(crate) fn dlg_text(
+    pt: &egui::Painter,
+    pos: Pos2,
+    text: &str,
+    font: FontId,
+    mode: TextMode,
+    max_w: f32,
+    color: Color32,
+) -> f32 {
+    let galley = match mode {
+        TextMode::Wrap => pt.layout(text.to_owned(), font, color, max_w),
+        TextMode::Truncate => pt.layout_no_wrap(trim_by_width(pt, text, &font, max_w), font, color),
+        TextMode::Single => pt.layout_no_wrap(text.to_owned(), font, color),
+    };
+    let h = galley.size().y;
+    pt.galley(pos, galley, color);
+    h
+}
+
+/// 按像素宽截断加省略号（import_dialog::trim_text 收口；测量色 MEASURE_ONLY）。
+fn trim_by_width(pt: &egui::Painter, s: &str, font: &FontId, max_w: f32) -> String {
+    if pt
+        .layout_no_wrap(s.to_owned(), font.clone(), theme::MEASURE_ONLY)
+        .size()
+        .x
+        <= max_w
+    {
+        return s.to_owned();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut n = chars.len();
+    while n > 0 {
+        let t: String = chars[..n].iter().collect::<String>() + "…";
+        if pt
+            .layout_no_wrap(t.clone(), font.clone(), theme::MEASURE_ONLY)
+            .size()
+            .x
+            <= max_w
+        {
+            return t;
+        }
+        n -= 1;
+    }
+    "…".to_owned()
+}
+
+/// 条目名等长文本按 22 显示字符截断加省略号（F-11 工单定案：删除 / 校验码 /
+/// 权限弹窗文件名统一口径——字符数上限而非像素宽，中英文观感一致）。
+pub(crate) fn elide22(s: &str) -> String {
+    let mut out: String = s.chars().take(21).collect();
+    if s.chars().count() > 21 {
+        out.push('…');
+    }
+    out
 }
 
 /// 右对齐按钮组（间距 8），返回是否有按钮被点击。
@@ -687,7 +1077,7 @@ fn button_row(
     let mut x = right_x;
     let mut clicked = false;
     for label in labels.iter().rev() {
-        let w = btn_w(ui, label);
+        let w = btn_w(ui, label, &theme::font_body());
         x -= w;
         if std_button(
             ui,
@@ -725,6 +1115,9 @@ pub(crate) fn toggle(
     p: &theme::Palette,
 ) -> bool {
     let resp = ui.allocate_rect(rect, Sense::click());
+    // C4/C5（F-9/M-12 同款）：自绘无控件语义，补 widget_info（Switch 角色携带
+    // 选中态；行标签由调用处行文本承载，不在此重复）。
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, enabled, on, ""));
     let t = ui
         .ctx()
         .animate_value_with_time(resp.id, f32::from(on), 0.15);
@@ -761,7 +1154,11 @@ pub(crate) fn toggle(
     ui.painter().rect_stroke(
         rect,
         rect.height() / 2.0,
-        Stroke::new(1.0, mix(stroke_c, Color32::TRANSPARENT, t)),
+        theme::stroke(
+            ui.ctx().pixels_per_point(),
+            1.0,
+            mix(stroke_c, Color32::TRANSPARENT, t),
+        ),
         egui::StrokeKind::Inside,
     );
     // 拇指 = KnobFillOff（TextFillColorSecondary，禁用 TextFillColorDisabled）→
@@ -791,7 +1188,7 @@ fn radio(
     rect: Rect,
     checked: bool,
     label: &str,
-    fs: f32,
+    font: FontId,
     p: &theme::Palette,
 ) -> bool {
     let icon_d = 20.0;
@@ -816,7 +1213,11 @@ fn radio(
     } else {
         p.control_strong_fill
     };
-    pt.circle_stroke(icon.center(), 9.5, Stroke::new(1.0, ring_c));
+    pt.circle_stroke(
+        icon.center(),
+        9.5,
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, ring_c),
+    );
     if checked {
         pt.circle_filled(icon.center(), 4.0, accent);
     }
@@ -824,67 +1225,181 @@ fn radio(
         Pos2::new(rect.left() + icon_d + 8.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
-        FontId::proportional(fs),
+        font,
         p.text_primary,
     );
     resp.clicked()
 }
 
-/// 复选框 18×18（WinUI CheckBox：选中品牌蓝底白对勾，未选 1px 描边）。
-fn checkbox(ui: &mut egui::Ui, center: Pos2, checked: bool, p: &theme::Palette) -> bool {
-    let rect = Rect::from_center_size(center, egui::vec2(18.0, 18.0));
-    let resp = ui.allocate_rect(rect, Sense::click());
-    if checked {
-        ui.painter().rect_filled(rect, 3.0, theme::ACCENT);
-        let c = rect.center();
-        let g = 4.5;
-        let s = Stroke::new(1.6, Color32::WHITE);
-        ui.painter().line_segment(
-            [
-                Pos2::new(c.x - g, c.y),
-                Pos2::new(c.x - g * 0.3, c.y + g * 0.7),
-            ],
-            s,
-        );
-        ui.painter().line_segment(
-            [
-                Pos2::new(c.x - g * 0.3, c.y + g * 0.7),
-                Pos2::new(c.x + g, c.y - g * 0.7),
-            ],
-            s,
-        );
-    } else {
-        if resp.hovered() {
-            ui.painter().rect_filled(rect, 3.0, p.hover_bg);
-        }
-        ui.painter().rect_stroke(
-            rect,
-            3.0,
-            Stroke::new(1.0, p.text_tertiary),
+/// 复选框（视觉方块 18×18，Rect 由调用处传入；返回 true = 本次点击翻转）。
+/// 态口径（WinUI CheckBox 模板默认资源，C# 未覆写）：选中底/勾边 = Accent；
+/// 未选中底 = ControlFillColorDefault、边 = ControlStrokeColorSecondary；
+/// 禁用 = ControlFillColorDisabled + ControlStrokeColorDisabled（不可点）。
+/// F-11 两套 checkbox 合一：以 import_dialog 版为基线（圆角 4 / ✓ 12 号字；
+/// 旧 dialogs 版圆角 3 / 线勾 1.6 弃用）。
+pub(crate) fn checkbox(
+    ui: &mut egui::Ui,
+    r: Rect,
+    on: bool,
+    enabled: bool,
+    p: &theme::Palette,
+) -> bool {
+    let resp = ui.allocate_rect(r, Sense::click());
+    let painter = ui.painter().clone();
+    let ppp = ui.ctx().pixels_per_point();
+    if !enabled {
+        painter.rect_filled(r, theme::CONTROL_RADIUS, p.control_disabled);
+        painter.rect_stroke(
+            r,
+            theme::CONTROL_RADIUS,
+            theme::stroke(ppp, 1.0, p.control_stroke_disabled),
             egui::StrokeKind::Inside,
+        );
+        return false;
+    }
+    if resp.hovered() {
+        painter.rect_filled(r.expand(2.0), 3.0, p.control_hover);
+    }
+    let border = if on { theme::ACCENT } else { p.control_stroke };
+    let bg = if on { theme::ACCENT } else { p.control_bg };
+    painter.rect_filled(r, theme::CONTROL_RADIUS, bg);
+    painter.rect_stroke(
+        r,
+        theme::CONTROL_RADIUS,
+        theme::stroke(ppp, 1.0, border),
+        egui::StrokeKind::Inside,
+    );
+    if on {
+        painter.text(
+            r.center(),
+            Align2::CENTER_CENTER,
+            "✓",
+            theme::font_small(),
+            theme::CHECK_FG,
         );
     }
     resp.clicked()
 }
 
+/// accent 钮三态底色（C# AccentButtonStyle：Accent / hover ACCENT_HOVER /
+/// pressed ACCENT_PRESSED；禁用 accent_disabled）。F-11 提公共层：
+/// dialogs::accent_button 与 host_panel::accent_icon_button 共用（F-9 C5）。
+pub(crate) fn accent_bg(down: bool, hovered: bool, enabled: bool, p: &theme::Palette) -> Color32 {
+    if !enabled {
+        p.accent_disabled
+    } else if down {
+        theme::ACCENT_PRESSED
+    } else if hovered {
+        theme::ACCENT_HOVER
+    } else {
+        theme::ACCENT
+    }
+}
+
+/// 主色文字钮（C# AccentButtonStyle：同意页开始扫描 / 导入 / 完成）。
+/// 底 AccentFillColorDefault = 品牌蓝三态（与 header/host_panel 同口径）；禁用 =
+/// AccentFillColorDisabled 底 + TextOnAccentFillColorDisabled 字（点击不响应）。
+/// 高 32、宽 = 文字 + 22（内容左右 padding 11，调用处经 btn_w 同源量宽）。
+/// F-11 从 import_dialog 基线原样上移为公共层，字号参数化（调用处传具名 font）。
+pub(crate) fn accent_button(
+    ui: &mut egui::Ui,
+    r: Rect,
+    label: &str,
+    enabled: bool,
+    p: &theme::Palette,
+    font: FontId,
+) -> bool {
+    let resp = ui.allocate_rect(r, Sense::click());
+    #[cfg(test)]
+    eprintln!(
+        "[btn] enabled={} visible={} clip={} r={} focused_now={:?} allows={}",
+        ui.is_enabled(),
+        ui.is_visible(),
+        ui.clip_rect(),
+        r,
+        ui.ctx().memory(|m| m.focused()),
+        ui.ctx().memory(|m| m.allows_interaction(ui.layer_id()))
+    );
+    // C4/C5（F-9/M-12 同款）：自绘无控件语义，补 widget_info。
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    let (bg, text_c) = if !enabled {
+        (p.accent_disabled, theme::TEXT_ON_ACCENT_DISABLED)
+    } else if resp.is_pointer_button_down_on() {
+        (theme::ACCENT_PRESSED, theme::ON_ACCENT_FG)
+    } else if resp.hovered() {
+        (theme::ACCENT_HOVER, theme::ON_ACCENT_FG)
+    } else {
+        (theme::ACCENT, theme::ON_ACCENT_FG)
+    };
+    ui.painter().rect_filled(r, 4.0, bg);
+    // C3④（F18/F-9）：键盘焦点框（accent 底恒品牌蓝不随焦点变，只加 2px 焦点框）。
+    if resp.has_focus() {
+        ui.painter().rect_stroke(
+            r,
+            4.0,
+            theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+            egui::StrokeKind::Inside,
+        );
+    }
+    ui.painter()
+        .text(r.center(), Align2::CENTER_CENTER, label, font, text_c);
+    enabled && resp.clicked()
+}
+
 // ── 重命名（320）────────────────────────────────────────────
 fn rename_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    let (pane, orig) = match &st.dialog {
-        Dialog::Rename { pane, orig, .. } => (*pane, orig.clone()),
+    let (pane, orig, fresh) = match &st.dialog {
+        Dialog::Rename {
+            pane, orig, fresh, ..
+        } => (*pane, orig.clone(), *fresh),
         _ => return,
     };
-    let mut name = match &st.dialog {
+    let name = match &st.dialog {
         Dialog::Rename { name, .. } => name.clone(),
         _ => return,
     };
-    // 实时校验：Windows 非法字符 / 空 / 与原名相同（远程条目不限非法字符，T3 接入）。
-    let illegal = name.chars().any(|c| "\\/:*?\"<>|".contains(c));
-    let ok = !name.is_empty() && name != orig && !illegal;
+    // 实时校验：空 / 与原名相同（C# :99 IsValidNewName）；本地另查 Windows
+    // 非法字符（远程豁免，C# isRemote 分流）；列表内重名禁点（C# :101-109，
+    // 本地宽松 / 远程 Ordinal——复用同目录守卫 same_dest_dir 的分流口径）。
+    let remote = menu_side(st, pane).is_some();
+    let illegal = !remote && name.chars().any(|c| "\\/:*?\"<>|".contains(c));
+    let view = pane_view(st, pane);
+    let dup = view.entries.iter().enumerate().any(|(i, e)| {
+        view.selected.first() != Some(&i)
+            && !e.name.is_empty()
+            && crate::transfer::same_dest_dir(&name, &e.name, remote)
+    });
+    let ok = !name.is_empty() && name != orig && !illegal && !dup;
 
-    let Some(content) = shell(ui, st, p, 320.0, 144.0, t("重命名"), false, 0.0, true, None)
-    else {
-        return;
-    };
+    shell(
+        ui,
+        st,
+        p,
+        320.0,
+        144.0,
+        t("重命名"),
+        false,
+        0.0,
+        true,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| rename_body(ui, st, p, content, pane, fresh, name, ok),
+    );
+}
+
+/// 重命名正文（shell 回调，见 shell 文档①②③）。pane = 目标窗格，fresh =
+/// 打开首帧旗标（全选原名 + 聚焦），name = 输入框工作副本，ok = 实时校验结果。
+#[allow(clippy::too_many_arguments)]
+fn rename_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    pane: usize,
+    fresh: bool,
+    mut name: String,
+    ok: bool,
+) {
     let mut cui = content_ui(ui, content);
     let w = content.width() - CONTENT_PAD.0 * 2.0;
 
@@ -892,7 +1407,7 @@ fn rename_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         .font(egui::TextStyle::Body)
         .desired_width(w)
         .min_size(egui::vec2(w, BTN_H));
-    cui.put(
+    let te_resp = cui.put(
         Rect::from_min_size(
             Pos2::new(
                 content.left() + CONTENT_PAD.0,
@@ -902,24 +1417,42 @@ fn rename_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         ),
         te,
     );
+    // 右键菜单（复制/剪切/粘贴/全选）：自动注册侧道。
+    super::ctx_menu::register_auto(te_resp.id, te_resp.interact_rect);
+    // 打开首帧全选原名（C# RenameInputDialog :64-68 SelectAll + Focus）：
+    // fresh 旗随首帧消费，选区经 TextEditState 游标写入。
+    if fresh {
+        te_resp.request_focus();
+        let mut ts =
+            egui::widgets::text_edit::TextEditState::load(ui.ctx(), te_resp.id).unwrap_or_default();
+        ts.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(name.chars().count()),
+        )));
+        ts.store(ui.ctx(), te_resp.id);
+        if let Dialog::Rename { fresh: f, .. } = &mut st.dialog {
+            *f = false;
+        }
+    }
 
     let btn_y = content.top() + CONTENT_PAD.1 + BTN_H + GROUP_GAP;
     // 确认钮：IsValidNewName 才启用（C# RenameInputDialog.xaml.cs:62 初始
     // IsEnabled=false、:99 校验通过启用）；禁用态点击不响应。
-    let confirm_w = btn_w(ui, t("重命名"));
-    let cancel_w = btn_w(ui, t("取消"));
+    let confirm_w = btn_w(ui, t("重命名"), &theme::font_body());
+    let cancel_w = btn_w(ui, t("取消"), &theme::font_body());
     let bx = content.right() - CONTENT_PAD.0;
-    let confirm = std_button_en(
+    // C6（F-9）：主钮补 accent 色（AccentButtonStyle，禁用态 = accent_disabled 底
+    // + TEXT_ON_ACCENT_DISABLED 字，IsEnabled 语义不变）。
+    let confirm = accent_button(
         ui,
         Rect::from_min_size(
             Pos2::new(bx - confirm_w, btn_y),
             egui::vec2(confirm_w, BTN_H),
         ),
         t("重命名"),
-        p.text_primary,
-        p,
-        14.0,
         ok,
+        p,
+        theme::font_body(),
     );
     let cancel = std_button(
         ui,
@@ -931,7 +1464,9 @@ fn rename_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         p.text_primary,
         p,
     );
-    let enter = ok && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    // C3③（F20/F-9）：Enter 提交走 shell 旗标（焦点在输入框——egui 单行框
+    // 不消费 Enter，旗标已放行；弹窗不再各写一遍键盘监听）。
+    let enter = ok && st.shell_enter;
     if confirm || enter {
         apply_rename(st, pane, &name);
         st.dialog = Dialog::None;
@@ -975,15 +1510,51 @@ fn view_ready(st: &State, pane: usize) -> bool {
 }
 
 fn apply_rename(st: &mut State, pane: usize, name: &str) {
-    let entries = pane_view_mut(st, pane);
-    if let Some(&i) = entries.selected.first()
-        && let Some(e) = entries.entries.get_mut(i)
-    {
-        e.name = name.to_owned();
+    // P0-1 重命名落盘（C# FileView :2522-2530 本地 File/Directory.Move、
+    // :2560-2562 远程 SFTP RenameAsync）：此前仅改列表条目、刷新即打回原名的
+    // 假动作（ADR-031 第一红线）。
+    let orig = match &st.dialog {
+        Dialog::Rename { orig, .. } => orig.clone(),
+        _ => String::new(),
+    };
+    match menu_side(st, pane) {
+        Some(side) => {
+            // 远程：进 rename_reqs 落盘管线（同远程新建：inflight 定位 + 保活，
+            // Ev::Created 统一重列；成败细节走终端日志）。列表不改名——真实
+            // 结果以服务端为准（重列后按实显名）。
+            let tab_id = match super::active_remote_tab(st, side) {
+                Some(t) => t.id,
+                None => return,
+            };
+            if let Some(rp) = pane_view(st, pane).remote_path.clone() {
+                let old = super::join_remote_path(&rp, &orig);
+                let new = super::join_remote_path(&rp, name);
+                st.rename_reqs.push((side, tab_id, old, new));
+            }
+        }
+        None => {
+            // 本地：同步改名（C# File.Move/Directory.Move 同步同义），失败入
+            // 状态栏、列表不动；成功后重列（含树重建）。
+            let job = pane_view(st, pane).path.clone().and_then(|dir| {
+                pane_view(st, pane)
+                    .selected
+                    .first()
+                    .and_then(|&i| pane_view(st, pane).entries.get(i))
+                    .map(|e| (dir.join(&e.name), dir.join(name), e.name.clone()))
+            });
+            if let Some((from, to, old)) = job
+                && let Err(err) = std::fs::rename(&from, &to)
+            {
+                let es = err.to_string();
+                pane_view_mut(st, pane).msg = Some(tfmt("重命名失败：{0}（{1}）", &[&old, &es]));
+            }
+            let entries = pane_view_mut(st, pane);
+            crate::local::refresh(entries);
+            // 重命名影响树中目录名 → 重建路径树（C# :1613-1617 →
+            // RefreshListKeepingPath 首行 RefreshTreeIfVisible 同走）。
+            crate::ui::panes::tree_mark_dirty(entries);
+        }
     }
-    // 重命名影响树中目录名 → 重建路径树（C# :1613-1617 → RefreshListKeepingPath
-    // 首行 RefreshTreeIfVisible 同走）。
-    crate::ui::panes::tree_mark_dirty(entries);
 }
 
 // ── 删除确认（320）──────────────────────────────────────────
@@ -991,26 +1562,52 @@ fn delete_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     let Dialog::Delete { pane, indices } = &st.dialog else {
         return;
     };
-    let entries = pane_view(st, *pane);
+    let pane = *pane;
+    let entries = pane_view(st, pane);
     let first = indices
         .first()
         .and_then(|i| entries.entries.get(*i))
         .map(|e| e.name.clone())
         .unwrap_or_default();
     let count = indices.len();
-
     let shown = if count > 1 {
         format!("{first} {}", tfmt("等 {0} 项", &[&count]))
     } else {
         first
     };
-    let Some(content) = shell(ui, st, p, 320.0, 166.0, t("删除"), false, 0.0, true, None) else {
-        return;
-    };
+
+    // 高 190：说明两行（英文态约 500px 文案在 290px 卡内宽必换行）+ 底锚
+    // 按钮（底距 15）+ 14 组间距（F-11 F2：说明改 galley 换行后 +18 容纳）。
+    shell(
+        ui,
+        st,
+        p,
+        320.0,
+        190.0,
+        t("删除"),
+        false,
+        0.0,
+        true,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| delete_body(ui, st, p, content, pane, shown),
+    );
+}
+
+/// 删除确认正文（shell 回调，见 shell 文档①②③）。
+fn delete_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    pane: usize,
+    shown: String,
+) {
     let cui = content_ui(ui, content);
     let x = content.left() + CONTENT_PAD.0;
 
-    // 条目行：危险红删除图标 + 名称 50% 淡化。
+    // 条目行：危险红删除图标 + 名称 50% 淡化（F-11 F2：painter.text 单行
+    // 不截断 → galley 单行 + 22 字符 elide，超长文件名不再画穿遮罩）。
     if let Some(img) = st.icons.get(ui.ctx(), "trash", p.critical, 16.0) {
         img.paint_at(
             ui,
@@ -1020,28 +1617,48 @@ fn delete_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             ),
         );
     }
-    cui.painter().text(
-        Pos2::new(x + 26.0, content.top() + CONTENT_PAD.1 + 10.0),
-        Align2::LEFT_CENTER,
-        shown,
-        FontId::proportional(14.0),
+    dlg_text(
+        cui.painter(),
+        Pos2::new(x + 26.0, content.top() + CONTENT_PAD.1),
+        &elide22(&shown),
+        theme::font_body(),
+        TextMode::Single,
+        0.0,
         // Opacity=0.5 叠 TextFillColorPrimary（C# EntryName）。
         theme::dim50(p.text_primary),
     );
 
     let body_y = content.top() + CONTENT_PAD.1 + 20.0 + GROUP_GAP;
-    cui.painter().text(
-        Pos2::new(x, body_y + 10.0),
-        Align2::LEFT_CENTER,
-        t("所选内容将被永久删除，此操作无法恢复。"),
-        FontId::proportional(14.0),
+    // 文案随删除语义分流（#10，C# DeleteConfirmDialog.xaml.cs:44-65
+    // toRecycleBin 参数）：本地 Shell API 进回收站可还原 → 回收站文案；
+    // 远程 SFTP 删除不可恢复 → 永久删除文案。判定与 apply_delete 的
+    // 分支同口径（menu_side）。（F-11 F2：painter.text 不换行 → galley
+    // 换行，宽 = 卡内宽，英文态两行不再画到卡片外。）
+    let recycle = menu_side(st, pane).is_none();
+    dlg_text(
+        cui.painter(),
+        Pos2::new(x, body_y),
+        if recycle {
+            t("所选内容将移入回收站，可在回收站还原。")
+        } else {
+            t("所选内容将被永久删除，此操作无法恢复。")
+        },
+        theme::font_body(),
+        TextMode::Wrap,
+        content.width() - CONTENT_PAD.0,
         p.text_primary,
     );
 
-    // 删除（危险红字）+ 取消。
-    let btn_y = body_y + 20.0 + GROUP_GAP;
-    let del_w = btn_w(ui, t("删除"));
-    let cancel_w = btn_w(ui, t("取消"));
+    // 删除（危险红字）+ 取消：底锚按钮（底距 15 = CONTENT_PAD.1，与其他
+    // 警告弹窗同口径），与正文之间保持 GROUP_GAP。
+    let btn_y = content.bottom() - CONTENT_PAD.1 - BTN_H;
+    let del_w = btn_w(ui, t("删除"), &theme::font_body());
+    let cancel_w = btn_w(ui, t("取消"), &theme::font_body());
+    // C3②（F-9）：打开首帧初焦点 → 主钮。请求必须在创建之后：egui 新 Area
+    // 首帧 = sizing pass（AreaState 未持久化 → ui invisible/disabled），创建时
+    // create_widget 走 interested_in_focus=false → ignore_focus 会清掉同帧先置
+    // 的焦点；创建后请求则无后续 ignore_focus 干扰，end_pass 按本帧新落焦保留。
+    let del_id = ui.next_auto_id();
     let del = danger_button(
         ui,
         Rect::from_min_size(
@@ -1051,6 +1668,9 @@ fn delete_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         t("删除"),
         p,
     );
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(del_id));
+    }
     let cancel = std_button(
         ui,
         Rect::from_min_size(
@@ -1064,13 +1684,13 @@ fn delete_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         p.text_primary,
         p,
     );
-    if del {
+    if del || st.shell_enter {
         apply_delete(st);
-        // 弹窗绘制于帧末：本地删除同步改 pane（本帧已画完）→ 主动约一帧防断档；
-        // 远程侧 busy 链（del_pending）本就保活，重复请求无害。
+        // 弹窗绘制于帧末：CR-1 起本地删除只登记请求 + 置 loading（本帧已画完），
+        // 主动约一帧让「正在删除…」即时上屏；远程侧 busy 链（del_pending）本就保活。
         ui.ctx().request_repaint();
     }
-    if del || cancel {
+    if del || st.shell_enter || cancel {
         st.dialog = Dialog::None;
     }
 }
@@ -1085,7 +1705,9 @@ fn apply_delete(st: &mut State) {
     // 弹窗 pane（= 侧号）→ 会话侧：活动视图为远程 tab 时该侧远程会话删除，
     // 本地 tab 走本地删除分支。
     let Some(side) = menu_side(st, *pane) else {
-        // 本地：真实删除（C5：逐项留终端日志，失败记录可定位路径）。
+        // CR-1：本地删除 + 删后重列整段交工作线程（帧内零文件系统 I/O）。
+        // 逐项成败日志由 `ui::poll_local_jobs` 回执入账，文案与旧版逐字一致
+        // （local::delete_log_lines）；回收站语义仍由 local::delete_to_bin 保证。
         let view = pane_view(st, *pane);
         let Some(dir) = view.path.clone() else {
             return; // 根视图（驱动器列表）不可删
@@ -1094,33 +1716,17 @@ fn apply_delete(st: &mut State) {
             .iter()
             .filter_map(|i| view.entries.get(*i).map(|e| e.name.clone()))
             .collect();
-        for name in targets {
-            let p = dir.join(&name);
-            let shown = p.to_string_lossy().into_owned();
-            // Shell API 删除进回收站可还原（C# FileView.xaml.cs:4578「用 Shell
-            // 而非 File.Delete」同语义；目录由 SHFileOperation 整树递归）。
-            let r = crate::local::delete_to_bin(&p);
-            match r {
-                Ok(_) => st.terminal.push((
-                    crate::local::now_hms(),
-                    tfmt("[本地] 已删除 {0}", &[&shown]),
-                )),
-                Err(e) => st.terminal.push((
-                    crate::local::now_hms(),
-                    tfmt("[本地] 删除失败 {0}：{1}", &[&shown, &e]),
-                )),
-            }
-        }
-        // C# 删除后 RefreshListKeepingPath + RefreshTreeIfVisible → 重建路径树
-        //（保留展开链，内部标记失效后由同步步恢复）。
+        let keep = crate::local::selected_names(view);
         let view = pane_view_mut(st, *pane);
-        crate::local::refresh(view);
-        crate::ui::panes::tree_mark_dirty(view);
+        view.pending_local = Some(crate::local::LocalPaneReq::Delete { dir, targets, keep });
+        view.loading = true;
+        view.loading_label = Some(t("正在删除…"));
         return;
     };
-    // 远程：Cmd::Delete（目录 SFTP 递归），逐项日志走 Ev::Log，完成计数回零后刷新。
-    // 顺序借用：先收齐待删条目并定路径，再发号记 inflight（Ev::Deleted 按其定位
-    // 重列 tab），最后借该 tab 挂靠会话发 delete。
+    // 远程：CR-7 一个 DeleteBatch（一个 tag），文件项在 worker 内分块并发、
+    // 目录项仍串行；逐项成败走 Ev::Log，完成计数回零后刷新。
+    // 顺序借用：先收齐待删条目并定路径，再确认会话、发号记 inflight
+    // （Ev::Deleted 按其定位重列 tab），最后借该 tab 挂靠会话发批。
     let Some(tab) = super::active_remote_tab(st, side) else {
         return;
     };
@@ -1151,43 +1757,64 @@ fn apply_delete(st: &mut State) {
     } else {
         Vec::new()
     };
-    // 发号 + 在途记录（&mut st 独占段；tab 关闭时随 finish_close_tab 清理）。
-    let tags: Vec<u64> = paths
-        .iter()
-        .map(|_| {
-            let tag = super::next_seq(st);
-            st.inflight.insert(tag, (side, tab_id));
-            tag
-        })
-        .collect();
-    let mut sent = 0usize;
+    // CR-7：一个 tag 装 N 项，del_pending 必须按「批」+1（发批）/ -1（回执）；
+    // 若仍按项 += N，一条 Ev::Deleted 只减 1 → 永远不回零、卡在「正在删除…」。
+    // paths 空 / 无会话时与旧版 sent=0 同语义：零发号、零 loading 变更。
+    if paths.is_empty() || super::session_of_tab(st, side, tab_id).is_none() {
+        return;
+    }
+    let Some((tag, batch)) = begin_delete_batch(st, side, tab_id, paths) else {
+        return;
+    };
     if let Some(ss) = super::session_of_tab(st, side, tab_id) {
-        for ((path, is_dir), tag) in paths.iter().zip(tags.iter()) {
-            ss.ssh.delete(*tag, path.clone(), *is_dir);
-            sent += 1;
-        }
+        ss.ssh.delete_batch(tag, batch);
     }
+}
+
+/// CR-7 单批删除发号：一个批一个 tag、inflight 一条、del_pending 按批 +1
+/// （回执侧 Ev::Deleted 减去同一条 → 回零才重列）。空批返回 None，不发号不改态。
+/// 从 apply_delete 抽出以便在无远程主机环境下用纯状态夹具钉住计数语义。
+fn begin_delete_batch(
+    st: &mut State,
+    side: usize,
+    tab_id: u32,
+    paths: Vec<(String, bool)>,
+) -> Option<(u64, Vec<(String, bool)>)> {
+    if paths.is_empty() {
+        return None;
+    }
+    let tag = super::next_seq(st);
+    st.inflight.insert(tag, (side, tab_id));
     if let Some(tab) = super::active_remote_tab_mut(st, side) {
-        tab.pane.loading = sent > 0;
-        tab.del_pending += sent as u64;
+        tab.pane.loading = true;
+        tab.del_pending += 1;
     }
+    Some((tag, paths))
 }
 
 // ── 校验码（420）────────────────────────────────────────────
 const ALGOS: [&str; 3] = ["SHA-256", "SHA-512", "SM3"];
 
-/// 本地文件哈希（ring，256KB 分块流式；SM3 暂不支持 —— C# 自带 SM3 实现随后续任务移植）。
+/// 本地文件哈希（ring / SM3 自带实现，256KB 分块流式；C# LocalComputeAsync 同口径）。
 fn hash_local(path: &str, algo: usize) -> Result<String, String> {
-    use ring::digest as dg;
-    let alg = match algo {
-        0 => &dg::SHA256,
-        1 => &dg::SHA512,
-        _ => return Err(t("SM3 暂不支持").to_owned()),
-    };
     let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut ctx = dg::Context::new(alg);
     let mut buf = vec![0u8; 256 * 1024];
     use std::io::Read;
+    if algo == 2 {
+        // M-11：SM3 自带流式实现（src/sm3.rs，GB/T 32905-2016）。
+        let mut h = crate::sm3::Sm3::new();
+        loop {
+            let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+        }
+        return Ok(h.finish_hex());
+    }
+    use ring::digest as dg;
+    let alg = if algo == 0 { &dg::SHA256 } else { &dg::SHA512 };
+    let mut ctx = dg::Context::new(alg);
     loop {
         let n = f.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
@@ -1203,8 +1830,8 @@ fn hash_local(path: &str, algo: usize) -> Result<String, String> {
         .collect())
 }
 
-/// 启动校验计算：本地开线程 ring 直算；远程走该侧 exec 通道
-/// （sha256sum / sha512sum / SM3 经 openssl dgst，G9 S6.5）。
+/// 启动校验计算：本地开线程直算（ring / SM3 自带实现，M-11）；远程走该侧
+/// exec 通道（sha256sum / sha512sum / SM3 经 openssl dgst，G9 S6.5）。
 fn checksum_start(st: &mut State, algo: usize, path: &str, remote_side: Option<usize>) {
     use crate::ssh::shell_quote;
     if let Some(side) = remote_side {
@@ -1238,7 +1865,7 @@ fn checksum_start(st: &mut State, algo: usize, path: &str, remote_side: Option<u
 }
 
 fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    let (name, path, side, mut algo, mut copied) = match &st.dialog {
+    let (name, path, side, algo, copied) = match &st.dialog {
         Dialog::Checksum {
             name,
             path,
@@ -1249,27 +1876,55 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         } => (name.clone(), path.clone(), *side, *algo, *copied),
         _ => return,
     };
-    let Some(content) = shell(ui, st, p, 420.0, 242.0, t("校验码"), false, 0.0, true, None)
-    else {
-        return;
-    };
+    shell(
+        ui,
+        st,
+        p,
+        420.0,
+        242.0,
+        t("校验码"),
+        false,
+        0.0,
+        true,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| checksum_body(ui, st, p, content, name, path, side, algo, copied),
+    );
+}
+
+/// 校验码正文（shell 回调，见 shell 文档①②③）。
+#[allow(clippy::too_many_arguments)]
+fn checksum_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    name: String,
+    path: String,
+    side: Option<usize>,
+    mut algo: usize,
+    mut copied: Option<f64>,
+) {
     let mut cui = content_ui(ui, content);
     let x = content.left() + CONTENT_PAD.0;
     let w = content.width() - CONTENT_PAD.0 * 2.0;
     let mut y = content.top() + CONTENT_PAD.1;
 
-    // 条目行：文件图标 + 名称 50% 淡化。
+    // 条目行：文件图标 + 名称 50% 淡化（F-11 F2：galley 单行 + 22 字符
+    // elide，超长文件名不再画穿遮罩）。
     if let Some(img) = st.icons.get(ui.ctx(), "file", p.text_secondary, 16.0) {
         img.paint_at(
             ui,
             Rect::from_center_size(Pos2::new(x + 8.0, y + 10.0), egui::vec2(16.0, 16.0)),
         );
     }
-    cui.painter().text(
-        Pos2::new(x + 26.0, y + 10.0),
-        Align2::LEFT_CENTER,
-        name,
-        FontId::proportional(14.0),
+    dlg_text(
+        cui.painter(),
+        Pos2::new(x + 26.0, y),
+        &elide22(&name),
+        theme::font_body(),
+        TextMode::Single,
+        0.0,
         // Opacity=0.5 叠 TextFillColorPrimary（C# EntryName）。
         theme::dim50(p.text_primary),
     );
@@ -1280,17 +1935,13 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         Pos2::new(x, y + 15.0),
         Align2::LEFT_CENTER,
         t("算法"),
-        FontId::proportional(14.0),
+        theme::font_body(),
         p.text_primary,
     );
     // 标签 Auto 宽 + ColumnSpacing 10（C# 算法行 Grid ColumnSpacing=10）。
     let algo_w = cui
         .painter()
-        .layout_no_wrap(
-            t("算法").to_owned(),
-            FontId::proportional(14.0),
-            Color32::WHITE,
-        )
+        .layout_no_wrap(t("算法").to_owned(), theme::font_body(), Color32::WHITE)
         .size()
         .x;
     let combo_r = Rect::from_min_size(Pos2::new(x + algo_w + 10.0, y), egui::vec2(160.0, 32.0));
@@ -1306,6 +1957,7 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     let combo = egui::ComboBox::from_id_salt("chk-algo")
         .width(160.0 - 8.0)
         .selected_text(ALGOS.get(algo).copied().unwrap_or("SHA-256"));
+    let prev_algo = algo;
     let resp = combo.show_ui(&mut combo_ui, |c| {
         for (i, label) in ALGOS.iter().enumerate() {
             let ok = hp.map_or(true, |h| match i {
@@ -1320,7 +1972,16 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             }
         }
     });
-    if resp.response.changed() {
+    // C3②（F-9）：打开首帧初焦点 → 算法组合框（id 为 salt 固定，取响应直接聚焦；
+    // 同帧生效，焦点框下帧起由 ComboBox 内部渲染）。
+    if st.dialog_fresh {
+        resp.response.request_focus();
+    }
+    // 选中即计算。不读 resp.response.changed()——egui 0.37 的 ComboBox::show_ui
+    // 只在 show_index 显式 mark_changed，show_ui 弹层内 selectable_value 的
+    // 变更不回传按钮响应，changed() 恒 false（切算法不重算，走查 D2 实证）；
+    // 改比本地 algo 前后值（selectable_value 点击帧已写入）。
+    if algo != prev_algo {
         copied = None;
         checksum_start(st, algo, &path, side);
     }
@@ -1343,7 +2004,7 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         // 校验和复制钮对齐 C# ChkCopy="Copy"；主机菜单"复制"（Duplicate）仍走字典。
         _ => t_ctx("复制", "Copy"),
     };
-    let copy_w = btn_w(ui, copy_label);
+    let copy_w = btn_w(ui, copy_label, &theme::font_body());
     // 码值框：TextBox 高 50 只读折行（ControlFill/Stroke 默认底描边），右侧复制钮间距 8。
     let value_r = Rect::from_min_size(Pos2::new(x, y), egui::vec2(w - copy_w - 8.0, 50.0));
     cui.painter().rect_filled(value_r, 4.0, p.control_bg);
@@ -1354,21 +2015,33 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         p.control_stroke_default,
         p.control_stroke,
     );
-    let galley = cui.painter().layout(
-        if computing {
-            t("计算中…").to_owned()
-        } else {
-            value.clone()
-        },
-        egui::FontId::monospace(12.0),
-        p.text_primary,
-        value_r.width() - 16.0,
-    );
-    cui.painter().galley(
-        Pos2::new(value_r.left() + 8.0, value_r.top() + 8.0),
-        galley,
-        p.text_primary,
-    );
+    let text = if computing {
+        t("计算中…").to_owned()
+    } else {
+        value.clone()
+    };
+    // 码值内容：垂直滚动（C# TextBox TextWrapping=Wrap 溢出滚动同语义）——
+    // SHA-512/SM3 长码折行超过视口高（50-16=34 ≈ 2 行）自动出滚动条，
+    // 不超高不出条；max_rect 内收 8 = 原左上 8px 内边距，宽随条显隐自适应。
+    let mut val_ui =
+        cui.new_child(egui::UiBuilder::new().max_rect(value_r.shrink2(egui::vec2(8.0, 8.0))));
+    egui::ScrollArea::vertical()
+        .id_salt("chk-value")
+        .auto_shrink(false)
+        // egui 0.37 ScrollArea 默认 min_scrolled_size=splat(64)：34px 视口被
+        // 强扩到 64 → 内容（56）< 64 恒不出条，且裁剪框向下溢出 30px、文字
+        // 画进底部按钮区（2026-11-12 走查实证）。归零后视口严格等于 max_rect。
+        .min_scrolled_height(0.0)
+        .show(&mut val_ui, |s| {
+            let galley = s.painter().layout(
+                text,
+                theme::font_mono_small(),
+                p.text_primary,
+                s.max_rect().width(),
+            );
+            let (rect, _resp) = s.allocate_exact_size(galley.size(), Sense::hover());
+            s.painter().galley(rect.left_top(), galley, p.text_primary);
+        });
     // 复制钮（高 50）：算完才启用（C# ChecksumDialog.xaml.cs:91/103）。
     let copy_ok = !computing && matches!(&st.chk_local, Some(Ok(_)));
     if std_button_en(
@@ -1377,7 +2050,7 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         copy_label,
         p.text_primary,
         p,
-        14.0,
+        theme::font_body(),
         copy_ok,
     ) {
         ui.ctx().copy_text(value.to_owned());
@@ -1386,7 +2059,8 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     y += 50.0 + GROUP_GAP;
 
     // 底部操作：关闭。
-    if button_row(ui, content.right() - CONTENT_PAD.0, y, &[t("关闭")], p) {
+    // C3③（F20/F-9）：Enter 走 shell 旗标触发唯一钮「关闭」。
+    if button_row(ui, content.right() - CONTENT_PAD.0, y, &[t("关闭")], p) || st.shell_enter {
         st.dialog = Dialog::None;
         return;
     }
@@ -1401,7 +2075,7 @@ fn checksum_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 
 // ── 权限（384 九宫格）───────────────────────────────────────
 fn permission_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    let (pane, name, is_dir, mut bits) = match &st.dialog {
+    let (pane, name, is_dir, bits) = match &st.dialog {
         Dialog::Permission {
             pane,
             name,
@@ -1411,14 +2085,40 @@ fn permission_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         } => (*pane, name.clone(), *is_dir, *bits),
         _ => return,
     };
-    let Some(content) = shell(ui, st, p, 384.0, 303.0, t("权限"), false, 0.0, true, None) else {
-        return;
-    };
+    shell(
+        ui,
+        st,
+        p,
+        384.0,
+        303.0,
+        t("权限"),
+        false,
+        0.0,
+        true,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| permission_body(ui, st, p, content, pane, name, is_dir, bits),
+    );
+}
+
+/// 权限九宫格正文（shell 回调，见 shell 文档①②③）。
+#[allow(clippy::too_many_arguments)]
+fn permission_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    pane: usize,
+    name: String,
+    is_dir: bool,
+    mut bits: [bool; 9],
+) {
     let cui = content_ui(ui, content);
     let x = content.left() + CONTENT_PAD.0;
     let mut y = content.top() + CONTENT_PAD.1;
 
-    // 条目行：类型图标 + 名称 50% 淡化。
+    // 条目行：类型图标 + 名称 50% 淡化（F-11 F2：galley 单行 + 22 字符
+    // elide，超长文件名不再画穿遮罩）。
     let icon = if is_dir { "folder" } else { "file" };
     if let Some(img) = st.icons.get(ui.ctx(), icon, p.text_secondary, 16.0) {
         img.paint_at(
@@ -1426,11 +2126,13 @@ fn permission_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             Rect::from_center_size(Pos2::new(x + 8.0, y + 10.0), egui::vec2(16.0, 16.0)),
         );
     }
-    cui.painter().text(
-        Pos2::new(x + 26.0, y + 10.0),
-        Align2::LEFT_CENTER,
-        name,
-        FontId::proportional(14.0),
+    dlg_text(
+        cui.painter(),
+        Pos2::new(x + 26.0, y),
+        &elide22(&name),
+        theme::font_body(),
+        TextMode::Single,
+        0.0,
         // Opacity=0.5 叠 TextFillColorPrimary（C# EntryName）。
         theme::dim50(p.text_primary),
     );
@@ -1441,14 +2143,16 @@ fn permission_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     let rows = [t("所有者"), t("群组"), t("其他")];
     let cols = [t("读"), t("写"), t("执行")];
     let grid_w = content.width() - CONTENT_PAD.0 * 2.0;
-    let cb_cx0 = x + grid_w - 180.0; // 三个 72 列的左缘（* 列填充余宽）
+    // 三个 72 列合计 216，右缘与网格右缘对齐（* 列填充余宽）；列中心 = 左缘
+    // +36（此前误写 -180 = 第一列中心，循环 +36 重复计偏移 → 末列溢出右缘）。
+    let cb_cx0 = x + grid_w - 216.0;
     for (ci, label) in cols.iter().enumerate() {
         let cx = cb_cx0 + 36.0 + ci as f32 * 72.0;
         cui.painter().text(
             Pos2::new(cx, y + 9.5),
             Align2::CENTER_CENTER,
             *label,
-            FontId::proportional(14.0),
+            theme::font_body(),
             p.text_secondary,
         );
     }
@@ -1458,13 +2162,19 @@ fn permission_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             Pos2::new(x, row_y),
             Align2::LEFT_CENTER,
             *row,
-            FontId::proportional(14.0),
+            theme::font_body(),
             p.text_primary,
         );
         for (ci, _) in cols.iter().enumerate() {
             let cx = cb_cx0 + 36.0 + ci as f32 * 72.0;
             let idx = ri * 3 + ci;
-            if checkbox(ui, Pos2::new(cx, row_y), bits[idx], p) {
+            if checkbox(
+                ui,
+                Rect::from_center_size(Pos2::new(cx, row_y), egui::vec2(18.0, 18.0)),
+                bits[idx],
+                true,
+                p,
+            ) {
                 bits[idx] = !bits[idx];
             }
         }
@@ -1477,25 +2187,33 @@ fn permission_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         Pos2::new(content.center().x, y + 8.0),
         Align2::CENTER_CENTER,
         value.as_str(),
-        FontId::proportional(12.0),
+        theme::font_small(),
         p.text_secondary,
     );
     y += 16.0 + GROUP_GAP;
 
     // 操作按钮：应用 / 取消。
     let apply_y = y;
-    let apply_w = btn_w(ui, t("应用"));
-    let cancel_w = btn_w(ui, t("取消"));
-    let apply = std_button(
+    let apply_w = btn_w(ui, t("应用"), &theme::font_body());
+    let cancel_w = btn_w(ui, t("取消"), &theme::font_body());
+    // C3②（F-9）：打开首帧初焦点 → 主钮「应用」。请求必须在创建之后
+    //（同 delete_body 注：首帧 sizing pass 会在创建时清先置焦点）。
+    let apply_id = ui.next_auto_id();
+    // C6（F-9）：主钮「应用」补 accent 色。
+    let apply = accent_button(
         ui,
         Rect::from_min_size(
             Pos2::new(content.right() - CONTENT_PAD.0 - apply_w, apply_y),
             egui::vec2(apply_w, BTN_H),
         ),
         t("应用"),
-        p.text_primary,
+        true,
         p,
+        theme::font_body(),
     );
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(apply_id));
+    }
     let cancel = std_button(
         ui,
         Rect::from_min_size(
@@ -1509,10 +2227,10 @@ fn permission_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         p.text_primary,
         p,
     );
-    if apply {
+    if apply || st.shell_enter {
         apply_perm(st, pane, &value);
     }
-    if apply || cancel {
+    if apply || st.shell_enter || cancel {
         st.dialog = Dialog::None;
         return;
     }
@@ -1579,7 +2297,7 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         (hosts.len() as f32 * 48.0).clamp(440.0, 540.0)
     };
     let shell_h = 165.0 + list_h;
-    let Some(content) = shell(
+    shell(
         ui,
         st,
         p,
@@ -1590,9 +2308,25 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         0.0,
         true,
         None,
-    ) else {
-        return;
-    };
+        ShellOpts::default(),
+        |ui, content, st| host_picker_body(ui, st, p, content, hosts, list_h, target, new_tab),
+    );
+}
+
+/// 打开内容选择器正文（shell 回调，见 shell 文档①②③）。hosts / list_h =
+/// 头部预检的主机区快照与滚动区高。
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
+fn host_picker_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    hosts: Vec<crate::hosts::HostProfile>,
+    list_h: f32,
+    target: usize,
+    new_tab: bool,
+) {
     let cui = content_ui(ui, content);
     let pad_x = 16.0;
     let mut y = content.top();
@@ -1604,7 +2338,7 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             Pos2::new(content.left() + pad_x, y + 10.0 + 8.0),
             Align2::LEFT_CENTER,
             t("本地"),
-            FontId::proportional(12.0),
+            theme::font_small(),
             p.text_secondary,
         );
         y += 30.0;
@@ -1632,14 +2366,14 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             Pos2::new(local_row.left() + 40.0, local_row.center().y),
             Align2::LEFT_CENTER,
             t("本地文件系统"),
-            FontId::proportional(14.0),
+            theme::font_body(),
             p.text_primary,
         );
         cui.painter().text(
             Pos2::new(local_row.right() - 10.0, local_row.center().y),
             Align2::RIGHT_CENTER,
             t("浏览本地文件"),
-            FontId::proportional(12.0),
+            theme::font_small(),
             p.text_secondary,
         );
         y += 48.0;
@@ -1653,7 +2387,7 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             Pos2::new(content.left() + pad_x, y),
             Pos2::new(content.right() - pad_x, y),
         ],
-        Stroke::new(1.0, p.row_separator),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.row_separator),
     );
     y += 6.0;
 
@@ -1662,7 +2396,7 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         Pos2::new(content.left() + pad_x, y + 12.0 + 8.0),
         Align2::LEFT_CENTER,
         t_ctx("主机", "Hosts"),
-        FontId::proportional(12.0),
+        theme::font_small(),
         p.text_secondary,
     );
     y += 32.0;
@@ -1686,7 +2420,7 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                     Pos2::new(content.left() + 16.0, y + 4.0 + 8.0),
                     Align2::LEFT_CENTER,
                     t("暂无主机，点 + 新增"),
-                    FontId::proportional(12.0),
+                    theme::font_small(),
                     p.text_secondary,
                 );
                 return;
@@ -1722,14 +2456,14 @@ fn host_picker(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                     Pos2::new(row.left() + 50.0, row.center().y),
                     Align2::LEFT_CENTER,
                     title,
-                    FontId::proportional(14.0),
+                    theme::font_body(),
                     p.text_primary,
                 );
                 s.painter().text(
                     Pos2::new(row.right() - 10.0, row.center().y),
                     Align2::RIGHT_CENTER,
                     h.detail(),
-                    FontId::proportional(12.0),
+                    theme::font_small(),
                     p.text_secondary,
                 );
                 if resp.clicked() {
@@ -1800,6 +2534,7 @@ pub(crate) fn connect_profile(
             ext_stat: None,
             ext_write: None,
             ext_poll: std::time::Instant::now(),
+            lock_msg_on: false,
         });
         activate_remote_tab(st, side, id);
         st.tab_born[side] = Some((id, std::time::Instant::now()));
@@ -2189,7 +2924,7 @@ pub(crate) fn winui_text_box(
             pt.circle_filled(cx, 10.0, p.control_hover);
         }
         let g = 3.5;
-        let s = Stroke::new(1.5, p.text_secondary);
+        let s = theme::stroke(ui.ctx().pixels_per_point(), 1.5, p.text_secondary);
         pt.line_segment(
             [Pos2::new(cx.x - g, cx.y - g), Pos2::new(cx.x + g, cx.y + g)],
             s,
@@ -2225,7 +2960,10 @@ pub(crate) fn winui_text_box(
             .max_rect(text_r)
             .layout(Layout::top_down(Align::Min)),
     );
-    c.add_enabled(enabled, te);
+    let resp = c.add_enabled(enabled, te);
+    // 右键菜单（复制/剪切/粘贴/全选）：拿不到 CtxMenu 实例，走自动注册侧道
+    // （ctx_menu::frame_start 排空并入注册表，命中测试用上一帧 rect）。
+    super::ctx_menu::register_auto(resp.id, resp.interact_rect);
 }
 
 // ── 设置（920×640，侧栏 150 + 分区卡）───────────────────────
@@ -2237,7 +2975,9 @@ fn settings_dialog(
     p: &theme::Palette,
     win_drag: &mut Vec2,
 ) -> bool {
-    let Some(content) = shell(
+    // 唯一 bool 透传点：shell true = 存活且正文已绘（回写在 body 尾）、false = 已关。
+    // win_drag 仅 shell 标题栏拖动消费（面板偏移在卡片几何内闭环），body 不需要。
+    shell(
         ui,
         st,
         p,
@@ -2248,10 +2988,13 @@ fn settings_dialog(
         4.0,
         false,
         Some(win_drag),
-    ) else {
-        return false;
-    };
-    let th = ui.ctx().theme();
+        ShellOpts::default(),
+        |ui, content, st| settings_body(ui, st, p, content),
+    )
+}
+
+/// 设置面板正文（shell 回调，见 shell 文档①②③）。win_drag 由 shell 消费。
+fn settings_body(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette, content: Rect) {
     // C# SettingsPanel 主体 Grid Margin 5 已含在 shell 的 content 几何（与 HostPanel
     // 同构、无统一容器），body 不再二次缩边，左右子卡直接挂。
     let body = content;
@@ -2260,7 +3003,7 @@ fn settings_dialog(
     // SetCategoryState（SettingsPanel.xaml.cs）：选中 = nav_selected_bg 底 + tab_active_fg 字，
     // 不响应 hover；未选中 = nav_rest_bg 块底（亮主题透明）+ text_primary，按下走 pressed_bg。
     let nav = Rect::from_min_max(body.min, Pos2::new(body.left() + 150.0, body.bottom()));
-    ui.painter().rect_filled(nav, 6.0, card_bg(th));
+    ui.painter().rect_filled(nav, 6.0, p.card_bg);
     let mut y = nav.top() + 8.0;
     for (i, cat) in CATS.iter().enumerate() {
         let item = Rect::from_min_size(
@@ -2268,6 +3011,10 @@ fn settings_dialog(
             egui::vec2(nav.width() - 16.0, 35.0),
         );
         let resp = ui.allocate_rect(item, Sense::click());
+        // C3②（F-9）：打开首帧初焦点 → 第一项大类。
+        if st.dialog_fresh && i == 0 {
+            resp.request_focus();
+        }
         let active = i == st.settings.category;
         if active {
             ui.painter().rect_filled(item, 4.0, p.nav_selected_bg);
@@ -2281,11 +3028,20 @@ fn settings_dialog(
             };
             ui.painter().rect_filled(item, 4.0, bg);
         }
+        // C3④（F18/F-9）：键盘焦点框（nav 项命中面即焦点面）。
+        if resp.has_focus() {
+            ui.painter().rect_stroke(
+                item,
+                4.0,
+                theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+                egui::StrokeKind::Inside,
+            );
+        }
         ui.painter().text(
             Pos2::new(item.left() + 14.0, item.center().y),
             Align2::LEFT_CENTER,
             t(*cat),
-            FontId::proportional(13.0),
+            theme::font(theme::TextRole::Compact),
             if active {
                 p.tab_active_fg
             } else {
@@ -2300,7 +3056,7 @@ fn settings_dialog(
 
     // 右卡片：设置页（内容边距 20 / 滚动）。
     let page = Rect::from_min_max(Pos2::new(nav.right() + 5.0, body.top()), body.max);
-    ui.painter().rect_filled(page, 6.0, card_bg(th));
+    ui.painter().rect_filled(page, 6.0, p.card_bg);
     let mut page_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(page)
@@ -2339,13 +3095,12 @@ fn settings_dialog(
 
     // 弹窗开着每帧整包回写 store（内部比对置脏 → 500ms 防抖落盘）。
     st.settings.sync_to_store();
-    true
 }
 
 /// 页标题（C# 页首 TextBlock：FontSize 20 / SemiBold / Margin 0,0,0,12；
 /// brand 字族即注册的 Inter-SemiBold，行高按实测排版取值）。
 fn page_title(ui: &mut egui::Ui, title: &str, p: &theme::Palette) {
-    let font = FontId::new(20.0, FontFamily::Name("brand".into()));
+    let font = theme::font_page_title();
     let h = ui
         .painter()
         .layout_no_wrap(title.to_owned(), font.clone(), p.text_primary)
@@ -2389,7 +3144,7 @@ fn settings_card<T>(
         enabled,
         gap_after,
         indent,
-        FontId::proportional(13.0),
+        theme::font(theme::TextRole::Compact),
         ctrl,
     )
 }
@@ -2419,7 +3174,7 @@ fn settings_card_h<T>(
         enabled,
         gap_after,
         indent,
-        FontId::proportional(13.0),
+        theme::font(theme::TextRole::Compact),
         ctrl,
     )
 }
@@ -2461,9 +3216,10 @@ fn settings_card_fs<T>(
     )
 }
 
-/// settings_card 激活卡变体：`hint` = Some(是否成功) 时描述按 C# RegCodeHint
-/// 动态前景着色（成功绿 0x2E9960 / 失败红 0xE05353），None = 常规描述色（引导
-/// 文案）；控件字号 13（RegCodeBox / RegActivateBtn FontSize 13）。
+/// settings_card 激活卡变体：`hint` = Some(是否成功) 时描述前景着色（成功
+/// p.success_fg / 失败 p.critical，F-11 收编裸色；C# RegCodeHint 同语义），
+/// None = 常规描述色（引导文案）；控件字号 13 = Compact（RegCodeBox /
+/// RegActivateBtn FontSize 13）。
 #[expect(clippy::too_many_arguments)]
 fn settings_card_hint<T>(
     ui: &mut egui::Ui,
@@ -2475,10 +3231,11 @@ fn settings_card_hint<T>(
     ctrl_h: f32,
     ctrl: impl FnOnce(&mut egui::Ui, Rect) -> T,
 ) -> T {
+    let pc = theme::palette(ui.ctx());
     let desc_c = match hint {
-        Some(true) => Color32::from_rgb(0x2E, 0x99, 0x60),
-        Some(false) => Color32::from_rgb(0xE0, 0x53, 0x53),
-        None => theme::palette(ui.ctx()).text_secondary,
+        Some(true) => pc.success_fg,
+        Some(false) => pc.critical,
+        None => pc.text_secondary,
     };
     settings_card_body(
         ui,
@@ -2490,7 +3247,7 @@ fn settings_card_hint<T>(
         true,
         8.0,
         0.0,
-        FontId::proportional(13.0),
+        theme::font(theme::TextRole::Compact),
         desc_c,
         ctrl,
     )
@@ -2512,7 +3269,6 @@ fn settings_card_body<T>(
     desc_c: Color32,
     ctrl: impl FnOnce(&mut egui::Ui, Rect) -> T,
 ) -> T {
-    let t = ui.ctx().theme();
     let p = theme::palette(ui.ctx());
     // 卡体宽 = 行宽 - 缩进（子卡整卡缩进：容器左缘右移 indent、右缘与母卡对齐，
     // C# 子卡 Margin 24,0,0,0 语义）；卡内文字左 padding 固定 16。
@@ -2530,10 +3286,12 @@ fn settings_card_body<T>(
     let desc_galley = if desc.is_empty() {
         None
     } else {
-        Some(
-            ui.painter()
-                .layout(desc.to_owned(), FontId::proportional(11.0), desc_c, text_w),
-        )
+        Some(ui.painter().layout(
+            desc.to_owned(),
+            theme::font(theme::TextRole::Caption),
+            desc_c,
+            text_w,
+        ))
     };
     let desc_h = desc_galley.as_ref().map_or(0.0, |g| g.size().y);
     // 文本块 = 名称 +（7 间距 + 描述；2026-10-31 定案：大字小字上下间隔加大 5px，
@@ -2552,11 +3310,11 @@ fn settings_card_body<T>(
     } else {
         alloc
     };
-    ui.painter().rect_filled(rect, 4.0, card_bg(t));
+    ui.painter().rect_filled(rect, 4.0, p.card_bg);
     ui.painter().rect_stroke(
         rect,
         4.0,
-        Stroke::new(1.0, p.card_stroke),
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.card_stroke),
         egui::StrokeKind::Inside,
     );
     let name_c = if enabled {
@@ -2638,6 +3396,9 @@ pub(crate) fn winui_slider(
             Sense::hover()
         },
     );
+    // C4/C5（F-9/M-12 同款）：自绘无控件语义，补 widget_info（Slider 角色
+    // 携带当前值；行标签由调用处行文本承载）。
+    resp.widget_info(|| egui::WidgetInfo::slider(enabled, f64::from(*val), ""));
     // 拇指活动范围 = 轨道内缩半径 9（下同 thumb_x）：点击/拖动映射与显示一致。
     let span = (rect.width() - 18.0).max(1.0);
     if enabled
@@ -2724,7 +3485,7 @@ fn card_slider(
         Pos2::new(r.right(), r.center().y),
         Align2::RIGHT_CENTER,
         tfmt(suffix, &[&format!("{:.0}", *val)]),
-        FontId::proportional(13.0),
+        theme::font(theme::TextRole::Compact),
         p.text_primary,
     );
 }
@@ -2734,7 +3495,11 @@ fn card_slider(
 /// Tertiary，展开时描边换 text_primary 近似 FocusStrokeColorOuter）；展开浮层
 /// AcrylicInAppFillColorDefault 底 + SurfaceStrokeColorFlyout 描边（圆角 8），
 /// 条目高 40（ComboBoxItem 默认），悬停 / 选中 Subtle 系底色，文字左缩进 12
-/// （ComboBox Padding 12,4）。`fs` 为文字字号。
+/// （ComboBox Padding 12,4）。`fs` 为文字字号。`enabled=false` 禁用态（CR-5）：
+/// 仅 hover 命中不可点击、不展开浮层不写值（视觉禁用 = 实际禁用），配色
+/// ControlFillColorDisabled 底 + ControlStrokeColorDisabled 描边 +
+/// TextFillColorDisabled 文字。
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn card_combo(
     ui: &mut egui::Ui,
     r: Rect,
@@ -2743,17 +3508,37 @@ pub(crate) fn card_combo(
     options: &[&str],
     w: f32,
     fs: f32,
+    enabled: bool,
 ) {
     let ctx = ui.ctx().clone();
     let p = theme::palette(ui.ctx());
     let id = Id::unique(id_str);
     let open_id = id.with("open");
-    let open = ctx.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
+    // 禁用态无视持久展开态（浮层不展开、旗标不上报；再启用从收起态重开）。
+    let open = enabled && ctx.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
     let rect = Rect::from_center_size(r.center(), egui::vec2(w, 32.0));
     // 描边像素对齐（theme::snap_rect）：半像素坐标会让 1px 边线被抗锯齿摊薄。
     let rect = theme::snap_rect(rect, ctx.pixels_per_point());
-    let resp = ui.allocate_rect(rect, Sense::click());
-    let (bg, stroke_c) = if open || resp.is_pointer_button_down_on() {
+    let resp = ui.allocate_rect(
+        rect,
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    // C4/C5（F-9/M-12 同款）：自绘无控件语义，补 widget_info（ComboBox 角色，
+    // 标签 = 当前选中项文本；enabled 随禁用态如实上报）。
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::ComboBox,
+            enabled,
+            options.get(*val).copied().unwrap_or(""),
+        )
+    });
+    let (bg, stroke_c) = if !enabled {
+        (p.control_disabled, p.control_stroke_disabled)
+    } else if open || resp.is_pointer_button_down_on() {
         (p.control_pressed, p.text_primary)
     } else if resp.hovered() {
         (p.control_hover, p.control_stroke_default)
@@ -2762,8 +3547,9 @@ pub(crate) fn card_combo(
     };
     let pt = ui.painter_at(rect);
     pt.rect_filled(rect, theme::CONTROL_RADIUS, bg);
-    // 描边：展开/按下单色深线，静默/悬停走 elevation 渐变近似（顶淡底重）。
-    if open || resp.is_pointer_button_down_on() {
+    // 描边：展开/按下单色深线（禁用态 ControlStrokeColorDisabled 同走单色），
+    // 静默/悬停走 elevation 渐变近似（顶淡底重）。
+    if open || resp.is_pointer_button_down_on() || !enabled {
         pt.rect_stroke(
             rect,
             theme::CONTROL_RADIUS,
@@ -2779,25 +3565,52 @@ pub(crate) fn card_combo(
             p.control_stroke,
         );
     }
+    // C3④（F18/F-9）：键盘焦点框（触发行即焦点面，画在描边之后不被盖）。
+    if resp.has_focus() {
+        pt.rect_stroke(
+            rect,
+            theme::CONTROL_RADIUS,
+            theme::stroke(ctx.pixels_per_point(), 2.0, p.focus_stroke),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let txt_c = if enabled {
+        p.text_primary
+    } else {
+        p.text_disabled
+    };
     pt.text(
         Pos2::new(rect.left() + 12.0, rect.center().y),
         Align2::LEFT_CENTER,
         options.get(*val).copied().unwrap_or(""),
         FontId::proportional(fs),
-        p.text_primary,
+        txt_c,
     );
-    // 展开箭头（右缩进 17，两段 1.5px 线画 ˅）。
+    // 展开箭头（右缩进 17，两段 1.5px 线画 ˅；禁用随文字同灰）。
     let cx = rect.right() - 17.0;
     let cy = rect.center().y;
-    let ch = Stroke::new(1.5, p.text_secondary);
+    let ch = theme::stroke(
+        ui.ctx().pixels_per_point(),
+        1.5,
+        if enabled {
+            p.text_secondary
+        } else {
+            p.text_disabled
+        },
+    );
     pt.line_segment([Pos2::new(cx - 4.0, cy - 2.0), Pos2::new(cx, cy + 2.0)], ch);
     pt.line_segment([Pos2::new(cx, cy + 2.0), Pos2::new(cx + 4.0, cy - 2.0)], ch);
-    if resp.clicked() {
+    if enabled && resp.clicked() {
         ctx.data_mut(|d| d.insert_temp(open_id, !open));
     }
 
     let mut close = false;
     if open {
+        // C3①（F5/F-9）：展开态 Esc 先收组合（shell 入口见 COMBO_OPEN 旗标
+        // 让路，不再一击关掉整个弹窗）。
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            close = true;
+        }
         // 浮层：向下 4 间距，下方放不下翻上方（WinUI ComboBox 下拉方向逻辑）。
         let item_h = 40.0;
         let pop_h = options.len() as f32 * item_h + 2.0;
@@ -2829,7 +3642,7 @@ pub(crate) fn card_combo(
                 pt.rect_stroke(
                     pop_rect,
                     8.0,
-                    Stroke::new(1.0, p.combo_popup_stroke),
+                    theme::stroke(pt.ctx().pixels_per_point(), 1.0, p.combo_popup_stroke),
                     egui::StrokeKind::Outside,
                 );
                 for (i, label) in options.iter().enumerate() {
@@ -2872,14 +3685,21 @@ pub(crate) fn card_combo(
     if close {
         ctx.data_mut(|d| d.insert_temp(open_id, false));
     }
+    // C3①（F-9）：本帧终态仍展开 → 上报旗标（shell 入口每帧 swap 清底；
+    // store-only-true 防同帧多组合互踩，Esc/Enter 豁免据此放行）。
+    if open && !close {
+        COMBO_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 fn appearance_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     page_title(ui, t("外观"), p);
     let w = ui.max_rect().width();
 
-    // 主题：切换即时生效。
-    let dark_now = st.settings.theme_dark;
+    // 主题：切换即时生效。下拉三项 = 跟随系统 / 深色 / 浅色（store "" = 跟随，
+    // F-6 与描述「界面配色跟随系统，或手动指定深浅」对齐）；选「跟随系统」
+    // 当场按系统偏好应用，落盘 ""（重启经 startup_theme_dark/resolve_dark 再解析）。
+    let picked_now = st.settings.theme_picked;
     let picked = settings_card(
         ui,
         w,
@@ -2890,32 +3710,36 @@ fn appearance_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         8.0,
         0.0,
         |c, r| {
-            // 下标映射：0=深色 1=浅色。原写法 usize::from(dark_now) 颠倒，
-            // 弹窗一打开就判定"要翻主题"逐帧 install → 屏幕狂闪。
-            let mut i = usize::from(!dark_now);
+            let mut i = picked_now;
             card_combo(
                 c,
                 r,
                 "set-theme",
                 &mut i,
-                &[t("深色"), t("浅色")],
+                &[t("跟随系统"), t("深色"), t("浅色")],
                 150.0,
-                13.0,
+                theme::role_size(theme::TextRole::Compact),
+                true,
             );
             i
         },
     );
-    let want_dark = picked == 0;
-    if want_dark != dark_now {
-        st.settings.theme_dark = want_dark;
-        crate::theme::install(
-            ui.ctx(),
-            if want_dark {
-                egui::Theme::Dark
-            } else {
-                egui::Theme::Light
-            },
-        );
+    if picked != picked_now {
+        // 动过下拉才允许整包回写（T19-1：未动时快照原样，"" 不被抹掉）。
+        st.settings.theme_touched = true;
+        st.settings.theme_picked = picked;
+        let theme = match picked {
+            0 => {
+                if crate::theme::system_prefers_light() {
+                    egui::Theme::Light
+                } else {
+                    egui::Theme::Dark
+                }
+            }
+            1 => egui::Theme::Dark,
+            _ => egui::Theme::Light,
+        };
+        crate::theme::install(ui.ctx(), theme);
     }
 
     // 语言。
@@ -2938,7 +3762,8 @@ fn appearance_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 &mut i,
                 &[t("中文"), t("English")],
                 150.0,
-                13.0,
+                theme::role_size(theme::TextRole::Compact),
+                true,
             );
             i
         },
@@ -3017,7 +3842,8 @@ fn connection_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 &mut i,
                 &[t("每次询问"), t("总是当前标签页"), t("总是新标签页")],
                 150.0,
-                13.0,
+                theme::role_size(theme::TextRole::Compact),
+                true,
             );
             i
         },
@@ -3167,7 +3993,14 @@ fn file_edit_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                     Pos2::new(r.left(), top + i as f32 * 32.0),
                     egui::vec2(r.width(), 32.0),
                 );
-                if radio(c, rr, sel == i, label, 13.0, &pc) {
+                if radio(
+                    c,
+                    rr,
+                    sel == i,
+                    label,
+                    theme::font(theme::TextRole::Compact),
+                    &pc,
+                ) {
                     sel = i;
                 }
             }
@@ -3180,21 +4013,20 @@ fn file_edit_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         ui,
         w,
         t("编辑器路径"),
-        t("选择外部编辑器的可执行文件（如 notepad++、VS Code）。路径留空时回退使用内置编辑器。"),
+        t("外部编辑器可执行文件（如 notepad++、VS Code）；留空使用内置编辑器。"),
         300.0,
         !builtin,
         8.0,
         24.0,
         |c, r| {
             let pc = theme::palette(c.ctx());
-            c.style_mut()
-                .text_styles
-                .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+            // 控件字号 13（TextBox / 浏览钮 FontSize 13）= 具名 Compact：
+            // TextEdit 与量宽同源，不再局部覆盖全局 Body=14（text_styles.insert 归零）。
             let bw = c
                 .painter()
                 .layout_no_wrap(
                     t("浏览…").to_owned(),
-                    FontId::proportional(13.0),
+                    theme::font(theme::TextRole::Compact),
                     pc.text_primary,
                 )
                 .size()
@@ -3205,16 +4037,25 @@ fn file_edit_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 Pos2::new(r.right() - total, r.center().y - 16.0),
                 egui::vec2(220.0, 32.0),
             );
-            let te = egui::TextEdit::singleline(&mut s.editor_path).font(egui::TextStyle::Body);
-            c.put(box_r, te);
+            let te = egui::TextEdit::singleline(&mut s.editor_path)
+                .font(theme::font(theme::TextRole::Compact));
+            let te_resp = c.put(box_r, te);
+            // 右键菜单（复制/剪切/粘贴/全选）：自动注册侧道。
+            super::ctx_menu::register_auto(te_resp.id, te_resp.interact_rect);
             let btn_r = Rect::from_min_size(
                 Pos2::new(box_r.right() + 6.0, r.center().y - 16.0),
                 egui::vec2(bw, 32.0),
             );
             // C# EditorBrowseBtn_Click：FileOpenPicker 仅 .exe 过滤，选中即填入
             // 路径框（TextChanged 即时落盘；此处 sync_to_store 每帧回写等价）。
-            if std_button_fs(c, btn_r, t("浏览…"), pc.text_primary, &pc, 13.0)
-                && let Some(path) = pick_exe_file()
+            if std_button_fs(
+                c,
+                btn_r,
+                t("浏览…"),
+                pc.text_primary,
+                &pc,
+                theme::font(theme::TextRole::Compact),
+            ) && let Some(path) = pick_exe_file()
             {
                 s.editor_path = path;
             }
@@ -3233,14 +4074,15 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 
     // 卡组顺序对齐 C# SettingsPanel.xaml 传输页：并发 → 远程删除 →
     // 组[断点续传+续传阈值] → 组[传输后校验+校验算法] → 组[tar加速+tar阈值]；
-    // （C# 的「保留修改时间」卡已摘除：Rust 未实现，见下方注释与 README 能力矩阵）
+    // （「保留修改时间」卡 C# 已摘除，Rust 按实现保留：transfer.rs 结算点
+    // SETSTAT/filetime + tar 头天然保留）
     // 母卡 gap 1（卡组 StackPanel Spacing 1）+ 子卡 indent 24（Margin 24,0,0,0），组尾 gap 8。
     settings_card(
         ui,
         w,
         t("并发传输数"),
         t(
-            "同时进行的传输任务数。1 = 串行并复用当前连接；大于 1 时每个任务使用独立连接，多文件传输更快，部分服务器可能限制连接数。",
+            "传输一律使用独立连接：1 = 单连接串行，大于 1 时多连接并发，多文件传输更快；部分服务器可能限制连接数。",
         ),
         186.0,
         true,
@@ -3250,10 +4092,10 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     );
     let del_desc = if s.del_server_cmd {
         t(
-            "删除远程目录时优先使用服务端命令（rm -rf，海量文件秒级）；命令通道不可用或未能删净时自动回退 SFTP 递归。",
+            "优先用服务端命令 rm -rf 删除远程目录（海量文件秒级）；命令通道不可用或未能删净时回退 SFTP 递归。",
         )
     } else {
-        t("不使用服务端命令，通过 SFTP 协议逐条递归删除，兼容所有服务器；大目录耗时较长。")
+        t("通过 SFTP 协议逐条递归删除，兼容所有服务器；大目录耗时较长。")
     };
     settings_card(
         ui,
@@ -3273,7 +4115,7 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         w,
         t("断点续传"),
         t(
-            "开启后，大文件传输中断可从断点续传：目标小于源时追加，大小相等或目标更大一律全量重传。同名旧文件会先弹窗确认，选择\"覆盖\"即全量重传，不会误追加。适合大文件经不稳定链路传输，默认开启。",
+            "中断后从断点继续：目标小于源时追加，否则全量重传；同名旧文件先弹窗确认，不会误追加。默认开启。",
         ),
         46.0,
         true,
@@ -3312,7 +4154,7 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         w,
         t("传输后校验"),
         t(
-            "传输完成后自动比对本地与远端文件杂凑（经 exec 通道，不占传输链路），不一致的任务标记失败，尽早暴露损坏文件；命令通道不可用时跳过校验，不影响传输结果。默认关闭。",
+            "完成后经 exec 通道比对本地与远端文件杂凑，不一致的任务标记失败；命令通道不可用时跳过校验，不影响传输结果。默认关闭。",
         ),
         46.0,
         true,
@@ -3324,13 +4166,14 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         ui,
         w,
         t("校验算法"),
-        t("自动：按服务端支持情况选最强算法（SHA256 → SHA512 → SM3）；固定算法不可用时校验跳过"),
+        t("自动：按可用性顺位选用（SHA256 → SHA512 → SM3）；固定算法不可用时校验跳过"),
         110.0,
         verify_on,
         8.0,
         24.0,
         |c, r| {
             let mut i = verify_algo;
+            // CR-5：enabled 随「传输后校验」开关（verify=false 禁用下拉，防改值落盘）。
             card_combo(
                 c,
                 r,
@@ -3338,17 +4181,30 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 &mut i,
                 &[t("自动"), "SHA-256", "SHA-512", "SM3"],
                 110.0,
-                13.0,
+                theme::role_size(theme::TextRole::Compact),
+                verify_on,
             );
             i
         },
     );
     s.verify_algo = picked;
 
-    // 保留修改时间（C# 位于校验组与 tar 组之间）。
-    // T6 摘除：Rust 版逐文件传输未实现 mtime 保留（需 filetime，R5 未批准），
-    // 开关挂着不生效属于「文案承诺了代码没做的事」；tar 模式天然保留 mtime
-    // 不受影响。字段与存档键保留（C# 存档互读），见 README 能力矩阵。
+    // 保留修改时间（C# 位于校验组与 tar 组之间；上传远端 SETSTAT mtime /
+    // 下载本地 filetime 设 mtime，见 transfer.rs 结算点。F-6 起说明为 Rust
+    // 精简版，有意不逐字对齐 C# PreserveMtimeHint，分叉记录见 MIGRATION §3.3）。
+    settings_card(
+        ui,
+        w,
+        t("传输后保留修改时间"),
+        t(
+            "传输成功时把源文件的修改时间同步到目标侧（tar 路径经 tar 头天然保留）；仅同步文件，目录不做；失败只记日志。默认开启。",
+        ),
+        46.0,
+        true,
+        8.0,
+        0.0,
+        |c, r| card_toggle(c, r, true, &mut s.preserve_mtime),
+    );
 
     // tar 打包加速母子组。
     settings_card(
@@ -3356,7 +4212,7 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         w,
         t("tar 打包加速"),
         t(
-            "目录传输文件数较多时用单流打包替代逐文件往返（海量小文件数量级提速）；本地或服务端没有 tar、命令失败时自动回退逐文件，结果不变。tar 模式为整目录单任务，失败只能整体重试。",
+            "目录文件数达到阈值时用单流打包替代逐文件往返（海量小文件数量级提速）；远端 tar+gzip 不可用或本地扫描失败时回退逐文件传输，开始传输后失败只能整体重试。",
         ),
         46.0,
         true,
@@ -3369,7 +4225,7 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         w,
         t("tar 文件数阈值"),
         t("目录内文件数达到该值才改用单流打包，少量文件逐文件直传更快"),
-        // 同续传阈值：预算按最宽值文字 "10000 KB" 计。
+        // 同续传阈值布局；值文字为文件数（无单位，最宽 "10000"）。
         210.0,
         tar_on,
         8.0,
@@ -3382,7 +4238,7 @@ fn transfer_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 10.0,
                 10000.0,
                 10.0,
-                "{0} KB",
+                "{0}",
                 tar_on,
             )
         },
@@ -3468,10 +4324,10 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 
     // 激活卡：右列两行（Spacing 8）= 码框 250 + 激活钮 / 购买双渠道钮行
     // （C# RegBuyCnBtn/RegBuyIntlBtn URL 非空才显示；点击经 UrlGuard 白名单启动）。
-    let f13 = FontId::proportional(13.0);
+    let ctrl_font = theme::font(theme::TextRole::Compact);
     let act_bw = ui
         .painter()
-        .layout_no_wrap(t("激活").to_owned(), f13.clone(), Color32::WHITE)
+        .layout_no_wrap(t("激活").to_owned(), ctrl_font.clone(), Color32::WHITE)
         .size()
         .x
         + 24.0; // Padding 12,5 左右
@@ -3481,7 +4337,7 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         ui.painter()
             .layout_no_wrap(
                 t("购买注册码 (爱发电)").to_owned(),
-                f13.clone(),
+                ctrl_font.clone(),
                 Color32::WHITE,
             )
             .size()
@@ -3494,7 +4350,7 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         ui.painter()
             .layout_no_wrap(
                 t("Get License (Ko-fi)").to_owned(),
-                f13.clone(),
+                ctrl_font.clone(),
                 Color32::WHITE,
             )
             .size()
@@ -3523,10 +4379,8 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         ctrl_w,
         32.0 + 8.0 + 32.0,
         |c, r| {
-            // 控件字号 13（RegCodeBox / RegActivateBtn FontSize 13）。
-            c.style_mut()
-                .text_styles
-                .insert(egui::TextStyle::Body, FontId::proportional(13.0));
+            // 控件字号 13（RegCodeBox / RegActivateBtn FontSize 13）= 具名
+            // Compact：TextEdit 显式 font(Compact)，全局 Body=14 不被覆盖。
             // 右列垂直居中（C# StackPanel VerticalAlignment=Center，两行共 72）。
             let row_top = r.center().y - 36.0;
             let box_r = Rect::from_min_size(
@@ -3534,16 +4388,25 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 egui::vec2(250.0, 32.0),
             );
             let te = egui::TextEdit::singleline(&mut st.settings.reg_code)
-                .font(egui::TextStyle::Body)
+                .font(theme::font(theme::TextRole::Compact))
                 .desired_width(250.0);
-            c.put(box_r, te);
+            let te_resp = c.put(box_r, te);
+            // 右键菜单（复制/剪切/粘贴/全选）：自动注册侧道。
+            super::ctx_menu::register_auto(te_resp.id, te_resp.interact_rect);
             let btn_r = Rect::from_min_size(
                 Pos2::new(box_r.right() + 8.0, row_top),
                 egui::vec2(act_bw, 32.0),
             );
             // C# RegActivateBtn_Click：err = Activate(...)；hint = err ?? 激活成功，
             // 成功绿 / 失败红；输入框不清空（C# RegCodeBox.Text 无清空）。
-            if std_button_fs(c, btn_r, t("激活"), p.text_primary, p, 13.0) {
+            if std_button_fs(
+                c,
+                btn_r,
+                t("激活"),
+                p.text_primary,
+                p,
+                theme::font(theme::TextRole::Compact),
+            ) {
                 st.settings.reg_hint = Some(
                     match crate::registration::service::global().activate(&st.settings.reg_code) {
                         crate::registration::service::ActivateResult::Success(_) => {
@@ -3595,7 +4458,7 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                         t("Get License (Ko-fi)"),
                         p.text_primary,
                         p,
-                        13.0,
+                        theme::font(theme::TextRole::Compact),
                     ) {
                         crate::registration::guard::launch_url(&s.purchase_intl);
                     }
@@ -3609,7 +4472,7 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                         t("购买注册码 (爱发电)"),
                         p.text_primary,
                         p,
-                        13.0,
+                        theme::font(theme::TextRole::Compact),
                     ) {
                         crate::registration::guard::launch_url(&s.purchase_cn);
                     }
@@ -3638,7 +4501,7 @@ fn registration_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 fn badge_pill_w(ui: &egui::Ui, text: &str) -> f32 {
     let tw = ui
         .painter()
-        .layout_no_wrap(text.to_owned(), FontId::proportional(12.0), Color32::WHITE)
+        .layout_no_wrap(text.to_owned(), theme::font_small(), theme::MEASURE_ONLY)
         .size()
         .x;
     12.0 + 13.0 + 6.0 + tw + 12.0
@@ -3648,7 +4511,7 @@ fn badge_pill_w(ui: &egui::Ui, text: &str) -> f32 {
 /// 内金色 #D4A017 图标 + 文字 12；C# E734 徽章星形 icons-src 无对应资产 → 文本 ★
 /// 近似）。右贴齐控件区右缘，垂直居中 32 高。
 fn badge_pill(ui: &mut egui::Ui, r: Rect, text: &str) {
-    let gold = Color32::from_rgb(0xD4, 0xA0, 0x17);
+    let gold = theme::WARNING;
     let pill_w = badge_pill_w(ui, text);
     let pill = Rect::from_min_size(
         Pos2::new(r.right() - pill_w, r.center().y - 16.0),
@@ -3656,34 +4519,34 @@ fn badge_pill(ui: &mut egui::Ui, r: Rect, text: &str) {
     );
     ui.painter().rect_filled(
         pill,
-        12.0,
+        theme::PILL_RADIUS,
         Color32::from_rgba_unmultiplied(0xD4, 0xA0, 0x17, 0x26),
     );
     ui.painter().rect_stroke(
         pill,
-        12.0,
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xD4, 0xA0, 0x17, 0x66)),
+        theme::PILL_RADIUS,
+        theme::stroke(ui.ctx().pixels_per_point(), 1.0, theme::warning_border()),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
         Pos2::new(pill.left() + 12.0 + 6.5, pill.center().y),
         Align2::CENTER_CENTER,
         "★",
-        FontId::proportional(13.0),
+        theme::font(theme::TextRole::Compact),
         gold,
     );
     ui.painter().text(
         Pos2::new(pill.left() + 12.0 + 13.0 + 6.0, pill.center().y),
         Align2::LEFT_CENTER,
         text,
-        FontId::proportional(12.0),
+        theme::font_small(),
         gold,
     );
 }
 
 /// 超链接按钮镜像（C# HyperlinkButton：FontSize 13 / accent 前景 / hover 下划线，新标签页打开）。
 fn card_link(ui: &mut egui::Ui, r: Rect, label: &str, url: &str, p: &theme::Palette) {
-    let font = FontId::proportional(13.0);
+    let font = theme::font(theme::TextRole::Compact);
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), font.clone(), p.accent);
@@ -3697,7 +4560,7 @@ fn card_link(ui: &mut egui::Ui, r: Rect, label: &str, url: &str, p: &theme::Pale
     );
     let resp = ui.allocate_rect(rect, Sense::click());
     if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        cursor_intent(ui.ctx(), CursorLayer::Hover, egui::CursorIcon::PointingHand);
     }
     ui.painter().text(
         Pos2::new(rect.left(), rect.center().y),
@@ -3711,7 +4574,7 @@ fn card_link(ui: &mut egui::Ui, r: Rect, label: &str, url: &str, p: &theme::Pale
         let y = rect.bottom() + 1.0;
         ui.painter().line_segment(
             [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            Stroke::new(1.0, p.accent),
+            theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.accent),
         );
     }
     if resp.clicked() {
@@ -3735,7 +4598,7 @@ fn about_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         true,
         8.0,
         0.0,
-        FontId::new(13.0, FontFamily::Name("brand".into())),
+        theme::font_brand_compact(),
         |c, r| card_link(c, r, t("访问官网"), "https://ifrees.top", p),
     );
     // 发布渠道卡：右「GitHub」链接。
@@ -3765,12 +4628,23 @@ fn about_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         8.0,
         0.0,
         |c, r| {
-            // 检查更新钮（FontSize 13，宽 74 预算 = 文字 + Padding；检查中禁用）。
+            // 检查更新钮（FontSize 13 = Compact；宽度经 btn_w 与 std_button_en
+            // 绘制同源量出，英文 "Check for updates" 自动撑宽不再溢出；检查中
+            // 禁用）。右缘恒 -58：与右邻开关（宽 46 / 中心 -23）保持 12 间距。
+            let upd_w = btn_w(c, t("检查更新"), &theme::font(theme::TextRole::Compact));
             let btn_r = Rect::from_min_size(
-                Pos2::new(r.right() - 132.0, r.center().y - 16.0),
-                egui::vec2(74.0, 32.0),
+                Pos2::new(r.right() - 58.0 - upd_w, r.center().y - 16.0),
+                egui::vec2(upd_w, 32.0),
             );
-            if std_button_en(c, btn_r, t("检查更新"), p.text_primary, p, 13.0, !checking) {
+            if std_button_en(
+                c,
+                btn_r,
+                t("检查更新"),
+                p.text_primary,
+                p,
+                theme::font(theme::TextRole::Compact),
+                !checking,
+            ) {
                 // C# UpdateCheckBtn_Click：置检查中 → 强刷远程；结果文案由
                 // RemoteRefreshDone 事件回填（ui::root 事件消费块）。
                 st.settings.update_checking = true;
@@ -3807,9 +4681,7 @@ fn about_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         ui,
         w,
         t("支持开发"),
-        t(
-            "iFreeSftp 永久免费。如果它对你有帮助，欢迎注册成为支持者——这是对开发的支持，不与任何功能绑定。",
-        ),
+        t("如果它对你有帮助，欢迎注册成为支持者——这是对开发的支持，不与任何功能绑定。"),
         0.0,
         true,
         8.0,
@@ -3831,24 +4703,54 @@ fn about_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 }
 
 // ── 右键菜单（宽 200）───────────────────────────────────────
+/// 批量队列菜单六项显隐规则（C# QueueContainer.xaml.cs:148-155 逐条翻译；
+/// 照 transfer/tar.rs gate_open 纯函数范式，渲染只消费结果）。
+/// 返回位序：[暂停, 继续传输, 停止, 清除已完成, 清除所有, 重置并重新请求所有]。
+/// 计数为各状态实数（非 any 布尔）；清除所有 = 队列非空即显（C# total 口径）；
+/// total==0 六位全 false → 调用侧 items 为空，菜单层置 None 不弹。
+fn batch_menu_rules(
+    paused: bool,
+    waiting: i64,
+    transferring: i64,
+    done: i64,
+    failed: i64,
+    cancelled: i64,
+) -> [bool; 6] {
+    let finished = done + failed + cancelled > 0;
+    [
+        !paused && transferring > 0, // 暂停：有传输中且未暂停
+        paused,                      // 继续传输：暂停中
+        waiting + transferring > 0,  // 停止：有等待或传输中
+        finished,                    // 清除已完成：有已完结
+        // 清除所有：队列非空即显（五态计数和 = 队列规模）。
+        waiting + transferring + done + failed + cancelled > 0,
+        // 重置并重新请求所有：静止（无等待/传输中）且有已完结。
+        waiting + transferring == 0 && finished,
+    ]
+}
+
 fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     let Some(m) = st.menu.as_ref() else {
         return;
     };
-    // 菜单打开期间同样清一次光标（同 shell：被菜单遮住的窗格层控件 hover 泄漏）。
-    ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+    // 菜单打开期间以 Dialog 层压住遮罩下控件的 hover 意图（原做法是抢一次
+    // set_cursor_icon，会被帧尾 edge_resize 反转；现由帧尾统一裁决）。
+    cursor_intent(ui.ctx(), CursorLayer::Dialog, egui::CursorIcon::Default);
     let pos = m.pos;
     let pane = m.pane;
     let row = m.row;
     let queue = m.queue;
     let term_menu = m.terminal;
+    let cols_menu = m.cols;
     let ppp = ui.ctx().pixels_per_point();
 
     // 菜单模型：行菜单（本地/远程两套）/ 空白区菜单 / 队列菜单（C# BuildItemMenu / BuildBlankMenu）/
-    // 终端菜单（C# TerminalMenuFlyout）。
+    // 终端菜单（C# TerminalMenuFlyout）/ 列显隐菜单（T20-1 表头右键）。
     enum Item {
         /// 文本, 可用, 危险红。
         Label(&'static str, bool, bool),
+        /// 勾选型（T20-1，C# ToggleMenuFlyoutItem）：键, 可用, 勾选中。
+        Toggle(&'static str, bool, bool),
         Sep,
     }
     let items: Vec<Item> = if term_menu {
@@ -3860,44 +4762,54 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     } else if let Some(qm) = queue {
         match qm {
             QueueMenu::Batch => {
-                // C# Root_RightTapped 弹出规则：传输中=暂停+停止+清除 / 暂停中=继续+停止+清除 /
-                // 静止且有已完结=清除+重试全部。
-                let (transferring, finished) = match &st.transfer {
-                    Some(q) => (
-                        q.with_items(|items| {
-                            items
-                                .iter()
-                                .any(|i| matches!(i.status, crate::transfer::Status::Transferring))
-                        }),
-                        q.with_items(|items| {
-                            items.iter().any(|i| {
-                                matches!(
-                                    i.status,
-                                    crate::transfer::Status::Done
-                                        | crate::transfer::Status::Failed
-                                        | crate::transfer::Status::Cancelled
-                                )
-                            })
-                        }),
-                    ),
-                    None => (false, false),
+                // C# Root_RightTapped：六项按各自条件独立显隐（C#
+                // QueueContainer.xaml.cs:148-155 逐条翻译，规则集中在
+                // batch_menu_rules）。计数从 any(...) 布尔改各状态实数——原三分支
+                // 互斥会丢「只有等待 → 停止+清除所有」边角、且等待未静止时误出
+                // 「重置并重新请求所有」。total==0 → 六位全 false → items 空 →
+                // 菜单层置 None 不弹。
+                let (paused, waiting, transferring, done, failed, cancelled) = match &st.transfer {
+                    Some(q) => {
+                        let (w, x, d, f, c) = q.with_items(|items| {
+                            let (mut w, mut x, mut d, mut f, mut c) =
+                                (0i64, 0i64, 0i64, 0i64, 0i64);
+                            for i in items {
+                                match i.status {
+                                    crate::transfer::Status::Waiting => w += 1,
+                                    // 校验中计入传输中（C# TransferQueueService.cs:695
+                                    // Transferring or Verifying）：否则校验期间菜单缺
+                                    // 暂停/停止入口。扫描中同口径（T20-2：扫描期
+                                    // 亦需暂停/停止入口可用）。
+                                    crate::transfer::Status::Transferring
+                                    | crate::transfer::Status::Verifying
+                                    | crate::transfer::Status::Scanning => x += 1,
+                                    crate::transfer::Status::Done => d += 1,
+                                    crate::transfer::Status::Failed => f += 1,
+                                    crate::transfer::Status::Cancelled => c += 1,
+                                }
+                            }
+                            (w, x, d, f, c)
+                        });
+                        (q.paused(), w, x, d, f, c)
+                    }
+                    None => (false, 0, 0, 0, 0, 0),
                 };
-                let paused = st.transfer.as_ref().map(|q| q.paused()) == Some(true);
+                let rules =
+                    batch_menu_rules(paused, waiting, transferring, done, failed, cancelled);
+                // 位序与 batch_menu_rules 返回值一致；六项文案均在 i18n 表内。
+                const LABELS: [&str; 6] = [
+                    "暂停",
+                    "继续传输",
+                    "停止",
+                    "清除已完成",
+                    "清除所有",
+                    "重置并重新请求所有",
+                ];
                 let mut v = vec![];
-                if transferring && !paused {
-                    v.push(Item::Label("暂停", true, false));
-                    v.push(Item::Label("停止", true, false));
-                    v.push(Item::Label("清除已完成", true, false));
-                    v.push(Item::Label("清除所有", true, false));
-                } else if paused {
-                    v.push(Item::Label("继续传输", true, false));
-                    v.push(Item::Label("停止", true, false));
-                    v.push(Item::Label("清除已完成", true, false));
-                    v.push(Item::Label("清除所有", true, false));
-                } else if finished {
-                    v.push(Item::Label("清除已完成", true, false));
-                    v.push(Item::Label("清除所有", true, false));
-                    v.push(Item::Label("重置并重新请求所有", true, false));
+                for (label, on) in LABELS.into_iter().zip(rules) {
+                    if on {
+                        v.push(Item::Label(label, true, false));
+                    }
                 }
                 v
             }
@@ -3915,6 +4827,7 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                                 i.status,
                                 crate::transfer::Status::Waiting
                                     | crate::transfer::Status::Transferring
+                                    | crate::transfer::Status::Scanning
                             ),
                             matches!(
                                 i.status,
@@ -3934,18 +4847,35 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 if can_retry {
                     v.push(Item::Label("重试", true, false));
                     // 重连目标 = 任务涉及远端侧中**已断开**的会话（任一断开即可点；
-                    // 实际重建见命令区遍历）。
-                    let can_reconnect = remote
-                        && st
-                            .remotes
-                            .iter()
-                            .any(|rs| rs.sessions.iter().any(|s| !s.ssh.is_connected()));
-                    v.push(Item::Label("重连", can_reconnect, false));
+                    // 实际重建见命令区遍历）。S-8：在途显示「正在重连…」置灰
+                    // （C# RowReconnectItem 等待态同位），Ev 回账归零后恢复。
+                    if st.reconnecting > 0 {
+                        v.push(Item::Label("正在重连…", false, false));
+                    } else {
+                        let can_reconnect = remote
+                            && st
+                                .remotes
+                                .iter()
+                                .any(|rs| rs.sessions.iter().any(|s| !s.ssh.is_connected()));
+                        v.push(Item::Label("重连", can_reconnect, false));
+                    }
                 }
                 v.push(Item::Label("移除", true, false));
                 v
             }
         }
+    } else if cols_menu {
+        // 列显隐菜单（T20-1，C# FileView.xaml:359-367 四 ToggleMenuFlyoutItem）：
+        // 勾选型四项；权限项仅远程模式可用（本地由 Mode 整列隐藏，C# :367
+        // IsEnabled="False" 同口径）。键复用表头 i18n（零新键，判据⑥）。
+        let vis = super::panes::col_vis();
+        let remote = menu_side(st, pane).is_some();
+        vec![
+            Item::Toggle("大小", true, vis.size),
+            Item::Toggle("类型", true, vis.ty),
+            Item::Toggle("修改时间", true, vis.modified),
+            Item::Toggle("权限", remote, vis.perms),
+        ]
     } else {
         match row {
             Some(_) => {
@@ -4029,21 +4959,33 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 }
             }
             None => {
-                // 空白区菜单（C# BuildBlankMenu）：本地/远程同一份四项——新建文件夹 /
-                // 新建文件 / ─ / 刷新；启用 = 远程该侧已连（IsConnected）/ 本地当前
-                // 路径非空（_currentPath.Length>0）。C# 无「断开」项。
+                // 空白区菜单（C# BuildBlankMenu 四项：新建文件夹 / 新建文件 / ─ /
+                // 刷新，启用 = 远程该侧已连 / 本地当前路径非空）。Rust 有意差异
+                // （T20-G④ 取证补能力）：右键内容跟随远程状态——远程侧尾部追加
+                // 「断开」（会话在池时显示）。C# 无显式断开入口，会话只在关 tab /
+                // 重连时隐式出池；工单④需要在 tab 保持打开的前提下断开会话验证
+                // DragOver 判定门。
                 let p = pane_view(st, pane);
+                let side = menu_side(st, pane);
                 // 新建可用 = 本地有路径 / 远程已浏览到目录（与工具栏 can_new 同口径）。
-                let can_new = match menu_side(st, pane) {
-                    Some(side) => super::pane_view(st, side).remote_path.is_some(),
+                let can_new = match side {
+                    Some(s) => super::pane_view(st, s).remote_path.is_some(),
                     None => p.path.is_some(),
                 };
-                vec![
+                let mut items = vec![
                     Item::Label("新建文件夹", can_new, false),
                     Item::Label("新建文件", can_new, false),
                     Item::Sep,
                     Item::Label("刷新", true, false),
-                ]
+                ];
+                // 远程侧且该 tab 会话在池 → 追加「断开」。
+                if let Some(s) = side
+                    && super::active_remote_session(st, s).is_some()
+                {
+                    items.push(Item::Sep);
+                    items.push(Item::Label("断开", true, false));
+                }
+                items
             }
         }
     };
@@ -4069,16 +5011,19 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     };
     let rect = Rect::from_min_size(Pos2::new(x, y), egui::vec2(MENU_W, h));
 
-    // 轻量关闭：菜单外任何点击（遮罩先挂，菜单体后挂于其上）。
-    let catcher = ui.allocate_rect(full, Sense::click());
-    if catcher.clicked() {
-        st.menu = None;
-        return;
-    }
+    // 菜单体感应面：兜住体上一切点击（含项间空隙与内边距），防穿透到下层控件；
+    // 体上点击不关菜单（C# MenuFlyout 体上不 dismiss）。「体外按下即关」已上移到
+    // root() 帧首（关在窗格绘制之前，抬起照常落到下层控件，右键同势关旧开新）。
+    // 这里不再挂全窗 catcher——全窗 catcher 在覆盖层最后注册，吞掉一切点击且只认
+    // 左键（clicked()），右键被静默吞掉：菜单开着时必须先关才能再右键，即
+    // 「右键很涩」的根因。
+    ui.allocate_rect(rect, Sense::click());
     if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
         st.menu = None;
         return;
     }
+    // 本帧菜单体 rect 回写（root() 下一帧帧首「体外按下即关」判定用）。
+    st.menu_rect = Some(rect);
 
     // 菜单体：软投影 + 不透明底 + 描边（底 = PaneMenuPresenterStyle 覆写的不透明色，
     // 描边 = SurfaceStrokeColorFlyout，1px 对齐设备像素）。
@@ -4136,7 +5081,46 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                     Pos2::new(r.left() + 11.0, r.center().y - 0.5),
                     Align2::LEFT_CENTER,
                     t(*label),
-                    FontId::proportional(14.0),
+                    theme::font_body(),
+                    fg,
+                );
+                if *enabled && resp.clicked() {
+                    action = Some(label);
+                }
+                iy += MENU_ITEM_H;
+            }
+            Item::Toggle(label, enabled, checked) => {
+                let r = Rect::from_min_size(
+                    Pos2::new(rect.left() + 4.0, iy),
+                    egui::vec2(MENU_W - 8.0, MENU_ITEM_H),
+                );
+                let resp = ui.allocate_rect(r, Sense::click());
+                if *enabled && resp.is_pointer_button_down_on() {
+                    ui.painter().rect_filled(r, 4.0, p.row_pressed);
+                } else if *enabled && resp.hovered() {
+                    ui.painter().rect_filled(r, 4.0, p.row_hover);
+                }
+                let fg = if *enabled {
+                    p.text_primary
+                } else {
+                    p.text_disabled
+                };
+                // WinUI ToggleMenuFlyoutItem：勾选字形列在文字左侧（选中画 ✓ 强调
+                // 色，未选中留空占位对齐），文字列随字形列整体右移。
+                if *checked {
+                    ui.painter().text(
+                        Pos2::new(r.left() + 11.0 + 4.0, r.center().y - 0.5),
+                        Align2::LEFT_CENTER,
+                        "✓",
+                        theme::font_body(),
+                        p.accent,
+                    );
+                }
+                ui.painter().text(
+                    Pos2::new(r.left() + 11.0 + 18.0, r.center().y - 0.5),
+                    Align2::LEFT_CENTER,
+                    t(*label),
+                    theme::font_body(),
                     fg,
                 );
                 if *enabled && resp.clicked() {
@@ -4154,6 +5138,12 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         // pane 的动作要下一帧才可见 —— egui 无事件不重绘，必须主动约一帧，
         // 否则画面停在旧列表直到下一次鼠标事件（「刷新不起作用」断档根因）。
         ui.ctx().request_repaint();
+        // 列显隐菜单（T20-1）：翻转全局 ColVisibility（WinUI ToggleMenuFlyoutItem
+        // 点击即关 flyout 同势）；落盘随每帧变更检测走 window.ini 0.3s 节流。
+        if cols_menu {
+            super::panes::toggle_col(label);
+            return;
+        }
         // 终端菜单（C# ClearAll_Click / CopyAll_Click）。
         if term_menu {
             match label {
@@ -4306,6 +5296,7 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                             pane,
                             orig: orig.clone(),
                             name: orig,
+                            fresh: true,
                         };
                     }
                 }
@@ -4422,6 +5413,41 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                     crate::local::refresh(pane_view_mut(st, pane));
                 }
             }
+            "断开" => {
+                // T20-G④ 断开入口（Rust 有意差异，空白区菜单）：活动 tab 会话
+                // refs 减一、归零即 disconnect 出池（与关 tab 释放 :2106-2124
+                // 同语义），tab 保持打开但回「未连接」态；pane 复位远程视图。
+                if let Some(side) = menu_side(st, pane)
+                    && let Some(tab_id) = super::active_tab_id(st, pane)
+                    && let Some(ti) = st.remotes[side].tabs.iter().position(|x| x.id == tab_id)
+                {
+                    // RemoteTab.sid = 0 表示未连接（Default 初值）。
+                    let osid = st.remotes[side].tabs[ti].sid;
+                    if osid != 0
+                        && let Some(si) =
+                            st.remotes[side].sessions.iter().position(|s| s.sid == osid)
+                    {
+                        let dead = {
+                            let ss = &mut st.remotes[side].sessions[si];
+                            ss.refs = ss.refs.saturating_sub(1);
+                            ss.refs == 0
+                        };
+                        if dead {
+                            st.remotes[side].sessions[si].ssh.disconnect();
+                            st.remotes[side].sessions.remove(si);
+                        }
+                    }
+                    st.remotes[side].tabs[ti].sid = 0;
+                    let pp = pane_view_mut(st, side);
+                    pp.remote_path = None;
+                    pp.entries.clear();
+                    pp.selected.clear();
+                    pp.sel_anchor = None;
+                    pp.tree.clear();
+                    pp.tree_synced_for = None;
+                    pp.msg = Some(t("连接已断开").to_owned());
+                }
+            }
             "传输到另一侧" => {
                 // 批量传输（C# :3044 SelectedItems；单条即单元素批次）。
                 if !rows.is_empty() {
@@ -4432,16 +5458,25 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             "暂停" => {
                 if let Some(q) = &st.transfer {
                     q.pause();
+                    // 队列生命周期日志（C# QueueContainer.xaml.cs:169 LogQueuePaused）。
+                    st.terminal
+                        .push((crate::local::now_hms(), t("传输已暂停").to_owned()));
                 }
             }
             "继续传输" => {
                 if let Some(q) = &st.transfer {
                     q.resume();
+                    // C# QueueContainer.xaml.cs:176 LogQueueResumed。
+                    st.terminal
+                        .push((crate::local::now_hms(), t("传输继续").to_owned()));
                 }
             }
             "停止" => {
                 if let Some(q) = &st.transfer {
                     q.stop_all();
+                    // C# QueueContainer.xaml.cs:182 LogQueueStopped。
+                    st.terminal
+                        .push((crate::local::now_hms(), t("传输已停止").to_owned()));
                 }
             }
             "清除已完成" => {
@@ -4455,23 +5490,16 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 }
             }
             "重置并重新请求所有" => {
+                // C# TransferQueueService.RequeueAllAsync :890-911：全部行回等待
+                // （含 Done）且显式解除暂停；:920-922 LogQueueRerun 记条数（批次
+                // 结束汇总由 drain_batch_reports 随重跑再出一条，同 :928-929）。
                 if let Some(q) = &st.transfer {
-                    let ids = q.with_items(|items| {
-                        items
-                            .iter()
-                            .filter(|i| {
-                                matches!(
-                                    i.status,
-                                    crate::transfer::Status::Failed
-                                        | crate::transfer::Status::Cancelled
-                                )
-                            })
-                            .map(|i| i.id)
-                            .collect::<Vec<_>>()
-                    });
-                    for id in ids {
-                        q.retry(id);
-                    }
+                    let n = q.with_items(|items| items.len());
+                    q.reset_all();
+                    st.terminal.push((
+                        crate::local::now_hms(),
+                        tfmt("重置并重新请求所有：{0} 项", &[&n.to_string()]),
+                    ));
                 }
             }
             "重试" => {
@@ -4506,6 +5534,9 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                         }
                     }
                 }
+                // S-8：记账在途（菜单态「正在重连…」置灰 + 专用成功/失败日志，
+                // mod.rs Ev::Connected / Ev::Failed(连接) 逐个回账归零）。
+                st.reconnecting = downs.len() as u32;
                 for (side, tab_id, h) in downs {
                     reconnect_tab(st, side, tab_id, &h);
                 }
@@ -4523,8 +5554,51 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 }
 
 // ── 传输覆盖确认（C# 冲突确认对话框）────────────────────────
+/// 冲突对比表展示行：(名称, 源(大小·mtime), 目标(大小·mtime), 目标较新)。
+type ConfirmRows = Vec<(String, (String, String), (String, String), bool)>;
+
 fn transfer_confirm_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    let Some(content) = shell(
+    // 行数据先拷为展示串（头部预检脱离 st.dialog 借用）；同时取勾选默认值。
+    let (rows, note, defaults): (ConfirmRows, Option<String>, Vec<bool>) = match &st.dialog {
+        Dialog::TransferConfirm { rows, note } => {
+            let defaults = super::conflict_defaults(rows);
+            let rows = rows
+                .iter()
+                .map(|r| {
+                    // 名称超长省略（列宽固定，Grid 不裁剪 Label）。
+                    let shown: String = r.name.chars().take(22).collect();
+                    let name = if r.name.chars().count() > 22 {
+                        format!("{shown}…")
+                    } else {
+                        shown
+                    };
+                    let src = (
+                        crate::local::format_size(r.src_size),
+                        crate::local::fmt_mtime_unix(r.src_mtime),
+                    );
+                    let dst = match (r.dst_size, r.dst_mtime) {
+                        (Some(s), Some(m)) => (
+                            crate::local::format_size(s),
+                            crate::local::fmt_mtime_unix(m),
+                        ),
+                        (Some(s), None) => (crate::local::format_size(s), String::new()),
+                        (None, Some(m)) => (String::new(), crate::local::fmt_mtime_unix(m)),
+                        (None, None) => (String::new(), String::new()),
+                    };
+                    // 目标较源新 → 覆盖将砸掉较新的目标文件，目标列警示色。
+                    let newer = r.dst_mtime.is_some_and(|m| m > r.src_mtime);
+                    (name, src, dst, newer)
+                })
+                .collect();
+            (rows, note.clone(), defaults)
+        }
+        _ => return,
+    };
+    // F-10 方案A：勾选态与 rows 行序严格对齐（长度失配 = 残留/重建，重置默认）。
+    if st.conflict_sel.as_ref().map(|s| s.len()) != Some(defaults.len()) {
+        st.conflict_sel = Some(defaults);
+    }
+    shell(
         ui,
         st,
         p,
@@ -4535,135 +5609,303 @@ fn transfer_confirm_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette
         0.0,
         false,
         None,
-    ) else {
-        return;
-    };
-    // 行数据先拷为展示串（按钮区需要可变借用 st，先结束对 st.dialog 的共享借用）。
-    let rows: Vec<(String, (String, String), (String, String), bool)> = match &st.dialog {
-        Dialog::TransferConfirm { rows } => rows
-            .iter()
-            .map(|r| {
-                // 名称超长省略（列宽固定，Grid 不裁剪 Label）。
-                let shown: String = r.name.chars().take(22).collect();
-                let name = if r.name.chars().count() > 22 {
-                    format!("{shown}…")
-                } else {
-                    shown
-                };
-                let src = (
-                    crate::local::format_size(r.src_size),
-                    crate::local::fmt_mtime_unix(r.src_mtime),
-                );
-                let dst = match (r.dst_size, r.dst_mtime) {
-                    (Some(s), Some(m)) => (
-                        crate::local::format_size(s),
-                        crate::local::fmt_mtime_unix(m),
-                    ),
-                    (Some(s), None) => (crate::local::format_size(s), String::new()),
-                    (None, Some(m)) => (String::new(), crate::local::fmt_mtime_unix(m)),
-                    (None, None) => (String::new(), String::new()),
-                };
-                // 目标较源新 → 覆盖将砸掉较新的目标文件，目标列警示色。
-                let newer = r.dst_mtime.is_some_and(|m| m > r.src_mtime);
-                (name, src, dst, newer)
-            })
-            .collect(),
-        _ => return,
-    };
+        // C1/F-9：关闭路径与「取消」同语义（F1），宿主自声明暂存态处置。
+        ShellOpts {
+            on_close: CloseAction::CancelPendingStream,
+            ..Default::default()
+        },
+        |ui, content, st| transfer_confirm_body(ui, st, p, content, rows, note),
+    );
+}
+
+/// 传输覆盖确认正文（shell 回调，见 shell 文档①②③）。
+#[allow(clippy::too_many_arguments)]
+fn transfer_confirm_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    rows: ConfirmRows,
+    note: Option<String>,
+) {
+    // 内容容器统一内边距 15（全局令牌 CONTENT_PAD：文本行 / 对比表 / 按钮 /
+    // 提示语同边距）。
 
     let mut cui = content_ui(ui, content);
-    cui.add_space(10.0);
+    cui.add_space(CONTENT_PAD.1);
     cui.horizontal(|row| {
         row.add_space(CONTENT_PAD.0);
-        row.label(RichText::new(tfmt("目标已存在 {0} 个同名项目：", &[&rows.len()])).size(13.0));
+        row.label(RichText::new(tfmt("目标已存在 {0} 个同名项目：", &[&rows.len()])).size(14.0));
     });
+    // 范围行（T20-H 流式落位）：已落位项不可逆，写明本次确认范围防误解。
+    // T20-E-R：英文文案代入 M/N/C 后约 118 字符，单行 Label 在 640 卡片
+    // 的 horizontal 内会裁掉尾部「(N conflicts)」——显式折行，实数全可见。
+    if let Some(note) = &note {
+        cui.horizontal(|row| {
+            row.add_space(CONTENT_PAD.0);
+            row.add(
+                egui::Label::new(
+                    RichText::new(note.as_str())
+                        .size(12.0)
+                        .color(theme::WARNING),
+                )
+                .wrap_mode(egui::TextWrapMode::Wrap),
+            );
+        });
+    }
     cui.add_space(6.0);
 
-    // 冲突清单对比表（名称 / 源 / 目标，大小+mtime 两行；超出可视高滚动）。
-    let list_h = (content.bottom() - CONTENT_PAD.1 - BTN_H - 8.0 - cui.cursor().top()).max(40.0);
-    egui::ScrollArea::vertical()
-        .id_salt("tx-conflict-list")
-        .max_height(list_h)
-        .show(&mut cui, |s| {
-            egui::Grid::new("tx-conflict-grid")
-                .num_columns(3)
-                .spacing([16.0, 5.0])
-                .show(s, |g| {
-                    for head in [t("名称"), t("源"), t("目标")] {
-                        g.label(RichText::new(head).size(12.0).color(p.text_secondary));
-                    }
-                    g.end_row();
-                    for (name, src, dst, newer) in &rows {
-                        let d_col = if *newer {
-                            theme::WARNING
-                        } else {
-                            p.text_secondary
+    // 冲突清单对比表（勾选 / 名称 / 源 / 目标，大小+mtime 两行；超出可视高
+    // 滚动）。底部预留：按钮行高 + 上方提示语一行。
+    // F-10 方案A：勾选态借作用域借用（块尾归还，按钮段再动 st）。
+    {
+        let sel: &mut [bool] = st
+            .conflict_sel
+            .as_mut()
+            .expect("TransferConfirm 创建帧已按 rows 对齐勾选态");
+        let list_h =
+            (content.bottom() - CONTENT_PAD.1 - BTN_H - 8.0 - 18.0 - cui.cursor().top()).max(40.0);
+        egui::ScrollArea::vertical()
+            .id_salt("tx-conflict-list")
+            .max_height(list_h)
+            .show(&mut cui, |s| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: CONTENT_PAD.0 as i8,
+                        right: CONTENT_PAD.0 as i8,
+                        top: 0,
+                        bottom: 0,
+                    })
+                    .show(s, |s| {
+                        // 表格横向几何：gx0..gx1 = 内边距 15 后的内容宽（贴满右缘）。
+                        let gx0 = s.cursor().left();
+                        let avail = s.available_width();
+                        let gx1 = gx0 + avail;
+                        let cell_w = 2.0 * TBL_CELL_PAD as f32;
+                        // 名称列最小适应：按表身字体（TBL_BODY_SIZE）实测最长文件名
+                        // + 格内边距（列宽判定按 widget_rect = 文字实宽，名称列即随
+                        // 内容收缩）。
+                        let name_w = rows
+                            .iter()
+                            .map(|(name, ..)| {
+                                s.painter()
+                                    .layout_no_wrap(
+                                        name.clone(),
+                                        egui::FontId::proportional(TBL_BODY_SIZE),
+                                        Color32::WHITE,
+                                    )
+                                    .size()
+                                    .x
+                            })
+                            .fold(0.0_f32, f32::max)
+                            + cell_w;
+                        // 首列 checkbox（F-10 方案A）：本体 ~18 + 格内边距。
+                        let chk_w = 18.0 + cell_w;
+                        // 源/目标列均分剩余宽（列间距 16×3；下限 120 防极端长名挤没）。
+                        let rest_w = ((avail - chk_w - name_w - 48.0) / 2.0).max(120.0);
+                        // 很浅的表格横线：画在行间垂直间距（5px）的中线上。
+                        let line_color = p.text_secondary.gamma_multiply(0.2);
+                        let hline = |g: &mut egui::Ui| {
+                            let y = g.cursor().top() - 2.5;
+                            g.painter().rect_filled(
+                                Rect::from_min_size(Pos2::new(gx0, y), egui::vec2(gx1 - gx0, 1.0)),
+                                0.0,
+                                line_color,
+                            );
                         };
-                        g.label(RichText::new(name.as_str()).size(13.0));
-                        g.vertical(|v| {
-                            v.label(
-                                RichText::new(src.0.as_str())
-                                    .size(12.0)
-                                    .color(p.text_secondary),
-                            );
-                            v.label(
-                                RichText::new(src.1.as_str())
-                                    .size(12.0)
-                                    .color(p.text_secondary),
-                            );
-                        });
-                        g.vertical(|v| {
-                            if dst.0.is_empty() && dst.1.is_empty() {
-                                v.label(RichText::new("—").size(12.0).color(p.text_secondary));
-                            } else {
-                                if !dst.0.is_empty() {
-                                    v.label(RichText::new(dst.0.as_str()).size(12.0).color(d_col));
+                        // 单元格：内边距 TBL_CELL_PAD 的 Frame 包裹，禁折行（Extend）；
+                        // 多段文本（size + 日期）同行绘制，段间空隔 TBL_VAL_GAP。
+                        // min_w = 列宽下限（vertical scope 的 min_rect 计入 widget_rect）。
+                        let cell =
+                            |v: &mut egui::Ui, texts: &[egui::RichText], min_w: Option<f32>| {
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::same(TBL_CELL_PAD))
+                                    .show(v, |v| {
+                                        if let Some(w) = min_w {
+                                            v.set_min_width(w - cell_w);
+                                        }
+                                        if texts.len() == 1 {
+                                            v.add(
+                                                egui::Label::new(texts[0].clone())
+                                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                            );
+                                        } else {
+                                            v.horizontal(|h| {
+                                                for (i, tx) in texts.iter().enumerate() {
+                                                    if i > 0 {
+                                                        h.add_space(TBL_VAL_GAP);
+                                                    }
+                                                    h.add(
+                                                        egui::Label::new(tx.clone())
+                                                            .wrap_mode(egui::TextWrapMode::Extend),
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    });
+                            };
+                        // 勾选格：同 cell 内边距的 Frame 包 checkbox（行对齐）。
+                        let chk_cell = |v: &mut egui::Ui, checked: &mut bool| {
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin::same(TBL_CELL_PAD))
+                                .show(v, |v| {
+                                    v.add(egui::Checkbox::without_text(checked));
+                                });
+                        };
+                        egui::Grid::new("tx-conflict-grid")
+                            .num_columns(4)
+                            .spacing([16.0, 5.0])
+                            .show(s, |g| {
+                                // 表头首列：全选 checkbox（F-10 方案A；tooltip 复用
+                                // 既有键「应用到本批所有冲突项」）。
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::same(TBL_CELL_PAD))
+                                    .show(g, |v| {
+                                        let mut on = sel.iter().all(|b| *b);
+                                        let r = v.add(egui::Checkbox::without_text(&mut on));
+                                        let flipped = r.changed();
+                                        r.on_hover_text(t("应用到本批所有冲突项"));
+                                        if flipped {
+                                            select_all(sel, on);
+                                        }
+                                    });
+                                cell(
+                                    g,
+                                    &[RichText::new(t("名称"))
+                                        .size(TBL_HEAD_SIZE)
+                                        .color(p.text_secondary)],
+                                    None,
+                                );
+                                cell(
+                                    g,
+                                    &[RichText::new(t("源"))
+                                        .size(TBL_HEAD_SIZE)
+                                        .color(p.text_secondary)],
+                                    Some(rest_w),
+                                );
+                                cell(
+                                    g,
+                                    &[RichText::new(t("目标"))
+                                        .size(TBL_HEAD_SIZE)
+                                        .color(p.text_secondary)],
+                                    Some(rest_w),
+                                );
+                                g.end_row();
+                                hline(g);
+                                for (ri, (name, src, dst, newer)) in rows.iter().enumerate() {
+                                    // 行首勾选（F-10 方案A：直接绑定 State.conflict_sel）。
+                                    chk_cell(g, &mut sel[ri]);
+                                    let d_col = if *newer {
+                                        theme::WARNING
+                                    } else {
+                                        p.text_secondary
+                                    };
+                                    cell(
+                                        g,
+                                        &[RichText::new(name.as_str()).size(TBL_BODY_SIZE)],
+                                        None,
+                                    );
+                                    // 源列：size 与日期同行（空隔开，不换行）。
+                                    let src_pair = [
+                                        RichText::new(src.0.as_str())
+                                            .size(TBL_BODY_SIZE)
+                                            .color(p.text_secondary),
+                                        RichText::new(src.1.as_str())
+                                            .size(TBL_BODY_SIZE)
+                                            .color(p.text_secondary),
+                                    ];
+                                    cell(g, &src_pair, Some(rest_w));
+                                    // 目标列：size / 日期按有无同行拼接，双空 = 「—」。
+                                    if dst.0.is_empty() && dst.1.is_empty() {
+                                        cell(
+                                            g,
+                                            &[RichText::new("—")
+                                                .size(TBL_BODY_SIZE)
+                                                .color(p.text_secondary)],
+                                            Some(rest_w),
+                                        );
+                                    } else {
+                                        let mut pair: Vec<egui::RichText> = Vec::new();
+                                        if !dst.0.is_empty() {
+                                            pair.push(
+                                                RichText::new(dst.0.as_str())
+                                                    .size(TBL_BODY_SIZE)
+                                                    .color(d_col),
+                                            );
+                                        }
+                                        if !dst.1.is_empty() {
+                                            pair.push(
+                                                RichText::new(dst.1.as_str())
+                                                    .size(TBL_BODY_SIZE)
+                                                    .color(d_col),
+                                            );
+                                        }
+                                        cell(g, &pair, Some(rest_w));
+                                    }
+                                    g.end_row();
+                                    hline(g);
                                 }
-                                if !dst.1.is_empty() {
-                                    v.label(RichText::new(dst.1.as_str()).size(12.0).color(d_col));
-                                }
-                            }
-                        });
-                        g.end_row();
-                    }
-                });
-        });
+                            });
+                    });
+            });
+    }
 
-    // 右对齐按钮组：跳过冲突项 / 全部覆盖 / 取消。
+    // 右对齐按钮组：取消 / 应用（F-10 方案A：批级三选一收敛为逐项勾选 +
+    // 应用，勾选即决策；C6 规则A：主钮「应用」恒最右）。
     let y = content.bottom() - CONTENT_PAD.1 - BTN_H;
-    let w_over = btn_w(ui, t("全部覆盖"));
-    let w_skip = btn_w(ui, t("跳过冲突项"));
-    let w_cancel = btn_w(ui, t("取消"));
+    let w_apply = btn_w(ui, t("应用"), &theme::font_body());
+    let w_cancel = btn_w(ui, t("取消"), &theme::font_body());
     let x0 = content.right() - CONTENT_PAD.0;
-    let r_cancel = Rect::from_min_size(Pos2::new(x0 - w_cancel, y), egui::vec2(w_cancel, BTN_H));
-    let r_over = Rect::from_min_size(
-        Pos2::new(x0 - w_cancel - 8.0 - w_over, y),
-        egui::vec2(w_over, BTN_H),
-    );
-    let r_skip = Rect::from_min_size(
-        Pos2::new(x0 - w_cancel - 8.0 - w_over - 8.0 - w_skip, y),
-        egui::vec2(w_skip, BTN_H),
+    let r_apply = Rect::from_min_size(Pos2::new(x0 - w_apply, y), egui::vec2(w_apply, BTN_H));
+    let r_cancel = Rect::from_min_size(
+        Pos2::new(x0 - w_apply - 8.0 - w_cancel, y),
+        egui::vec2(w_cancel, BTN_H),
     );
 
-    let over = std_button(ui, r_over, t("全部覆盖"), p.text_primary, p);
-    let skip = std_button(ui, r_skip, t("跳过冲突项"), p.text_primary, p);
+    // 勾选语义提示（F-10 方案A）：勾 = 覆盖上传，不勾 = 跳过。位置：按钮行
+    // 上方，左缘与「取消」左缘同线。
+    ui.painter().text(
+        Pos2::new(r_cancel.left(), y - 14.0),
+        Align2::LEFT_CENTER,
+        t("勾选的冲突项覆盖上传，未勾选的跳过"),
+        theme::font(theme::TextRole::Caption),
+        p.text_secondary,
+    );
+
+    // C3②（F-9）：打开首帧初焦点 → 主钮「应用」。请求必须在创建之后
+    //（同 delete_body 注：首帧 sizing pass 会在创建时清先置焦点）。
+    let apply_id = ui.next_auto_id();
+    // C6（F-9）：主钮「应用」补 accent 色。
+    let apply = accent_button(ui, r_apply, t("应用"), true, p, theme::font_body());
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(apply_id));
+    }
     let cancel = std_button(ui, r_cancel, t("取消"), p.text_primary, p);
     if cancel {
-        // 取消整批（丢弃 pending）。
-        st.pending_tx = None;
+        // 取消整批（丢弃 pending；T20-H 流式已落位行按批次号回溯清行；
+        // 勾选态随 cancel_pending_stream 一并清空）。
+        super::cancel_pending_stream(st);
         st.dialog = Dialog::None;
-    } else if skip {
-        super::enqueue_pending(st, true);
-        st.dialog = Dialog::None;
-    } else if over {
-        super::enqueue_pending(st, false);
+    } else if apply || st.shell_enter {
+        // 应用：按逐项勾选分流（勾 → force 入队，不勾 → skipped 计数；
+        // 勾选态随 enqueue_pending take 清空）。
+        super::enqueue_pending(st);
         st.dialog = Dialog::None;
     }
 }
 
+/// 全选/清空翻转（表头 checkbox → 整列，F-10 方案A；纯逻辑便于钉子）。
+fn select_all(sel: &mut [bool], on: bool) {
+    sel.iter_mut().for_each(|b| *b = on);
+}
+
 // ── 同步失配提示（C# ReportMismatch ContentDialog）────────────
 fn sync_mismatch_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    let Some(content) = shell(
+    let msg = match &st.dialog {
+        Dialog::SyncMismatch { msg } => msg.clone(),
+        _ => return,
+    };
+    shell(
         ui,
         st,
         p,
@@ -4674,19 +5916,24 @@ fn sync_mismatch_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         0.0,
         false,
         None,
-    ) else {
-        return;
-    };
-    let msg = match &st.dialog {
-        Dialog::SyncMismatch { msg } => msg.clone(),
-        _ => return,
-    };
+        ShellOpts::default(),
+        |ui, content, st| sync_mismatch_body(ui, st, p, content, msg),
+    );
+}
 
+/// 同步失配提示正文（shell 回调，见 shell 文档①②③）。
+fn sync_mismatch_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    msg: String,
+) {
     let mut cui = content_ui(ui, content);
-    cui.add_space(16.0);
+    cui.add_space(CONTENT_PAD.1);
     cui.horizontal(|row| {
         row.add_space(CONTENT_PAD.0);
-        row.label(RichText::new(&msg).size(13.0));
+        row.label(RichText::new(&msg).size(14.0));
     });
     cui.add_space(4.0);
     cui.horizontal(|row| {
@@ -4699,20 +5946,30 @@ fn sync_mismatch_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     });
     cui.add_space(12.0);
 
-    // 右对齐按钮组：重新建立 / 关闭。
+    // 右对齐按钮组：关闭 / 重新建立（C6 规则A：主钮「重新建立」恒最右，
+    // 有意差异于 C# ContentDialog Primary 左 / Close 右排布）。
     let y = content.bottom() - CONTENT_PAD.1 - BTN_H;
-    let w_retry = btn_w(ui, t("重新建立"));
-    let w_close = btn_w(ui, t("关闭"));
+    let w_retry = btn_w(ui, t("重新建立"), &theme::font_body());
+    let w_close = btn_w(ui, t("关闭"), &theme::font_body());
     let x0 = content.right() - CONTENT_PAD.0;
-    let r_close = Rect::from_min_size(Pos2::new(x0 - w_close, y), egui::vec2(w_close, BTN_H));
-    let r_retry = Rect::from_min_size(
-        Pos2::new(x0 - w_close - 8.0 - w_retry, y),
-        egui::vec2(w_retry, BTN_H),
+    let r_retry = Rect::from_min_size(Pos2::new(x0 - w_retry, y), egui::vec2(w_retry, BTN_H));
+    let r_close = Rect::from_min_size(
+        Pos2::new(x0 - w_retry - 8.0 - w_close, y),
+        egui::vec2(w_close, BTN_H),
     );
 
-    let retry = std_button(ui, r_retry, t("重新建立"), p.text_primary, p);
+    // C3②（F-9）：打开首帧初焦点 → 主钮「重新建立」。请求必须在创建之后：
+    // egui 新 Area 首帧 = sizing pass（AreaState 未持久化 → ui invisible/disabled），
+    // 创建时 create_widget 走 interested_in_focus=false → ignore_focus 会清掉
+    // 同帧先置的焦点（含已聚焦控件，memory/mod.rs:946）；创建后请求则无后续
+    // ignore_focus 干扰，end_pass 按「本帧新落焦」保留。
+    let retry_id = ui.next_auto_id();
+    let retry = accent_button(ui, r_retry, t("重新建立"), true, p, theme::font_body());
     let close = std_button(ui, r_close, t("关闭"), p.text_primary, p);
-    if retry {
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(retry_id));
+    }
+    if retry || st.shell_enter {
         // 重新评估当前两侧目录（C# RestartSyncBrowse：目录已对齐即重新点亮）。
         let ev = super::sync::evaluate(st);
         st.dialog = Dialog::None;
@@ -4735,9 +5992,6 @@ fn sync_mismatch_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 
 /// 编辑器保存落盘（快照静默期满）→ 询问是否回传。
 fn ext_edit_changed_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    let Some(content) = shell(ui, st, p, 380.0, 150.0, t("编辑"), false, 0.0, false, None) else {
-        return;
-    };
     let (side, tab, name, remote_path) = match &st.dialog {
         Dialog::ExtEditChanged {
             side,
@@ -4747,9 +6001,36 @@ fn ext_edit_changed_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette
         } => (*side, *tab, name.clone(), remote_path.clone()),
         _ => return,
     };
+    shell(
+        ui,
+        st,
+        p,
+        380.0,
+        150.0,
+        t("编辑"),
+        false,
+        0.0,
+        false,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| ext_edit_changed_body(ui, st, p, content, side, tab, name, remote_path),
+    );
+}
 
+/// 缓存变化询问正文（shell 回调，见 shell 文档①②③）。
+#[allow(clippy::too_many_arguments)]
+fn ext_edit_changed_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    side: usize,
+    tab: u32,
+    name: String,
+    remote_path: String,
+) {
     let mut cui = content_ui(ui, content);
-    cui.add_space(16.0);
+    cui.add_space(CONTENT_PAD.1);
     cui.horizontal(|row| {
         row.add_space(CONTENT_PAD.0);
         row.label(
@@ -4757,27 +6038,35 @@ fn ext_edit_changed_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette
                 "\"{0}\" 的文件缓存已经改变，是否保存编辑结果？",
                 &[&name],
             ))
-            .size(13.0),
+            .size(14.0),
         );
     });
 
-    // 右对齐按钮组（C# ContentDialog：Primary 左 / Close 右）。
+    // 右对齐按钮组：取消 / 保存编辑结果（C6 规则A：主钮恒最右，有意差异于
+    // C# ContentDialog Primary 左 / Close 右排布）。
     let y = content.bottom() - CONTENT_PAD.1 - BTN_H;
-    let w_save = btn_w(ui, t("保存编辑结果"));
-    let w_cancel = btn_w(ui, t("取消"));
+    let w_save = btn_w(ui, t("保存编辑结果"), &theme::font_body());
+    let w_cancel = btn_w(ui, t("取消"), &theme::font_body());
     let x0 = content.right() - CONTENT_PAD.0;
-    let r_cancel = Rect::from_min_size(Pos2::new(x0 - w_cancel, y), egui::vec2(w_cancel, BTN_H));
-    let r_save = Rect::from_min_size(
-        Pos2::new(x0 - w_cancel - 8.0 - w_save, y),
-        egui::vec2(w_save, BTN_H),
+    let r_save = Rect::from_min_size(Pos2::new(x0 - w_save, y), egui::vec2(w_save, BTN_H));
+    let r_cancel = Rect::from_min_size(
+        Pos2::new(x0 - w_save - 8.0 - w_cancel, y),
+        egui::vec2(w_cancel, BTN_H),
     );
 
-    let save = std_button(ui, r_save, t("保存编辑结果"), p.text_primary, p);
+    // C3②（F-9）：打开首帧初焦点 → 主钮「保存编辑结果」。请求必须在创建
+    // 之后（同 delete_body 注：首帧 sizing pass 会在创建时清先置焦点）。
+    let save_id = ui.next_auto_id();
+    // C6（F-9）：主钮「保存编辑结果」补 accent 色。
+    let save = accent_button(ui, r_save, t("保存编辑结果"), true, p, theme::font_body());
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(save_id));
+    }
     let cancel = std_button(ui, r_cancel, t("取消"), p.text_primary, p);
     if cancel {
         // 暂不保存：会话保留（基准已在触发时更新），下次保存快照再变会再问。
         st.dialog = Dialog::None;
-    } else if save {
+    } else if save || st.shell_enter {
         // 回传前先探测远端 mtime（C# GetLastWriteTime 冲突比对）：探测在途
         // 挂靠发起 tab，STAT 经其挂靠会话发出。
         st.stat_seq += 1;
@@ -4794,44 +6083,201 @@ fn ext_edit_changed_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette
 
 /// 回传前探测到远端已变更（mtime 与下载基准差 ≥1s）→ 覆盖确认。
 fn ext_edit_conflict_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    let Some(content) = shell(ui, st, p, 380.0, 150.0, t("编辑"), false, 0.0, false, None) else {
-        return;
-    };
-    let (side, tab, remote_path) = match &st.dialog {
+    let (side, tab, remote_path, src) = match &st.dialog {
         Dialog::ExtEditConflict {
             side,
             tab,
             remote_path,
+            src,
             ..
-        } => (*side, *tab, remote_path.clone()),
+        } => (*side, *tab, remote_path.clone(), src.clone()),
         _ => return,
     };
+    shell(
+        ui,
+        st,
+        p,
+        380.0,
+        150.0,
+        t("编辑"),
+        false,
+        0.0,
+        false,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| ext_edit_conflict_body(ui, st, p, content, side, tab, remote_path, &src),
+    );
+}
 
+/// 远端冲突确认正文（shell 回调，见 shell 文档①②③）。
+#[allow(clippy::too_many_arguments)]
+fn ext_edit_conflict_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    side: usize,
+    tab: u32,
+    remote_path: String,
+    src: &ExtConflictSrc,
+) {
     let mut cui = content_ui(ui, content);
-    cui.add_space(16.0);
+    cui.add_space(CONTENT_PAD.1);
     cui.horizontal(|row| {
         row.add_space(CONTENT_PAD.0);
-        row.label(RichText::new(t("远端文件已被修改，仍要覆盖吗？")).size(13.0));
+        row.label(RichText::new(t("远端文件已被修改，仍要覆盖吗？")).size(14.0));
     });
 
-    // 右对齐按钮组（C# ContentDialog：Primary 左 / Close 右）。
+    // 右对齐按钮组：取消 / 覆盖（C6 规则A：主钮恒最右，有意差异于
+    // C# ContentDialog Primary 左 / Close 右排布）。
     let y = content.bottom() - CONTENT_PAD.1 - BTN_H;
-    let w_over = btn_w(ui, t("覆盖"));
-    let w_cancel = btn_w(ui, t("取消"));
+    let w_over = btn_w(ui, t("覆盖"), &theme::font_body());
+    let w_cancel = btn_w(ui, t("取消"), &theme::font_body());
     let x0 = content.right() - CONTENT_PAD.0;
-    let r_cancel = Rect::from_min_size(Pos2::new(x0 - w_cancel, y), egui::vec2(w_cancel, BTN_H));
-    let r_over = Rect::from_min_size(
-        Pos2::new(x0 - w_cancel - 8.0 - w_over, y),
-        egui::vec2(w_over, BTN_H),
+    let r_over = Rect::from_min_size(Pos2::new(x0 - w_over, y), egui::vec2(w_over, BTN_H));
+    let r_cancel = Rect::from_min_size(
+        Pos2::new(x0 - w_over - 8.0 - w_cancel, y),
+        egui::vec2(w_cancel, BTN_H),
     );
 
-    let overwrite = std_button(ui, r_over, t("覆盖"), p.text_primary, p);
+    // C3②（F-9）：打开首帧初焦点 → 主钮「覆盖」。请求必须在创建之后
+    //（同 delete_body 注：首帧 sizing pass 会在创建时清先置焦点）。
+    let over_id = ui.next_auto_id();
+    // C6（F-9）：主钮「覆盖」补 accent 色。
+    let overwrite = accent_button(ui, r_over, t("覆盖"), true, p, theme::font_body());
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(over_id));
+    }
     let cancel = std_button(ui, r_cancel, t("取消"), p.text_primary, p);
     if cancel {
         // 不覆盖：会话保留（基准已在触发时更新），下次保存快照再变会再问。
         st.dialog = Dialog::None;
-    } else if overwrite {
-        super::ext_upload(st, side, tab, &remote_path);
+    } else if overwrite || st.shell_enter {
+        // 覆盖：按来源分派回传链路（CR-6⑤）——内置编辑器走 doc_upload
+        //（请求号 = doc_id），外部编辑器走 ext_upload（请求号 = stat_seq）。
+        // 按钮数量、文案、焦点逻辑两路一致。
+        match src {
+            ExtConflictSrc::Internal { doc_id, local_path } => {
+                super::doc_upload(st, ui.ctx(), *doc_id, local_path, &remote_path);
+            }
+            ExtConflictSrc::External => super::ext_upload(st, side, tab, &remote_path),
+        }
+        st.dialog = Dialog::None;
+    }
+}
+
+/// 写锁等待超时兜底（项6）：外部编辑器持写句柄 ≥10s 时的退出对话框。
+/// 「立即重试探测」= 重置等待态、下轮 poll 立即再探；「取消本次回传」=
+/// 放弃上传（基准更新为当前快照，本地副本保留）；Esc / 遮罩 / × = 继续
+/// 等待。安全底线：绝不提供「强制上传」。
+fn ext_edit_lock_wait_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
+    let (side, tab, name, remote_path) = match &st.dialog {
+        Dialog::ExtEditLockWait {
+            side,
+            tab,
+            name,
+            remote_path,
+        } => (*side, *tab, name.clone(), remote_path.clone()),
+        _ => return,
+    };
+    shell(
+        ui,
+        st,
+        p,
+        420.0,
+        170.0,
+        t("编辑"),
+        false,
+        0.0,
+        false,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| ext_edit_lock_wait_body(ui, st, p, content, side, tab, name, remote_path),
+    );
+}
+
+/// 写锁超时兜底正文（shell 回调，见 shell 文档①②③）。
+#[allow(clippy::too_many_arguments)]
+fn ext_edit_lock_wait_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    side: usize,
+    tab: u32,
+    name: String,
+    remote_path: String,
+) {
+    let mut cui = content_ui(ui, content);
+    cui.add_space(CONTENT_PAD.1);
+    cui.horizontal(|row| {
+        row.add_space(CONTENT_PAD.0);
+        row.label(
+            RichText::new(tfmt(
+                "文件 {0} 的写锁仍未释放，回传已暂缓。本地副本完好，不会上传半写文件。",
+                &[&name],
+            ))
+            .size(14.0),
+        );
+    });
+
+    // 右对齐按钮组：取消本次回传 / 立即重试探测（主钮恒最右）。
+    let y = content.bottom() - CONTENT_PAD.1 - BTN_H;
+    let w_retry = btn_w(ui, t("立即重试探测"), &theme::font_body());
+    let w_cancel = btn_w(ui, t("取消本次回传"), &theme::font_body());
+    let x0 = content.right() - CONTENT_PAD.0;
+    let r_retry = Rect::from_min_size(Pos2::new(x0 - w_retry, y), egui::vec2(w_retry, BTN_H));
+    let r_cancel = Rect::from_min_size(
+        Pos2::new(x0 - w_retry - 8.0 - w_cancel, y),
+        egui::vec2(w_cancel, BTN_H),
+    );
+
+    // C3②（F-9）：打开首帧初焦点 → 主钮「立即重试探测」。
+    let retry_id = ui.next_auto_id();
+    let retry = accent_button(ui, r_retry, t("立即重试探测"), true, p, theme::font_body());
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(retry_id));
+    }
+    let cancel = std_button(ui, r_cancel, t("取消本次回传"), p.text_primary, p);
+    // 弹窗自身关闭（Esc / 遮罩 / ×）→ 继续等待：本弹层无暂存态，shell 关闭
+    // 出口直接 Dialog::None，等待态原样保留（下轮 poll 续计时）。
+    if cancel {
+        // 取消本次回传：放弃上传——基准更新为当前快照（下次保存快照再变
+        // 会再问）、清锁等待态、保留本地副本。
+        if let Some(t) = super::find_remote_tab_mut(st, side, tab)
+            && let Some(e) = t
+                .ext_edits
+                .iter_mut()
+                .find(|e| e.remote_path == remote_path)
+        {
+            e.baseline = super::ext_snapshot(&e.local);
+            e.quiet_since = None;
+            e.quiet_snap = None;
+            e.lock_wait_since = None;
+            e.lock_warned = false;
+            e.lock_dialog_done = false; // 下次等锁超时可再弹（CR-10）
+            t.lock_msg_on = false;
+        }
+        st.terminal.push((
+            crate::local::now_hms(),
+            tfmt("已取消回传：{0}（本地副本保留）", &[&name]),
+        ));
+        st.dialog = Dialog::None;
+    } else if retry || st.shell_enter {
+        // 立即重试探测：重置等待态，下轮 poll 立即再探（写锁多半已释放）。
+        if let Some(t) = super::find_remote_tab_mut(st, side, tab)
+            && let Some(e) = t
+                .ext_edits
+                .iter_mut()
+                .find(|e| e.remote_path == remote_path)
+        {
+            e.quiet_since = None;
+            e.quiet_snap = None;
+            e.lock_wait_since = None;
+            e.lock_warned = false;
+            e.lock_dialog_done = false; // 下次等锁超时可再弹（CR-10）
+            t.lock_msg_on = false;
+        }
         st.dialog = Dialog::None;
     }
 }
@@ -4841,7 +6287,11 @@ fn ext_edit_conflict_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palett
 /// DefaultButton=Close）：确认判据为该 tab 归属的活动任务数（P3 per-tab，
 /// C# LogScope 语义）；「取消队列并关闭」也只取消归属该 tab 的活动任务。
 fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
-    let Some(content) = shell(
+    let (side, tab, n) = match &st.dialog {
+        Dialog::TabClose { side, tab, n } => (*side, *tab, *n),
+        _ => return,
+    };
+    shell(
         ui,
         st,
         p,
@@ -4852,16 +6302,23 @@ fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         0.0,
         false,
         None,
-    ) else {
-        return;
-    };
-    let (side, tab, n) = match &st.dialog {
-        Dialog::TabClose { side, tab, n } => (*side, *tab, *n),
-        _ => return,
-    };
+        ShellOpts::default(),
+        |ui, content, st| tab_close_body(ui, st, p, content, side, tab, n),
+    );
+}
 
+/// 关闭标签页确认正文（shell 回调，见 shell 文档①②③）。
+fn tab_close_body(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    content: Rect,
+    side: usize,
+    tab: u32,
+    n: usize,
+) {
     let mut cui = content_ui(ui, content);
-    cui.add_space(14.0);
+    cui.add_space(CONTENT_PAD.1);
     cui.horizontal(|row| {
         row.add_space(CONTENT_PAD.0);
         row.label(
@@ -4869,7 +6326,7 @@ fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 "此标签页仍有 {0} 个进行中的传输任务，如何处理？",
                 &[&n],
             ))
-            .size(13.0),
+            .size(14.0),
         );
     });
     cui.add_space(12.0);
@@ -4877,9 +6334,9 @@ fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     // 右对齐按钮组（C# ContentDialog 布局 Primary 左 / Secondary 中 / Close 右，
     // DefaultButton=Close → 「不关了」最右）。
     let y = content.bottom() - CONTENT_PAD.1 - BTN_H;
-    let w_stay = btn_w(ui, t("不关了"));
-    let w_cancel = btn_w(ui, t("取消队列并关闭"));
-    let w_bg = btn_w(ui, t("后台继续"));
+    let w_stay = btn_w(ui, t("不关了"), &theme::font_body());
+    let w_cancel = btn_w(ui, t("取消队列并关闭"), &theme::font_body());
+    let w_bg = btn_w(ui, t("后台继续"), &theme::font_body());
     let x0 = content.right() - CONTENT_PAD.0;
     let r_stay = Rect::from_min_size(Pos2::new(x0 - w_stay, y), egui::vec2(w_stay, BTN_H));
     let r_cancel = Rect::from_min_size(
@@ -4893,8 +6350,16 @@ fn tab_close_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
 
     let bg = std_button(ui, r_bg, t("后台继续"), p.text_primary, p);
     let cancel = std_button(ui, r_cancel, t("取消队列并关闭"), p.text_primary, p);
-    let stay = std_button(ui, r_stay, t("不关了"), p.text_primary, p);
-    if stay {
+    // C3②（F-9）：打开首帧初焦点 → 默认钮「不关了」（C# DefaultButton=Close
+    // 最右）。请求必须在创建之后（同 delete_body 注：首帧 sizing pass 会在
+    // 创建时清先置焦点）。
+    let stay_id = ui.next_auto_id();
+    // C6（F-9）：默认钮「不关了」补 accent 色（C# DefaultButton=Close 主按钮观感）。
+    let stay = accent_button(ui, r_stay, t("不关了"), true, p, theme::font_body());
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(stay_id));
+    }
+    if stay || st.shell_enter {
         st.dialog = Dialog::None;
     } else if cancel {
         // 取消队列并关闭：只取消归属该 tab 的活动任务（P3 per-tab，C#
@@ -4957,67 +6422,106 @@ fn fp_confirm_overlay(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     let full = ui.max_rect();
     let esc = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
     let enter = ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
+    // C3②（F-9）：覆盖层打开首帧 = 此前无 fp_ask 在途、本帧有（fp overlay 不经
+    // Dialog 变体，dialog_kind 检测不适用；temp 旗标记「上帧在途态」）。
+    let fp_open = st.fp_ask_test.is_some()
+        || st
+            .remotes
+            .iter()
+            .any(|r| r.sessions.iter().any(|s| s.fp_ask.is_some()));
+    let fp_seen_id = Id::unique("fp-ask-seen");
+    let fresh = fp_open
+        && !ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(fp_seen_id).unwrap_or(false));
+    ui.ctx().data_mut(|d| d.insert_temp(fp_seen_id, fp_open));
 
-    // 全屏遮罩（Sense::hover：点击不关闭 —— C# ContentDialog 遮罩无点击语义）。
-    ui.allocate_rect(full, Sense::hover());
-    ui.painter().rect_filled(full, 0.0, theme::mask());
+    // C10/F4（方案 A）：覆盖层升 Foreground 独立层，创建晚于 dialog-shell
+    //（同层后者在上 → 稳压底下弹窗及其遮罩）。遮罩由 Sense::hover 改 click：
+    // hover 放行点击穿透（点覆盖层遮罩会同时关掉底下弹窗）——改 click 吸收
+    // 点击但**不关闭**（C# ContentDialog 遮罩无点击语义）。
+    let (pri, cancel) = Area::new(Id::unique("fp-overlay"))
+        .order(Order::Foreground)
+        .fixed_pos(full.min)
+        .constrain_to(full)
+        .show(ui.ctx(), |ui| {
+            // C3⑤（F-9）：覆盖层即模态层（语义同 dialog-shell），遮罩命中面
+            // 去焦点化——Tab 陷阱不漏到底下弹窗。
+            ui.ctx().memory_mut(|m| m.set_modal_layer(ui.layer_id()));
+            ui.allocate_rect(full, Sense::click() - Sense::FOCUSABLE);
+            ui.painter().rect_filled(full, 0.0, theme::mask());
 
-    // 卡片：投影 + 一体底 + 描边 + 命中面（吸收穿透，同 shell 口径）。
-    let card = Rect::from_center_size(full.center(), egui::vec2(w, h));
-    theme::draw_shadow(ui, card, theme::CONTAINER_RADIUS, theme::ShadowKind::Dialog);
-    ui.painter()
-        .rect_filled(card, theme::CONTAINER_RADIUS, p.dialog_title_bar);
-    ui.painter().rect_stroke(
-        card,
-        theme::CONTAINER_RADIUS,
-        Stroke::new(1.0, p.card_stroke),
-        egui::StrokeKind::Inside,
-    );
-    ui.allocate_rect(card, Sense::click());
-    let inner = card.shrink(1.0);
+            // 卡片：投影 + 一体底 + 描边 + 命中面（吸收穿透，同 shell 口径）。
+            let card = Rect::from_center_size(full.center(), egui::vec2(w, h));
+            theme::draw_shadow(ui, card, theme::CONTAINER_RADIUS, theme::ShadowKind::Dialog);
+            ui.painter()
+                .rect_filled(card, theme::CONTAINER_RADIUS, p.dialog_title_bar);
+            ui.painter().rect_stroke(
+                card,
+                theme::CONTAINER_RADIUS,
+                theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.card_stroke),
+                egui::StrokeKind::Inside,
+            );
+            ui.allocate_rect(card, Sense::click() - Sense::FOCUSABLE);
+            let inner = card.shrink(1.0);
 
-    // 标题行（16px brand 字族，同 shell 大标题口径；无关闭钮 —— 必须经按钮决断）。
-    let title_bar = Rect::from_min_max(
-        inner.min,
-        Pos2::new(inner.right(), inner.top() + TITLE_BAR_H),
-    );
-    ui.painter().text(
-        Pos2::new(inner.left() + TITLE_PAD.0, title_bar.center().y),
-        Align2::LEFT_CENTER,
-        title,
-        FontId::new(16.0, FontFamily::Name("brand".into())),
-        p.text_primary,
-    );
+            // 标题行（16px brand 字族，同 shell 大标题口径；无关闭钮 —— 必须经按钮决断）。
+            let title_bar = Rect::from_min_max(
+                inner.min,
+                Pos2::new(inner.right(), inner.top() + TITLE_BAR_H),
+            );
+            ui.painter().text(
+                Pos2::new(inner.left() + TITLE_PAD.0, title_bar.center().y),
+                Align2::LEFT_CENTER,
+                title,
+                theme::font_title(true),
+                p.text_primary,
+            );
 
-    // 正文：左缩进 + 13px 自动换行（top_down 布局 wrap 到卡片内宽）。
-    let btn_y = inner.bottom() - CONTENT_PAD.1 - BTN_H;
-    let body_rect = Rect::from_min_max(
-        Pos2::new(inner.left() + CONTENT_PAD.0, title_bar.bottom() + 6.0),
-        Pos2::new(inner.right() - CONTENT_PAD.0, btn_y - 8.0),
-    );
-    let mut bui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(body_rect)
-            .layout(Layout::top_down(Align::Min)),
-    );
-    bui.label(RichText::new(&body).size(13.0));
+            // 正文：左缩进 + 13px 自动换行（top_down 布局 wrap 到卡片内宽）。
+            let btn_y = inner.bottom() - CONTENT_PAD.1 - BTN_H;
+            let body_rect = Rect::from_min_max(
+                Pos2::new(inner.left() + CONTENT_PAD.0, title_bar.bottom() + 6.0),
+                Pos2::new(inner.right() - CONTENT_PAD.0, btn_y - 8.0),
+            );
+            let mut bui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(body_rect)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            bui.label(RichText::new(&body).size(14.0));
 
-    // 右下按钮组：取消左、主钮右（间距 8，同传输确认弹窗排布）。
-    let primary = if first {
-        t("信任并继续")
-    } else {
-        t("更新并信任")
-    };
-    let w_pri = btn_w(ui, primary);
-    let w_cancel = btn_w(ui, t("取消"));
-    let x0 = inner.right() - CONTENT_PAD.0;
-    let r_pri = Rect::from_min_size(Pos2::new(x0 - w_pri, btn_y), egui::vec2(w_pri, BTN_H));
-    let r_cancel = Rect::from_min_size(
-        Pos2::new(x0 - w_pri - 8.0 - w_cancel, btn_y),
-        egui::vec2(w_cancel, BTN_H),
-    );
-    let pri = std_button(ui, r_pri, primary, p.text_primary, p);
-    let cancel = std_button(ui, r_cancel, t("取消"), p.text_primary, p);
+            // 右下按钮组：取消左、主钮右（间距 8，同传输确认弹窗排布）。
+            let primary = if first {
+                t("信任并继续")
+            } else {
+                t("更新并信任")
+            };
+            let w_pri = btn_w(ui, primary, &theme::font_body());
+            let w_cancel = btn_w(ui, t("取消"), &theme::font_body());
+            let x0 = inner.right() - CONTENT_PAD.0;
+            let r_pri = Rect::from_min_size(Pos2::new(x0 - w_pri, btn_y), egui::vec2(w_pri, BTN_H));
+            let r_cancel = Rect::from_min_size(
+                Pos2::new(x0 - w_pri - 8.0 - w_cancel, btn_y),
+                egui::vec2(w_cancel, BTN_H),
+            );
+            // C3②（F-9）：打开首帧初焦点随默认钮——首次连接默认信任 → 主钮「信任并
+            // 继续」；指纹变更默认取消（防中间人，C# S4.2）→ 「取消」钮（焦点在可点
+            // 控件时 Enter 由控件自身触发，与 decision 的 Enter 默认分支同向，主钮
+            // 聚焦会经 FAKE_PRIMARY_CLICKED 越过防中间人默认）。请求必须在创建之后
+            //（同 delete_body 注：首帧 sizing pass 会在创建时清先置焦点）。
+            let pri_id = ui.next_auto_id();
+            // C6（F-9）：主钮补 accent 色。
+            let pri = accent_button(ui, r_pri, primary, true, p, theme::font_body());
+            let cancel_id = ui.next_auto_id();
+            let cancel = std_button(ui, r_cancel, t("取消"), p.text_primary, p);
+            if fresh {
+                let target = if first { pri_id } else { cancel_id };
+                ui.ctx().memory_mut(|m| m.request_focus(target));
+            }
+            (pri, cancel)
+        })
+        .inner;
 
     // 决断：按钮点击 / Enter（默认按钮随场景）/ Esc；None = 继续等待 worker。
     let decision = if pri {
@@ -5068,5 +6572,958 @@ mod naming_tests {
         assert_eq!(host_tab_naming("vps", ""), "vps"); // 地址缺失回退名称
         assert_eq!(host_tab_naming("", ""), ""); // 双空：空标题
         assert_eq!(host_tab_naming("   ", ""), ""); // 纯空白名称：空标题
+    }
+}
+
+// ============================================================================
+// 校验码弹窗本地计算测试（M-11）：hash_local algo=2 走 src/sm3.rs，
+// 钉 GB/T 32905-2016 附录 A 向量（此前 SM3 本地校验码弹窗明确报不支持）。
+// ============================================================================
+
+#[cfg(test)]
+mod hash_tests {
+    use super::hash_local;
+
+    #[test]
+    fn hash_local_sm3_official_vector() {
+        let mut p = std::env::temp_dir();
+        p.push("ifree-sm3-dialog-case.tmp");
+        std::fs::write(&p, b"abc").unwrap();
+        let h = hash_local(p.to_str().unwrap(), 2).expect("SM3 本地校验码必须可算");
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(
+            h,
+            "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"
+        );
+        // 非 UTF-8 文件名不存在 → Err（弹窗侧显式报错语义不变）。
+        assert!(hash_local(r"Z:\definitely\not\exists", 2).is_err());
+    }
+}
+
+// ============================================================================
+// 批量队列菜单六项显隐规则测试（T13 第 1 轮）—— 六态钉住（C# .cs:148-155 口径）
+// 位序：[暂停, 继续传输, 停止, 清除已完成, 清除所有, 重置并重新请求所有]。
+// ============================================================================
+
+#[cfg(test)]
+mod batch_menu_tests {
+    use super::batch_menu_rules;
+
+    #[test]
+    fn batch_menu_rules_empty_queue_all_hidden() {
+        // 全空：total==0 → 六位全 false（调用侧 items 空，菜单层置 None 不弹）。
+        assert_eq!(batch_menu_rules(false, 0, 0, 0, 0, 0), [false; 6]);
+    }
+
+    #[test]
+    fn batch_menu_rules_waiting_only_shows_stop_and_clear_all() {
+        // 边角钉住①：只有等待（无传输无完结）→ 菜单非空：停止 + 清除所有；
+        // 无暂停（无传输中）、无重置。
+        assert_eq!(
+            batch_menu_rules(false, 3, 0, 0, 0, 0),
+            [false, false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn batch_menu_rules_waiting_with_finished_no_reset() {
+        // 边角钉住②：等待 + 完结（failed/cancelled）→ 有等待未静止，
+        // 不得出「重置并重新请求所有」。
+        assert_eq!(
+            batch_menu_rules(false, 2, 0, 0, 1, 1),
+            [false, false, true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn batch_menu_rules_transferring_shows_pause_and_stop() {
+        // 传输中：暂停 + 停止；无完结 → 无清除类。
+        assert_eq!(
+            batch_menu_rules(false, 1, 2, 0, 0, 0),
+            [true, false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn batch_menu_rules_paused_shows_resume() {
+        // 暂停中：出「继续传输」、不出「暂停」；停止仍显（等待/传输未清）。
+        assert_eq!(
+            batch_menu_rules(true, 1, 2, 0, 0, 0),
+            [false, true, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn batch_menu_rules_all_finished_shows_reset() {
+        // 全部完结静止：清除已完成 + 清除所有 + 重置并重新请求所有；
+        // 无暂停/继续/停止。
+        assert_eq!(
+            batch_menu_rules(false, 0, 0, 1, 1, 1),
+            [false, false, false, true, true, true]
+        );
+    }
+}
+
+// ============================================================================
+// 按钮宽度同源测试（F-11 拍板）：btn_w 预算 = 文本量宽 + 2×WinUI ButtonPadding
+// 11,5（theme::apply_spacing）。settings 检查更新钮写死 74 宽英文态溢出不再
+// 回归：padding 或预算任一侧脱钩即炸。
+// ============================================================================
+
+#[cfg(test)]
+mod btn_w_tests {
+    use super::btn_w;
+    use crate::theme::{self, MEASURE_ONLY};
+
+    #[test]
+    fn btn_w_budget_matches_button_padding() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx, egui::Theme::Dark);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let pad = ui.style().spacing.button_padding;
+                assert_eq!(
+                    pad,
+                    egui::vec2(11.0, 5.0),
+                    "theme::apply_spacing 的 WinUI ButtonPadding 11,5"
+                );
+                // 英文态曾因写死 74 宽溢出的标签（settings 检查更新钮）。
+                let label = "Check for updates";
+                let w = btn_w(ui, label, &theme::font_body());
+                let measured = ui
+                    .painter()
+                    .layout_no_wrap(label.to_owned(), theme::font_body(), MEASURE_ONLY)
+                    .size()
+                    .x;
+                assert_eq!(
+                    w - measured,
+                    2.0 * pad.x,
+                    "btn_w 预算必须 = 量宽 + 2×button_padding.x（同源，禁写死）"
+                );
+            });
+        });
+        // 无渲染器消费字体纹理增量（epaint Drop debug_assert 会恐慌）——显式清空。
+        out.textures_delta.clear();
+    }
+}
+
+#[cfg(test)]
+mod select_all_tests {
+    use super::select_all;
+
+    /// 钉子（F-10 方案A）：表头全选/清空翻转——纯逻辑，整列覆写。
+    #[test]
+    fn select_all_flips_every_row() {
+        let mut sel = vec![true, false, true];
+        select_all(&mut sel, false);
+        assert_eq!(sel, vec![false, false, false], "清空整列");
+        select_all(&mut sel, true);
+        assert_eq!(sel, vec![true, true, true], "全选整列");
+        select_all(&mut sel, true);
+        assert_eq!(sel, vec![true, true, true], "重复全选幂等");
+    }
+}
+
+// ============================================================================
+// 统一外壳 headless 测试（f9-6/F-9 判据「钉子」）：五枚钉子钉住 shell 共性——
+// ①C3②/C3③ F20 打开首帧初焦点落主钮 + Enter 经 FAKE_PRIMARY_CLICKED 触发
+//   （焦点控件豁免全局 shell_enter，防双触发）；
+// ②C3⑤ modal 焦点层限定：Tab 只在弹窗层内循环不逃逸（帧 1/2 对照组证明
+//   焦点机制本身可用，排除「焦点整体失灵」假阳）；
+// ③C1/F19 遮罩点击关闭性由调用方 ShellOpts.mask_close 声明；
+// ④C3①/F5 combo 展开态 Esc 让路：shell 入口旗标短路不消费、card_combo 真
+//   消费收起（弹窗存活，temp 与旗标双双归位）；
+// ⑤C7/F3 卡片尺寸与视口各夹一次，内容容器不溢出、关闭钮恒在窗内。
+// ============================================================================
+
+#[cfg(test)]
+mod dialog_shell_tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// COMBO_OPEN 是进程级静态（所有测试共享一份）——串行化防并发互踩
+    /// （其余测试每帧 shell 入口 swap 会清走 combo 测试预置的旗标）。
+    /// 每个测试都自建 egui::Context，互不串扰，只有旗标需要这把锁。
+    static TEST_SER: Mutex<()> = Mutex::new(());
+
+    /// 800×600 视口空输入（RawInput::default 的 screen_rect=None 首帧按
+    /// 0×0 处理，几何断言必须显式给视口）。
+    fn plain_input() -> egui::RawInput {
+        let mut i = egui::RawInput::default();
+        i.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800.0, 600.0),
+        ));
+        i
+    }
+
+    /// 单键按下事件帧。
+    fn key_input(key: egui::Key) -> egui::RawInput {
+        let mut i = plain_input();
+        i.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        i
+    }
+
+    /// 点击两帧：press（带 PointerMoved 定位）+ release。egui 自家容器测试
+    /// 同款最小帧序（containers/window.rs 点击样板），clicked 在 release 帧
+    /// 成立。
+    fn click_frames(pos: egui::Pos2) -> [egui::RawInput; 2] {
+        let mut press = plain_input();
+        press.events.push(egui::Event::PointerMoved(pos));
+        press.events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut release = plain_input();
+        release.events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        [press, release]
+    }
+
+    /// 真实帧序（主容器 + 弹层一帧）：先放一枚可聚焦按钮当「主界面锚点」
+    /// （modal 逃逸断言的靶子），再走 draw 全量弹层入口。
+    fn frame(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        st: &mut State,
+        main_btn: &mut Option<egui::Id>,
+        p: &theme::Palette,
+    ) {
+        let mut out = ctx.run_ui(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                *main_btn = Some(ui.add(egui::Button::new("main-ui-widget")).id);
+                draw(ui, st, p);
+            });
+        });
+        // 无渲染器消费字体纹理增量（epaint Drop debug_assert 会恐慌）——显式清空。
+        out.textures_delta.clear();
+    }
+
+    /// 直调 shell 一帧（绕过 draw：sync_mismatch 调用点固定 ShellOpts，
+    /// 遮罩可关性用例需要自选）。参数镜像 sync_mismatch_dialog 的
+    /// 400×172 / 「同步浏览」调用点。返回 true = 存活（正文空实现）。
+    fn shell_frame(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        st: &mut State,
+        opts: ShellOpts,
+        p: &theme::Palette,
+    ) -> bool {
+        let mut r = false;
+        let mut out = ctx.run_ui(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                r = shell(
+                    ui,
+                    st,
+                    p,
+                    400.0,
+                    172.0,
+                    t("同步浏览"),
+                    false,
+                    0.0,
+                    false,
+                    None,
+                    opts,
+                    |_, _, _| {},
+                );
+            });
+        });
+        out.textures_delta.clear();
+        r
+    }
+
+    // ── 码值 ScrollArea 回归钉子（egui 0.37 min_scrolled_size=splat(64) 坑）──
+    // 模式复现：视口被强扩到 64 → 内容(56) < 64 恒不出条。修复 = 显式
+    // min_scrolled_height(0)。视口必须 ≤ 34（=50px 框内收 8×2）且内容超高。
+    #[test]
+    fn chk_value_scrollarea_viewport_fits_and_overflows() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = egui::Context::default();
+        theme::install(&ctx, egui::Theme::Dark);
+        let mut res = None;
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(plain_input(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let value_r = egui::Rect::from_min_size(
+                        egui::Pos2::new(50.0, 100.0),
+                        egui::vec2(320.0, 50.0),
+                    );
+                    let mut val_ui = ui.new_child(
+                        egui::UiBuilder::new().max_rect(value_r.shrink2(egui::vec2(8.0, 8.0))),
+                    );
+                    let text = "0123456789abcdef".repeat(8);
+                    let o = egui::ScrollArea::vertical()
+                        .id_salt("chk-value")
+                        .auto_shrink(false)
+                        .min_scrolled_height(0.0)
+                        .show(&mut val_ui, |s| {
+                            let galley = s.painter().layout(
+                                text.clone(),
+                                theme::font_mono_small(),
+                                egui::Color32::WHITE,
+                                s.max_rect().width(),
+                            );
+                            let (rect, _resp) =
+                                s.allocate_exact_size(galley.size(), egui::Sense::hover());
+                            s.painter()
+                                .galley(rect.left_top(), galley, egui::Color32::WHITE);
+                        });
+                    res = Some((o.content_size, o.inner_rect.size()));
+                });
+            });
+            out.textures_delta.clear();
+        }
+        let (content, viewport) = res.unwrap();
+        assert!(
+            viewport.y <= 34.0 + f32::EPSILON,
+            "egui 0.37 min_scrolled_size 默认 64 会强扩视口：viewport={viewport:?}"
+        );
+        assert!(
+            content.y > viewport.y,
+            "SHA-512 折行内容必须高于视口才出滚动条 content={content:?} viewport={viewport:?}"
+        );
+    }
+
+    // ── 码值 galley 裁剪钉子（真实 checksum 弹窗路径）────────────────────
+    // 裁剪矩形必须收在 50px 码值框内：此前 min_scrolled_size 64 强扩裁剪框
+    // 向下溢出 30px，文字画进底部按钮区（用户走查「关闭钮底边被隐藏」观感）。
+    #[test]
+    fn chk_sha512_galley_clipped_inside_value_box() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = egui::Context::default();
+        theme::install(&ctx, egui::Theme::Dark);
+        let mut st = State::default();
+        st.dialog = Dialog::Checksum {
+            name: "big.bin".into(),
+            path: "C:/tmp/big.bin".into(),
+            side: None,
+            algo: 1,
+            copied: None,
+        };
+        st.chk_local = Some(Ok("0123456789abcdef".repeat(8)));
+        let p = theme::palette(&ctx);
+        let mut main_btn = None;
+        let mut shapes = vec![];
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(plain_input(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    main_btn = Some(ui.add(egui::Button::new("main-ui-widget")).id);
+                    draw(ui, &mut st, &p);
+                });
+            });
+            shapes = out.shapes;
+            out.textures_delta.clear();
+        }
+        let mut found = 0;
+        for cs in &shapes {
+            if let egui::Shape::Text(g) = &cs.shape
+                && g.galley.text().contains("0123456789abcdef")
+            {
+                found += 1;
+                assert!(
+                    cs.clip_rect.height() <= 34.0 + f32::EPSILON,
+                    "码值 galley 裁剪框必须 = 视口 34（min_scrolled_size=64 坑）：clip={:?}",
+                    cs.clip_rect
+                );
+            }
+        }
+        assert!(found > 0, "必须找到 hash 文本 galley");
+    }
+
+    /// 夹具：独立 Context（dark 主题）+ 默认 State 挂 SyncMismatch 弹窗
+    /// （重试路径 evaluate 纯读，sync_base=None → Err 终端日志，headless 安全）。
+    fn sync_fixture() -> (egui::Context, State) {
+        let ctx = egui::Context::default();
+        theme::install(&ctx, egui::Theme::Dark);
+        let mut st = State::default();
+        st.dialog = Dialog::SyncMismatch {
+            msg: "两侧目录不一致".into(),
+        };
+        (ctx, st)
+    }
+
+    /// 钉子 1（C3②/C3③ F20/F-9）：打开首帧初焦点落弹窗主钮；次帧焦点控件
+    /// 收到 Enter → egui 合成主钮点击（shell_enter 豁免）→ 弹窗关闭且无
+    /// 双触发。
+    #[test]
+    fn enter_activates_fresh_primary_button() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, mut st) = sync_fixture();
+        let p = theme::palette(&ctx);
+        let mut main_btn = None;
+
+        // 帧 1：fresh → request_focus 主钮「重新建立」。
+        frame(&ctx, plain_input(), &mut st, &mut main_btn, &p);
+        assert!(
+            ctx.memory(|m| m.focused()).is_some(),
+            "C3② 打开首帧初焦点必须落位（主钮「重新建立」）"
+        );
+
+        // 帧 2：焦点控件 + Enter → FAKE_PRIMARY_CLICKED 直接触发主钮
+        // （shell_enter 豁免：focused 非空且非文本框，全局旗标不响应）。
+        frame(
+            &ctx,
+            key_input(egui::Key::Enter),
+            &mut st,
+            &mut main_btn,
+            &p,
+        );
+        assert!(
+            matches!(st.dialog, Dialog::None),
+            "Enter = 主钮触发，弹窗关闭"
+        );
+        assert!(
+            !st.shell_enter,
+            "焦点控件自触发即豁免全局 shell_enter（防 FAKE_PRIMARY_CLICKED 双触发）"
+        );
+    }
+
+    /// 钉子 2（C3⑤ F-9）：modal 焦点层限定——弹窗打开后 Tab 只在弹窗层内
+    /// 循环，永不逃逸到遮罩下的主界面控件。
+    #[test]
+    fn tab_focus_cannot_escape_modal_dialog() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, mut st) = sync_fixture();
+        // 对照期先不开弹窗。
+        st.dialog = Dialog::None;
+        let p = theme::palette(&ctx);
+        let mut main_btn = None;
+
+        // 帧 1：无弹窗、无输入 → 无焦点。
+        frame(&ctx, plain_input(), &mut st, &mut main_btn, &p);
+        let main = main_btn.expect("主界面锚点按钮 id");
+        assert!(
+            ctx.memory(|m| m.focused()).is_none(),
+            "无弹窗无输入 = 无焦点"
+        );
+
+        // 帧 2（对照组）：Tab → 主界面按钮获焦（egui：无焦点 + Tab → 首个
+        /// 注册焦点兴趣的控件，memory/mod.rs interested_in_focus）。
+        frame(&ctx, key_input(egui::Key::Tab), &mut st, &mut main_btn, &p);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(main),
+            "对照组：无弹窗时 Tab 应聚焦主界面按钮（机制可用）"
+        );
+
+        // 帧 3：打开弹窗 → 初焦点落弹窗内主钮（非主界面按钮）。
+        st.dialog = Dialog::SyncMismatch {
+            msg: "两侧目录不一致".into(),
+        };
+        frame(&ctx, plain_input(), &mut st, &mut main_btn, &p);
+        let f3 = ctx.memory(|m| m.focused());
+        assert!(
+            f3.is_some() && f3 != Some(main),
+            "弹窗打开首帧焦点必须落弹窗内（C3②），实测 {f3:?}"
+        );
+
+        // 帧 4/5：modal 层生效后 Tab 连击 → 焦点只在弹窗层内循环
+        // （遮罩下主界面控件不再注册焦点兴趣）。
+        frame(&ctx, key_input(egui::Key::Tab), &mut st, &mut main_btn, &p);
+        assert_ne!(
+            ctx.memory(|m| m.focused()),
+            Some(main),
+            "C3⑤ Tab 不逃逸到遮罩下主界面（帧 4）"
+        );
+        frame(&ctx, key_input(egui::Key::Tab), &mut st, &mut main_btn, &p);
+        assert_ne!(
+            ctx.memory(|m| m.focused()),
+            Some(main),
+            "C3⑤ Tab 不逃逸到遮罩下主界面（帧 5）"
+        );
+    }
+
+    /// 钉子 3（C1/F19 F-9）：遮罩点击关闭性由调用方 ShellOpts.mask_close 声明
+    /// ——false = 点击被吸收不关闭（防误点丢未保存态）；true = 关闭并置
+    /// Dialog::None。卡片 400×172 居中于 800×600 → (10,10) 在遮罩上、卡片外。
+    /// warm-up 两帧：potential_click_id 依赖 press 帧 hit-test 命中上一帧
+    /// rects，而 egui 新 Area 首帧必为 sizing pass（AreaState 未持久化 →
+    /// widget visible=false，interaction 候选跳过不可见控件）——第 1 帧落
+    /// AreaState，第 2 帧才有可命中的正常 rects。
+    #[test]
+    fn mask_click_respects_mask_close_opt() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let mask_pos = egui::pos2(10.0, 10.0);
+
+        // 场景 A：mask_close=false → 遮罩点击被吸收，弹窗存活。
+        let (ctx_a, mut st_a) = sync_fixture();
+        let p = theme::palette(&ctx_a);
+        let [press, release] = click_frames(mask_pos);
+        let opts = ShellOpts {
+            mask_close: false,
+            ..Default::default()
+        };
+        assert!(
+            shell_frame(&ctx_a, plain_input(), &mut st_a, opts, &p),
+            "warm-up sizing 帧存活"
+        );
+        assert!(
+            shell_frame(&ctx_a, plain_input(), &mut st_a, opts, &p),
+            "warm-up 正常帧存活"
+        );
+        assert!(
+            shell_frame(&ctx_a, press, &mut st_a, opts, &p),
+            "按下帧不关闭"
+        );
+        assert!(
+            shell_frame(&ctx_a, release, &mut st_a, opts, &p),
+            "F19：mask_close=false 遮罩点击被吸收不关闭"
+        );
+        assert!(
+            matches!(st_a.dialog, Dialog::SyncMismatch { .. }),
+            "遮罩点击后弹窗存活"
+        );
+
+        // 场景 B：mask_close=true（默认）→ 遮罩点击关闭。
+        let (ctx_b, mut st_b) = sync_fixture();
+        let p = theme::palette(&ctx_b);
+        let [press, release] = click_frames(mask_pos);
+        let opts = ShellOpts::default();
+        assert!(
+            shell_frame(&ctx_b, plain_input(), &mut st_b, opts, &p),
+            "warm-up sizing 帧存活"
+        );
+        assert!(
+            shell_frame(&ctx_b, plain_input(), &mut st_b, opts, &p),
+            "warm-up 正常帧存活"
+        );
+        let _ = shell_frame(&ctx_b, press, &mut st_b, opts, &p);
+        assert!(
+            !shell_frame(&ctx_b, release, &mut st_b, opts, &p),
+            "mask_close=true 遮罩点击关闭"
+        );
+        assert!(
+            matches!(st_b.dialog, Dialog::None),
+            "关闭路径置 Dialog::None"
+        );
+    }
+
+    /// 钉子 4（C3①/F5 F-9）：combo 展开态 Esc 让路——shell 入口旗标短路
+    /// 不消费 Esc（弹窗存活），card_combo 真消费收起组合；temp 与旗标双双
+    /// 归位（收起终态不上报旗标，store-only-true）。
+    #[test]
+    fn combo_open_esc_consumed_dialog_survives() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, mut st) = sync_fixture();
+        let p = theme::palette(&ctx);
+        COMBO_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+        // 预置展开态（模拟上一帧终态组合仍展开）：temp open=true +
+        // 进程级旗标=true（shell 入口 swap 读走的就是它）。
+        let open_id = Id::unique("test-combo").with("open");
+        ctx.data_mut(|d| d.insert_temp(open_id, true));
+        COMBO_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let mut val = 0usize;
+        let mut out = ctx.run_ui(key_input(egui::Key::Escape), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                // shell 入口：旗标 swap=true → esc 短路让路 → 返回 true（存活）；
+                // 正文（card_combo）经回调画进弹窗层。
+                let alive = shell(
+                    ui,
+                    &mut st,
+                    &p,
+                    400.0,
+                    172.0,
+                    t("同步浏览"),
+                    false,
+                    0.0,
+                    false,
+                    None,
+                    ShellOpts::default(),
+                    |ui, content, _st| {
+                        let mut cui = content_ui(ui, content);
+                        // card_combo 内部：open=temp true → consume_key(Escape) 真消费
+                        // → insert_temp(false) 收起；终态收起不上报旗标。
+                        card_combo(
+                            &mut cui,
+                            content,
+                            "test-combo",
+                            &mut val,
+                            &["a", "b"],
+                            150.0,
+                            13.0,
+                            true,
+                        );
+                    },
+                );
+                assert!(alive, "F5：combo 展开态 Esc 必须让路给组合，弹窗不得关闭");
+            });
+        });
+        out.textures_delta.clear();
+
+        assert!(
+            matches!(st.dialog, Dialog::SyncMismatch { .. }),
+            "Esc 让路：弹窗存活（未被一击关掉）"
+        );
+        assert_eq!(
+            ctx.data(|d| d.get_temp::<bool>(open_id)),
+            Some(false),
+            "card_combo 真消费 Esc：组合收起（temp 归位）"
+        );
+        assert_eq!(
+            COMBO_OPEN.load(std::sync::atomic::Ordering::Relaxed),
+            false,
+            "收起终态不上报旗标（store-only-true）"
+        );
+    }
+
+    /// 钉子 5（C7/F3 F-9）：卡片尺寸与视口各夹一次——920×640 面板在 400×300
+    /// 视口 clamp 为满视口；内容容器按夹后卡片派生（宽 388 = 400−2×内缩1−
+    /// 2×inset5）、不溢出视口，关闭钮中心恒在窗内（MIN_SIZE 900×600 曾出屏）。
+    /// CentralPanel 用 Frame::NONE（默认 margin 8 会缩水 full，几何断言失真）。
+    #[test]
+    fn shell_clamps_panel_and_close_button_stays_inside_window() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = egui::Context::default();
+        theme::install(&ctx, egui::Theme::Dark);
+        let p = theme::palette(&ctx);
+        let mut st = State::default();
+        let vp = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(vp);
+
+        // 镜像 host_panel 调用点：920×640 / large / row_gap 4 / 无容器底。
+        let mut content = None;
+        let mut out = ctx.run_ui(input, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let alive = shell(
+                        ui,
+                        &mut st,
+                        &p,
+                        920.0,
+                        640.0,
+                        t("主机设置"),
+                        true,
+                        4.0,
+                        false,
+                        None,
+                        ShellOpts::default(),
+                        |_ui, c, _st| content = Some(c),
+                    );
+                    assert!(alive, "面板不因 clamp 关闭");
+                });
+        });
+        out.textures_delta.clear();
+        let content = content.expect("存活帧正文必绘");
+
+        // clamp 生效：内容容器宽 = 卡片宽 400 − 2×内缩 1 − 2×inset 5 = 388。
+        assert!(
+            (content.width() - 388.0).abs() < 0.01,
+            "C7：920 宽夹到 400 视口，内容容器宽应 388，实测 {}",
+            content.width()
+        );
+        assert!(
+            vp.contains_rect(content),
+            "内容容器不得溢出视口：内容 {:?} / 视口 {:?}",
+            content.min,
+            content.max
+        );
+
+        // 关闭钮中心复算（与 shell 内几何同源）：inner_right = content.right +
+        // CONTENT_INSET；cx = inner_right − TITLE_PAD.2 − CLOSE_SIZE/2；
+        // cy = 标题行中线 = content.top − row_gap − TITLE_BAR_H/2。
+        let inner_right = content.right() + CONTENT_INSET;
+        let close_c = egui::pos2(
+            inner_right - TITLE_PAD.2 - CLOSE_SIZE / 2.0,
+            content.top() - 4.0 - TITLE_BAR_H / 2.0,
+        );
+        let close_r = egui::Rect::from_center_size(close_c, egui::vec2(CLOSE_SIZE, CLOSE_SIZE));
+        assert!(
+            vp.contains_rect(close_r),
+            "C7：关闭钮恒在窗内，中心 {:?}",
+            close_c
+        );
+    }
+
+    /// 钉子 6（CR-5）：card_combo 禁用态 = 实际禁用——warm-up 两帧后合成点击
+    /// 控件中心：val 不变、无展开态（temp 无 true）、COMBO_OPEN 旗标不置位。
+    /// warm-up 两帧：CentralPanel 首帧 sizing pass 无可命中 rects（同钉子 3）。
+    #[test]
+    fn card_combo_disabled_click_is_inert() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = egui::Context::default();
+        theme::install(&ctx, egui::Theme::Dark);
+        COMBO_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+        let r = egui::Rect::from_min_size(egui::Pos2::new(100.0, 100.0), egui::vec2(150.0, 32.0));
+        let open_id = Id::unique("cr5-disabled").with("open");
+        let mut val = 0usize;
+        let run = |input: egui::RawInput, val: &mut usize| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    card_combo(ui, r, "cr5-disabled", val, &["a", "b"], 150.0, 13.0, false);
+                });
+            });
+            out.textures_delta.clear();
+        };
+        run(plain_input(), &mut val);
+        run(plain_input(), &mut val);
+        let [press, release] = click_frames(r.center());
+        run(press, &mut val);
+        run(release, &mut val);
+        assert_eq!(val, 0, "CR-5：禁用下拉合成点击不得改值");
+        assert_eq!(
+            ctx.data(|d| d.get_temp::<bool>(open_id)),
+            None,
+            "CR-5：禁用下拉不得展开（无展开态 temp）"
+        );
+        assert_eq!(
+            COMBO_OPEN.load(std::sync::atomic::Ordering::Relaxed),
+            false,
+            "CR-5：禁用下拉不置位 COMBO_OPEN（Esc 让路无对象）"
+        );
+    }
+
+    /// 钉子 7（CR-5 对照）：enabled=true 同点击序列正常工作——点开浮层、
+    /// 条目点击写值、选后收起（证明钉子 6 的「无动静」是 enabled 门控而非
+    /// 测试脚手架失灵）。浮层首帧 sizing pass 后空 pass 一帧再点条目。
+    #[test]
+    fn card_combo_enabled_click_selects() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = egui::Context::default();
+        theme::install(&ctx, egui::Theme::Dark);
+        COMBO_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+        let r = egui::Rect::from_min_size(egui::Pos2::new(100.0, 100.0), egui::vec2(150.0, 32.0));
+        let open_id = Id::unique("cr5-enabled").with("open");
+        let mut val = 0usize;
+        let run = |input: egui::RawInput, val: &mut usize| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    card_combo(ui, r, "cr5-enabled", val, &["a", "b"], 150.0, 13.0, true);
+                });
+            });
+            out.textures_delta.clear();
+        };
+        // warm-up 两帧 + 点开浮层（release 帧置 open，值不变）。
+        run(plain_input(), &mut val);
+        run(plain_input(), &mut val);
+        let [press, release] = click_frames(r.center());
+        run(press, &mut val);
+        run(release, &mut val);
+        // 浮层前两帧不可命中：首帧 sizing pass 无 rects，且按下帧命中测试取
+        // 上一帧 rects → 再空 pass 一帧落正常 rects，第三帧才能起按。
+        run(plain_input(), &mut val);
+        run(plain_input(), &mut val);
+        // 条目 1 中心（条目高 40：浮层顶 = 控件底 + 4，首条目顶 1px 内缩）。
+        let item = egui::pos2(r.center().x, r.bottom() + 4.0 + 1.0 + 40.0 + 20.0);
+        let [press2, release2] = click_frames(item);
+        run(press2, &mut val);
+        run(release2, &mut val);
+        assert_eq!(val, 1, "CR-5 对照：enabled 下拉条目点击写值");
+        assert_eq!(
+            ctx.data(|d| d.get_temp::<bool>(open_id)),
+            Some(false),
+            "CR-5 对照：选值后组合收起"
+        );
+        // 进程级旗标复位（TEST_SER 串行锁内，防泄漏进后续用例）。
+        COMBO_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // ── CR-6⑤ 冲突弹窗来源分派钉子 ─────────────────────────────
+
+    /// 会话池夹具（离线 SSH 句柄：任何 write_file 请求必回 FileWritten，
+    /// 用 poll() 断言「发/没发」）。
+    fn cr6_sess(host: &str) -> crate::ui::SideSession {
+        crate::ui::SideSession {
+            sid: 1,
+            key: crate::ui::SessionKey {
+                host: host.into(),
+                port: 22,
+                user: "u".into(),
+            },
+            ssh: crate::ssh::Ssh::spawn(),
+            host: None,
+            profile: None,
+            state: crate::ui::RemoteState::Off,
+            root: None,
+            fp_ask: None,
+            refs: 1,
+        }
+    }
+
+    /// 等 worker 回执（无连接 → write_file 必回 FileWritten::Err）。
+    fn cr6_has_file_written(ssh: &crate::ssh::Ssh) -> bool {
+        for _ in 0..40 {
+            if ssh
+                .poll()
+                .iter()
+                .any(|e| matches!(e, crate::ssh::Ev::FileWritten { .. }))
+            {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// 钉子（CR-6 冲突「取消」）：取消路径（Esc 关闭与取消按钮共用关闭出口，
+    /// CloseAction::None = 直接关）不写远端——零 FileWritten 回执、doc 在途态
+    /// 原样保留（副本在、下次保存可重试）、STAT 槽不挂。挂上匹配会话证明
+    /// 「没派发」而非「链路不可达」。
+    #[test]
+    fn conflict_internal_cancel_keeps_remote_untouched() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, mut st) = sync_fixture();
+        let p = theme::palette(&ctx);
+        let copy = std::env::temp_dir().join("ifreesftp-cr6-cancel-copy.txt");
+        std::fs::write(&copy, b"payload").unwrap();
+        st.editors
+            .open_remote("h1", &copy, "/r.txt".into(), Some(1000), true);
+        st.remotes[0].sessions.push(cr6_sess("h1"));
+        {
+            let mut d = st.editors.docs[0].lock().unwrap();
+            d.pending_upload = true;
+            d.dirty = true; // save 入队后的在途态
+        }
+        st.dialog = Dialog::ExtEditConflict {
+            side: 0,
+            tab: 0,
+            name: "r.txt".into(),
+            remote_path: "/r.txt".into(),
+            src: ExtConflictSrc::Internal {
+                doc_id: 1,
+                local_path: copy.clone(),
+            },
+        };
+        let mut main_btn = None;
+        // 帧 1：fresh → 焦点落主钮「覆盖」（打开首帧语义照常）。
+        frame(&ctx, plain_input(), &mut st, &mut main_btn, &p);
+        // 帧 2：Esc → 关闭路径（与取消按钮同出口）。
+        frame(
+            &ctx,
+            key_input(egui::Key::Escape),
+            &mut st,
+            &mut main_btn,
+            &p,
+        );
+        assert!(matches!(st.dialog, Dialog::None), "取消关闭弹窗");
+        assert!(st.doc_stat.is_none(), "取消不挂任何在途槽");
+        assert!(copy.exists(), "副本保留");
+        let d = st.editors.docs[0].lock().unwrap();
+        assert!(d.dirty && d.pending_upload, "取消不动在途态（可重试）");
+        drop(d);
+        assert!(
+            !cr6_has_file_written(&st.remotes[0].sessions[0].ssh),
+            "取消后 write_file 调用数为 0（远端内容不变）"
+        );
+    }
+
+    /// 钉子（CR-6⑤ 外部回归）：src=External 时「覆盖」仍走 ext_upload——
+    /// 请求号 = stat_seq 发号并占用挂靠 tab 的 ext_write 槽（内置路才会用
+    /// doc_id 当请求号），写请求确实发出（worker 回 FileWritten）。
+    #[test]
+    fn conflict_external_overwrite_routes_ext_upload() {
+        let _g = TEST_SER.lock().unwrap_or_else(|e| e.into_inner());
+        let (ctx, mut st) = sync_fixture();
+        let p = theme::palette(&ctx);
+        st.remotes[0].sessions.push(cr6_sess("h1"));
+        // 挂靠 tab（sid=1）+ 外部编辑会话（副本真实落盘）。
+        let copy = std::env::temp_dir().join("ifreesftp-cr6-ext-copy.txt");
+        std::fs::write(&copy, b"payload").unwrap();
+        st.remotes[0]
+            .tabs
+            .push(super::super::placeholder_remote_tab(9));
+        st.remotes[0].tabs[0].sid = 1;
+        st.remotes[0].tabs[0].ext_edits.push(crate::ui::ExtEdit {
+            host_tag: "[h1]".into(),
+            remote_path: "/r.txt".into(),
+            name: "r.txt".into(),
+            local: copy.clone(),
+            base_mtime: Some(1000),
+            baseline: (7, 1000),
+            quiet_since: None,
+            quiet_snap: None,
+            lock_wait_since: None,
+            lock_warned: false,
+            lock_dialog_done: false,
+        });
+        st.dialog = Dialog::ExtEditConflict {
+            side: 0,
+            tab: 9,
+            name: "r.txt".into(),
+            remote_path: "/r.txt".into(),
+            src: ExtConflictSrc::External,
+        };
+        let mut main_btn = None;
+        // 帧 1：fresh → 焦点落主钮「覆盖」。
+        frame(&ctx, plain_input(), &mut st, &mut main_btn, &p);
+        // 帧 2：Enter → egui 合成主钮点击（FAKE_PRIMARY_CLICKED）→ 分派。
+        frame(
+            &ctx,
+            key_input(egui::Key::Enter),
+            &mut st,
+            &mut main_btn,
+            &p,
+        );
+        assert!(matches!(st.dialog, Dialog::None), "覆盖后弹窗关闭");
+        assert_eq!(st.stat_seq, 1, "请求号 = stat_seq 发号（ext_upload 路）");
+        assert_eq!(
+            st.remotes[0].tabs[0].ext_write,
+            Some(1),
+            "ext_write 槽占用（Ev::FileWritten 外部分支按它认领）"
+        );
+        assert!(
+            cr6_has_file_written(&st.remotes[0].sessions[0].ssh),
+            "写请求确实发出（外部回归：仍走 ext_upload）"
+        );
+    }
+}
+
+// ============================================================================
+// CR-7 单批删除发号钉子：一个 tag 装 N 项时，del_pending 必须按「批」计数，
+// 否则一条 Ev::Deleted 只减 1 → 「正在删除…」永不消失。
+// ============================================================================
+#[cfg(test)]
+mod cr7_delete_batch_tests {
+    use super::*;
+
+    fn state_with_tab() -> State {
+        let mut st = State::default();
+        let tab = &mut st.remotes[1].tabs[0];
+        tab.pane.remote_path = Some("/r".to_owned());
+        tab.pane.loading = false;
+        tab.del_pending = 0;
+        st
+    }
+
+    #[test]
+    fn delete_batch_uses_one_tag_and_one_pending() {
+        let mut st = state_with_tab();
+        let tab_id = st.remotes[1].tabs[0].id;
+        let paths: Vec<(String, bool)> =
+            (0..200).map(|i| (format!("/r/f{i}.bin"), false)).collect();
+        let (tag, batch) = begin_delete_batch(&mut st, 1, tab_id, paths).expect("非空批必须发号");
+        assert_eq!(batch.len(), 200, "整批一次发出，不再逐项发 N 条 Cmd");
+        assert_eq!(st.inflight.len(), 1, "200 项整批只有一个在途 tag");
+        assert_eq!(st.inflight.get(&tag), Some(&(1usize, tab_id)));
+        assert_eq!(
+            st.remotes[1].tabs[0].del_pending, 1,
+            "del_pending 按批 +1，不是按项 +200"
+        );
+        assert!(st.remotes[1].tabs[0].pane.loading, "busy 链保活到回执");
+    }
+
+    #[test]
+    fn empty_delete_batch_does_not_leave_pending() {
+        let mut st = state_with_tab();
+        let tab_id = st.remotes[1].tabs[0].id;
+        assert!(begin_delete_batch(&mut st, 1, tab_id, Vec::new()).is_none());
+        assert!(st.inflight.is_empty(), "空批不留孤立 tag");
+        assert_eq!(st.remotes[1].tabs[0].del_pending, 0);
+        assert!(!st.remotes[1].tabs[0].pane.loading);
     }
 }

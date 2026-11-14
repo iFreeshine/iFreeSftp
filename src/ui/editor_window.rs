@@ -25,6 +25,122 @@ use crate::theme;
 
 use super::ctx_menu::CtxMenu;
 
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    /// 钉子（egui 0.37 语义备案）：TextEdit::margin() 生效时 galley_pos =
+    /// response.min + margin（body 坐标语义）。同帧再设 .frame() 会令 margin
+    /// 整个跳过（builder.rs:693-701 frame 分支优先）——编辑器 padding 因此
+    /// 必须挂 frame.inner_margin，不能依赖 margin()。
+    #[test]
+    fn textedit_margin_yields_galley_offset() {
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0)));
+        ctx.begin_pass(raw);
+        let mut root = egui::Ui::new(
+            ctx.clone(),
+            Id::unique("probe-margin"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(Rect::from_min_size(
+                    Pos2::new(100.0, 50.0),
+                    Vec2::new(300.0, 250.0),
+                )),
+        );
+        let mut text = String::from("alpha\nbeta\n");
+        let out = egui::TextEdit::multiline(&mut text)
+            .margin(egui::Margin {
+                left: 30,
+                right: 12,
+                top: 5,
+                bottom: 5,
+            })
+            .show(&mut root);
+        // response.min=(100,50) + margin=(30,5) → galley_pos=(130,55)。
+        assert_eq!(out.galley_pos, Pos2::new(130.0, 55.0));
+        ctx.end_pass().textures_delta.clear();
+    }
+
+    /// 钉子（行号可见 + 编辑工作区 padding 10px）：draw_window 一帧后——
+    /// ① 正文 galley 起点 = 编辑区左缘 + 栏沟 + 10px（4 行提示 → ln_w=44.8，
+    ///    正文 x=54.8；修复前 margin 失效正文贴 x=0）；
+    /// ② 行号 1/2/3 画在栏沟内、正坐标（修复前 pos.x=-17.8 被 clip 全裁，
+    ///    行号功能缺失）；③ 行右距恒定（纵向随行进）。
+    #[test]
+    fn editor_line_numbers_visible_and_padding_applied() {
+        let dir = std::env::temp_dir().join("ifreesftp-ew-probe");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("probe.txt");
+        std::fs::write(&f, "alpha\nbeta\ngamma\n").unwrap();
+        let mut hub = EditorHub::new();
+        hub.open_local(&f, true);
+        let doc = hub.docs[0].clone();
+        assert!(doc.lock().unwrap().line_numbers, "默认开行号");
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 720.0)));
+        ctx.begin_pass(raw);
+        let mut root = egui::Ui::new(
+            ctx.clone(),
+            Id::unique("probe-root"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 720.0))),
+        );
+        draw_window(&mut root, &doc);
+        let mut full = ctx.end_pass();
+        let mut texts = Vec::new();
+        for cs in &full.shapes {
+            if let egui::Shape::Text(t) = &cs.shape {
+                let s = t.galley.text().to_string();
+                if !s.is_empty() {
+                    texts.push((s, t.pos, cs.clip_rect));
+                }
+            }
+        }
+        // ① 正文起点：栏沟 ln_w=36.6（digits_hint 钳 3 位）+ padding 10 → x≈46
+        //   （修复前 margin 失效正文贴 x=0）。
+        let body = texts
+            .iter()
+            .find(|(s, _, _)| s.contains("alpha"))
+            .expect("正文 galley 应存在");
+        assert!(
+            body.1.x > 43.0 && body.1.x < 50.0,
+            "正文 x 应 ≈ 栏沟+10px（实测 {}）",
+            body.1.x
+        );
+        assert!(
+            body.2.min.x >= body.1.x - 1.0,
+            "正文 clip 不再吃掉 padding（clip.min.x={}）",
+            body.2.min.x
+        );
+        // ② 行号 1/2/3 画在栏沟内（右对齐至 x≈ln_w=36.6，"1" 左上 ≈28.8），
+        //    正坐标可见。
+        let nums: Vec<(String, Pos2)> = texts
+            .iter()
+            .filter(|(s, _, _)| matches!(s.as_str(), "1" | "2" | "3"))
+            .map(|(s, p, _)| (s.clone(), *p))
+            .collect();
+        assert_eq!(nums.len(), 3, "行号 1/2/3 应各画一枚");
+        for (s, pos) in &nums {
+            assert!(
+                pos.x > 24.0 && pos.x <= 37.0,
+                "行号 {s} 应落在栏沟内（实测 x={}）",
+                pos.x
+            );
+        }
+        // ③ 行号随行进（y 递增、行距 ≈ 行高 15.4）。
+        let mut ys: Vec<f32> = nums.iter().map(|(_, p)| p.y).collect();
+        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(ys[1] - ys[0] > 14.0 && ys[1] - ys[0] < 17.0);
+        assert!(ys[2] - ys[1] > 14.0 && ys[2] - ys[1] < 17.0);
+        // headless 无渲染器：未消化的字体 delta 会在 Drop 时 debug_assert。
+        full.textures_delta.clear();
+    }
+}
+
 /// 窗口默认尺寸（C# Width=960 Height=720）。
 const WIN_SIZE: [f32; 2] = [960.0, 720.0];
 /// 最小尺寸（C# MinWidth/MinHeight）。
@@ -62,6 +178,11 @@ struct Pal {
     hl_string: Color32,
 }
 
+/// 编辑器独立色板（F-11 范围外记录，2026-11-11 拍板「只具名、值一律不动」）：
+/// 本文件不走 theme:: 令牌、且被门禁 theme_literals_all_use_tokens 豁免。
+/// 已知差异仅记录不改值——ok 绿（亮 0x0F7B0F / 暗 0x6CCB7F）与
+/// Palette.success_fg（亮 0x107C10）不同源；danger 亮值 0xC42B1C 同
+/// theme::CAPTION_CLOSE_HOVER 字面但语义独立（编辑器内联红，非 caption 钮）。
 fn pal(dark: bool) -> Pal {
     if dark {
         Pal {
@@ -159,6 +280,8 @@ pub fn show_all(ctx: &egui::Context, hub: &mut EditorHub, dark: bool) {
             .with_title(title)
             .with_inner_size(WIN_SIZE)
             .with_min_inner_size(MIN_SIZE)
+            // 自绘标题栏：边缘缩放由 ui::edge_resize 命中区接手（同主窗口）。
+            .with_resizable(true)
             .with_decorations(false);
         if let Some(icon) = app_icon() {
             builder = builder.with_icon(icon);
@@ -213,7 +336,7 @@ fn draw_window(ui: &mut egui::Ui, doc: &Arc<Mutex<EditorDoc>>) {
         ctx.memory_mut(|m| m.request_focus(Id::unique(("editor-find", d.id))));
     }
     if ctrl_s && d.load_error.is_none() {
-        save_doc(&mut d);
+        save_doc(&mut d, &ctx);
     }
 
     // 工具栏「撤消」置位，draw_editor 里 TextEdit show 后执行（需要 galley 读选区）。
@@ -243,7 +366,7 @@ fn draw_window(ui: &mut egui::Ui, doc: &Arc<Mutex<EditorDoc>>) {
             }
             draw_editor(ui, &mut d, body, &p, want_undo, cm);
             if d.search.open {
-                draw_search(ui, &mut d, body, &p);
+                draw_search(ui, &mut d, body, &p, cm);
             }
             draw_status(ui, &mut d, status_r, &p);
             if d.close_ask {
@@ -253,6 +376,11 @@ fn draw_window(ui: &mut egui::Ui, doc: &Arc<Mutex<EditorDoc>>) {
 
     // 帧尾画浮层菜单（编辑区本帧未注册如加载失败则自动收掉）。
     cm.frame_end(&ctx);
+    // 边缘缩放命中区：须在一切控件之后注册（命中优先级最高，见 edge_resize 注释）。
+    // 子视口自己的关闭确认框即弹层，期间整层跳过。
+    super::edge_resize(ui, d.close_ask);
+    // F-8：子视口帧尾也要裁决一次，否则它的光标恒为 Default。
+    super::cursor_decide(ui.ctx());
 
     // closed 生效后（✕ / 不保存 / 保存并关闭 / 干净文档 Alt+F4），窗口回收依赖
     // 主窗口 show_all「不再重声明」；而 eframe 里子视口重绘只跑子闭包，主窗口
@@ -420,7 +548,7 @@ fn draw_toolbar(ui: &mut egui::Ui, d: &mut EditorDoc, r: Rect, p: &Pal, want_und
         super::accent_tip(resp, tips[i]);
         if clicked {
             match act {
-                0 => save_doc(d),
+                0 => save_doc(d, ui.ctx()),
                 1 => *want_undo = true,
                 2 => {
                     d.search.open = true;
@@ -436,10 +564,15 @@ fn draw_toolbar(ui: &mut egui::Ui, d: &mut EditorDoc, r: Rect, p: &Pal, want_und
     }
 }
 
-fn save_doc(d: &mut EditorDoc) {
+/// 保存（Ctrl+S / 工具钮 / 保存并关闭三入口共用）。保存成功且为远程文档时
+/// 请求主窗口（ROOT）补一帧——编辑器是独立视口，主窗口闲置不会自行重绘，
+/// 不唤醒则「上传编辑副本…」要等用户碰主窗口才出现（首帧唤醒，项1）。
+fn save_doc(d: &mut EditorDoc, ctx: &egui::Context) {
     d.save_err = None;
     if let Err(e) = d.save() {
         d.save_err = Some(e);
+    } else if d.remote.is_some() {
+        ctx.request_repaint_of(egui::ViewportId::ROOT);
     }
 }
 
@@ -480,54 +613,70 @@ fn draw_editor(
             let job = highlight_job(p, buf.as_str(), wrap_width, wrap, lang);
             ui.fonts_mut(|f| f.layout_job(job))
         };
-    let out = area
+    let result = area
         .auto_shrink(false)
         .id_salt(text_id.with("scroll"))
+        // 底部横向滚动条上移一点（2026-11-12 用户定）：与状态栏留 6px 空隙，
+        // 不再贴死编辑区下缘。scroll_bar_rect = 屏幕空间矩形。
+        .scroll_bar_rect(Rect::from_min_max(
+            r.min,
+            Pos2::new(r.right(), r.bottom() - 6.0),
+        ))
         .show(&mut body_ui, |sui| {
-            let out = TextEdit::multiline(&mut d.text)
+            // 编辑工作区四周 padding 10px（2026-11-12 用户定）；行号开时左缘
+            // 先让出栏沟（ln_w）再加 padding。
+            // egui 0.37 坑：TextEdit::margin() 只在未设置 .frame() 时生效——
+            // builder.rs:693-701 frame 分支优先，margin 被整个跳过。此前
+            // .frame(Frame::new()) 令 padding 全灭（正文贴边）、行号按
+            // galley_pos.x-10 画进负坐标被 clip 裁掉（行号缺失根因）。
+            // padding 须挂 frame 的 inner_margin。
+            let pad = 10.0;
+            let left_pad = if line_numbers { ln_w + pad } else { pad };
+            TextEdit::multiline(&mut d.text)
                 .id(text_id)
                 .font(FontSelection::FontId(egui::FontId::monospace(TEXT_SIZE)))
                 .text_color(p.fore)
-                .frame(egui::Frame::new())
-                .margin(egui::Margin {
-                    left: (ln_w + 6.0) as i8,
-                    right: 12,
-                    top: 5,
-                    bottom: 5,
-                })
+                .frame(egui::Frame::new().inner_margin(egui::Margin {
+                    left: left_pad as i8,
+                    right: pad as i8,
+                    top: pad as i8,
+                    bottom: pad as i8,
+                }))
                 .desired_width(if wrap { r.width() } else { f32::INFINITY })
                 .layouter(&mut layouter)
-                .show(sui);
+                .show(sui)
+        });
+    let out = result.inner;
 
-            // 行号叠加（随内容滚动、裁剪到可视区）：逻辑行首画号，wrap 续行不画（AvalonEdit 同）。
-            if line_numbers {
-                let painter = sui.painter();
-                let clip = sui.clip_rect();
-                let mut logical = 1usize;
-                let rows = &out.galley.rows;
-                for (k, placed) in rows.iter().enumerate() {
-                    if k > 0 && rows[k - 1].ends_with_newline {
-                        logical += 1;
-                    }
-                    let top = out.galley_pos.y + placed.pos.y;
-                    let h = placed.rect().height();
-                    if top + h < clip.top() || top > clip.bottom() {
-                        continue;
-                    }
-                    if k == 0 || rows[k - 1].ends_with_newline {
-                        painter.text(
-                            Pos2::new(out.galley_pos.x - 10.0, top + h / 2.0),
-                            Align2::RIGHT_CENTER,
-                            logical.to_string(),
-                            FontId::monospace(TEXT_SIZE),
-                            p.line_no,
-                        );
-                    }
-                }
+    // 行号叠加（固着左侧栏沟：横向不随内容滚走、纵向随滚动行进；裁剪到
+    // 编辑区可视范围）。wrap 续行不画（AvalonEdit 同款）。galley_pos 是
+    // body 坐标（含 r.min 与 margin），scroll 内容的绘制 transform 已含
+    // -offset，固着栏沟须手动减回 offset.y。
+    if line_numbers {
+        let painter = body_ui.painter();
+        let offset_y = result.state.clamped_offset().y;
+        let mut logical = 1usize;
+        let rows = &out.galley.rows;
+        for (k, placed) in rows.iter().enumerate() {
+            if k > 0 && rows[k - 1].ends_with_newline {
+                logical += 1;
             }
-            out
-        })
-        .inner;
+            let top = out.galley_pos.y + placed.pos.y - offset_y;
+            let h = placed.rect().height();
+            if top + h < r.top() || top > r.bottom() {
+                continue;
+            }
+            if k == 0 || rows[k - 1].ends_with_newline {
+                painter.text(
+                    Pos2::new(r.left() + ln_w, top + h / 2.0),
+                    Align2::RIGHT_CENTER,
+                    logical.to_string(),
+                    FontId::monospace(TEXT_SIZE),
+                    p.line_no,
+                );
+            }
+        }
+    }
 
     // 注册右键菜单（无「全选」；rect = TextEdit 内容区）。
     cm.register_plain(out.response.id, out.response.rect);
@@ -767,7 +916,7 @@ fn line_col(text: &str, idx: usize) -> (usize, usize) {
 
 // ── 查找/替换浮层（右上角卡片）───────────────────────────────
 
-fn draw_search(ui: &mut egui::Ui, d: &mut EditorDoc, body: Rect, p: &Pal) {
+fn draw_search(ui: &mut egui::Ui, d: &mut EditorDoc, body: Rect, p: &Pal, cm: &mut CtxMenu) {
     let w = 372.0;
     let h = if d.search.show_replace { 74.0 } else { 42.0 };
     let card = Rect::from_min_size(
@@ -797,7 +946,7 @@ fn draw_search(ui: &mut egui::Ui, d: &mut EditorDoc, body: Rect, p: &Pal) {
     // 第一行：查找输入 + Aa + ↑↓ + ×。
     let find_r = Rect::from_min_size(Pos2::new(x0, y0), Vec2::new(input_w, small));
     let find_id = Id::unique(("editor-find", d.id));
-    input_box(ui, find_r, find_id, &mut d.search.find, p);
+    input_box(ui, find_r, find_id, &mut d.search.find, p, cm);
     let mut cx = find_r.right() + 6.0;
 
     // Aa（大小写 toggle）。
@@ -856,6 +1005,7 @@ fn draw_search(ui: &mut egui::Ui, d: &mut EditorDoc, body: Rect, p: &Pal) {
             Id::unique(("editor-replace", d.id)),
             &mut d.search.replace,
             p,
+            cm,
         );
         let mut cx = rep_r.right() + 6.0;
         let rep_btn = |ui: &mut egui::Ui, r: Rect, label: &str, p: &Pal, en: bool| {
@@ -998,7 +1148,7 @@ fn find_all(hay: &str, needle: &str, case: bool) -> Vec<(usize, usize)> {
 }
 
 /// 查找输入框（单行；首帧获焦由 Ctrl+F 的 request_focus 处理）。
-fn input_box(ui: &mut egui::Ui, r: Rect, id: Id, text: &mut String, p: &Pal) {
+fn input_box(ui: &mut egui::Ui, r: Rect, id: Id, text: &mut String, p: &Pal, cm: &mut CtxMenu) {
     ui.painter().rect_filled(r, 4.0, p.input_bg);
     ui.painter()
         .rect_stroke(r, 4.0, Stroke::new(1.0, p.sep), egui::StrokeKind::Inside);
@@ -1028,7 +1178,10 @@ fn input_box(ui: &mut egui::Ui, r: Rect, id: Id, text: &mut String, p: &Pal) {
             .frame(egui::Frame::new())
             .margin(egui::Margin::same(4));
         let out = te.show(ui);
-        let _ = out;
+        // 右键菜单（复制/剪切/粘贴/全选）：注册进本文档 viewport 实例
+        // （编辑器窗口是独立 egui 帧，主窗口 st.ctx_menu 管不到这里）。
+        // 仅聚焦帧注册：未聚焦时只有点击命中面，选区复制只发生在聚焦态。
+        cm.register(out.response.id, out.response.rect);
         // 输入变化即重算匹配（下一帧 find_all 分支处理）。
     } else {
         ui.painter().text(
@@ -1078,9 +1231,13 @@ fn draw_status(ui: &mut egui::Ui, d: &mut EditorDoc, r: Rect, p: &Pal) {
         FontId::proportional(11.0),
         p.dim,
     );
-    // 保存错误（红）优先于编码标签。
+    // 右侧四级优先（CR-6）：save_err（红）> 正在回传… > 成功回执 > 编码标签。
     let right = if let Some(err) = &d.save_err {
         (err.clone(), p.danger)
+    } else if d.pending_upload {
+        (t("正在回传…").to_owned(), p.dim)
+    } else if let Some(rct) = &d.last_receipt {
+        (rct.clone(), p.dim)
     } else {
         (d.enc.label().to_owned(), p.dim)
     };
@@ -1194,7 +1351,7 @@ fn draw_close_ask(ui: &mut egui::Ui, d: &mut EditorDoc, full: Rect, p: &Pal) {
         ui.allocate_rect(cancel_r, Sense::click()),
     );
     if s.clicked() {
-        save_doc(d);
+        save_doc(d, ui.ctx());
         if d.save_err.is_none() {
             d.closed = true;
         } else {

@@ -15,11 +15,46 @@ pub fn is_en() -> bool {
 
 /// 中文原文 → 当前语言文案。键必须是 i18n 表中的中文原文（与 resw 值逐字一致）。
 pub fn t(zh: &'static str) -> &'static str {
-    if !is_en() {
+    t_for(zh, is_en())
+}
+
+/// 语言显式版（T20-E-R）：行为与 `t` 完全一致，只是把语言作为入参，供
+/// 「不改写全局 language 态」的纯逻辑判定 / 中英钉子复用（并行用例零串扰）。
+pub fn t_for(zh: &'static str, en: bool) -> &'static str {
+    if !en {
         return zh;
     }
     match zh {
+        // C 方案（非 Windows 凭据降级声明，CROSS_PLATFORM.md §3）。
+        "本平台不保存密码" => "Passwords are not saved on this platform",
+        "请改用密钥文件，或清空密码后在连接时输入；未清空前本平台不会写入存档" => {
+            "Use a key file instead, or clear the password and enter it when connecting. The host list is not written to disk while a password is set"
+        }
+        "凭据需重新录入" => "Credential needs to be re-entered",
+        "部分主机的密码无法在本平台解密，请在密码框重新输入；本次输入仅保存在内存中，不会写入存档" => {
+            "Some saved passwords cannot be decrypted on this platform. Re-enter them in the password field; the value stays in memory only and is never written to disk"
+        }
+        "请先在密码框输入本次连接密码；该密码仅保存在内存中" => {
+            "Enter the connection password in the password field first; it is kept in memory only"
+        }
         "\"{0}\" 已回传到远端" => "\"{0}\" uploaded back to remote",
+        // 写锁超时兜底（项6）：等待编辑器保存的分级提醒与退出对话框。
+        "写锁已释放，继续回传" => "Write lock released, resuming upload",
+        "写锁未释放，已暂缓回传：{0}（{1}s）" => {
+            "Write lock not released, upload deferred: {0} ({1}s)"
+        }
+        "写锁未释放，已暂缓回传：{0}（{1}s）——不会上传半写文件" => {
+            "Write lock not released, upload deferred: {0} ({1}s) — half-written files are never uploaded"
+        }
+        "等待编辑器完成保存…" => "Waiting for the editor to finish saving…",
+        "文件 {0} 的写锁仍未释放，回传已暂缓。本地副本完好，不会上传半写文件。" => {
+            "The write lock on {0} is still held; the upload is deferred. The local copy is intact — half-written files are never uploaded."
+        }
+        "立即重试探测" => "Retry probe now",
+        "取消本次回传" => "Cancel this upload",
+        "已取消回传：{0}（本地副本保留）" => {
+            "Upload cancelled: {0} (local copy kept)"
+        }
         "\"{0}\" 的文件缓存已经改变，是否保存编辑结果？" => {
             "The cached copy of \"{0}\" has changed. Save the edits to the server?"
         }
@@ -59,14 +94,21 @@ pub fn t(zh: &'static str) -> &'static str {
         "[tar 加速] 服务端命令失败（退出码 {1}）：{0} → {2}" => {
             "[tar accel] Server command failed (exit {1}): {0} -> {2}"
         }
-        "[tar 加速] 本地 tar 进程 {0} 秒未退出，已终止" => {
-            "[tar accel] Local tar process did not exit within {0} s, killed"
+        "[tar 加速] 远端 tar+gzip 不可用，回退逐文件传输" => {
+            "[tar accel] Remote tar+gzip unavailable, falling back to per-file transfer"
         }
-        "[tar 加速] 本机 tar 失败（退出码 {0}）：{1}" => {
-            "[tar accel] Local tar failed (exit {0}): {1}"
+        "[tar 加速] 本地打包失败：{0}" => "[tar accel] Local packing failed: {0}",
+        "[命令通道] Windows 服务器, 暂不支持服务端哈希, 校验码菜单已禁用" => {
+            "[cmd] Windows server, server-side hashing unsupported, checksum menu disabled"
         }
-        "[tar 加速] 本机没有 tar 命令，回退逐文件传输" => {
-            "[tar accel] No local tar command, falling back to per-file transfer"
+        "[命令通道] 不可用, 校验跳过（本机回退未实现）: {0}" => {
+            "[cmd] unavailable, checksum skipped (no local fallback): {0}"
+        }
+        "[命令通道] 不可用, 校验跳过（本机回退未实现）: 解析异常输出 {0}" => {
+            "[cmd] unavailable, checksum skipped (no local fallback): unexpected output {0}"
+        }
+        "[命令通道] 服务端哈希探测: sha256sum={0} sha512sum={1} SM3(openssl)={2}" => {
+            "[cmd] server hash probe: sha256sum={0} sha512sum={1} SM3(openssl)={2}"
         }
         "[校验] 校验不匹配：{0}（本地 {1} / 远端 {2}）" => {
             "[verify] Mismatch: {0} (local {1} / remote {2})"
@@ -84,8 +126,8 @@ pub fn t(zh: &'static str) -> &'static str {
         }
         "iFreeSftp" => "iFreeSftp",
         "iFreeSftp 存档 (JSON)" => "iFreeSftp archive (JSON)",
-        "iFreeSftp 永久免费。如果它对你有帮助，欢迎注册成为支持者——这是对开发的支持，不与任何功能绑定。" => {
-            "iFreeSftp is free, forever. If you find it useful, please consider registering as a supporter — a purely voluntary way to support development, not a feature unlock."
+        "如果它对你有帮助，欢迎注册成为支持者——这是对开发的支持，不与任何功能绑定。" => {
+            "If you find it useful, please consider registering as a supporter — a purely voluntary way to support development, not a feature unlock."
         }
         "keep-alive" => "keep-alive",
         "keep-alive 连接" => "Keep alive",
@@ -108,10 +150,11 @@ pub fn t(zh: &'static str) -> &'static str {
         "上传" => "Upload",
         "上传队列" => "Upload queue",
         "下载" => "Download",
-        "不使用服务端命令，通过 SFTP 协议逐条递归删除，兼容所有服务器；大目录耗时较长。" => {
-            "No server-side command; deletes item by item over the SFTP protocol, works with every server, slower for large directories."
+        "通过 SFTP 协议逐条递归删除，兼容所有服务器；大目录耗时较长。" => {
+            "Deletes item by item over the SFTP protocol; works with every server but is slower for large directories."
         }
         "不关了" => "Keep tab",
+        "不可用" => "unavailable",
         "两侧目录不一致，无法建立同步浏览" => {
             "The two sides are out of sync; sync browse cannot start"
         }
@@ -145,11 +188,14 @@ pub fn t(zh: &'static str) -> &'static str {
         "传输到 {0}" => "Transfer to {0}",
         "传输到另一侧" => "Transfer to other pane",
         "传输后保留修改时间" => "Preserve timestamps after transfer",
+        "传输成功时把源文件的修改时间同步到目标侧（tar 路径经 tar 头天然保留）；仅同步文件，目录不做；失败只记日志。默认开启。" => {
+            "Sync the source file's last-modified time to the destination after each transfer (the tar path preserves it via tar headers); files only, not directories. Failures are logged only. On by default."
+        }
         "传输后校验" => "Verify after transfer",
         "传输失败" => "Failed",
         "传输完成" => "Completed",
-        "传输完成后自动比对本地与远端文件杂凑（经 exec 通道，不占传输链路），不一致的任务标记失败，尽早暴露损坏文件；命令通道不可用时跳过校验，不影响传输结果。默认关闭。" => {
-            "After each transfer, compare local and remote file hashes over the exec channel and flag mismatched files as failed to surface corruption early. Skips verification when the command channel is unavailable; never affects the transfer result. Off by default."
+        "完成后经 exec 通道比对本地与远端文件杂凑，不一致的任务标记失败；命令通道不可用时跳过校验，不影响传输结果。默认关闭。" => {
+            "After each transfer, file hashes are compared over the exec channel and mismatched tasks are flagged as failed. Skips verification when the command channel is unavailable; never affects the transfer result. Off by default."
         }
         "传输完成：成功 {0} 项，跳过 {1} 项，失败 {2} 项" => {
             "Transfer finished: {0} succeeded, {1} skipped, {2} failed"
@@ -197,8 +243,8 @@ pub fn t(zh: &'static str) -> &'static str {
         "切换树形目录" => "Toggle folder tree",
         "删除" => "Delete",
         "删除失败：{0}（{1}）" => "Delete failed: {0} ({1})",
-        "删除远程目录时优先使用服务端命令（rm -rf，海量文件秒级）；命令通道不可用或未能删净时自动回退 SFTP 递归。" => {
-            "Deletes directories via the server-side command (rm -rf) first — huge directories finish in seconds; falls back to SFTP recursion when the command channel is unavailable or the removal is incomplete."
+        "优先用服务端命令 rm -rf 删除远程目录（海量文件秒级）；命令通道不可用或未能删净时回退 SFTP 递归。" => {
+            "Deletes remote directories with the server-side command (rm -rf) first — huge directories finish in seconds; falls back to SFTP recursion when the command channel is unavailable or the removal is incomplete."
         }
         "刷新" => "Refresh",
         "副本" => "Copy",
@@ -216,8 +262,9 @@ pub fn t(zh: &'static str) -> &'static str {
         }
         "取消" => "Cancel",
         "取消队列并关闭" => "Cancel queue and close",
-        "同时进行的传输任务数。1 = 串行并复用当前连接；大于 1 时每个任务使用独立连接，多文件传输更快，部分服务器可能限制连接数。" => {
-            "Number of transfers running at the same time. 1 = serial on the current connection; above 1 each task uses its own connection, which speeds up multi-file transfers, but some servers may limit connections."
+        "可用" => "available",
+        "传输一律使用独立连接：1 = 单连接串行，大于 1 时多连接并发，多文件传输更快；部分服务器可能限制连接数。" => {
+            "Transfers always use their own connections: 1 = one connection, serial; above 1, several connections run in parallel, which speeds up multi-file transfers. Some servers may limit connections."
         }
         "同步" => "Sync",
         "同步浏览" => "Sync browse",
@@ -279,6 +326,7 @@ pub fn t(zh: &'static str) -> &'static str {
         "已复制" => "Copied",
         "已复制 {0} 项到另一侧" => "Copied {0} item(s) to other pane",
         "已存在" => "Already exists",
+        "本次扫描中重复" => "Duplicate in this scan",
         "已导入 {0} 条会话" => "Imported {0} sessions",
         "已拦截远程通道下发的链接（非 http/https）" => {
             "Blocked a link from remote channel (not http/https)"
@@ -308,8 +356,8 @@ pub fn t(zh: &'static str) -> &'static str {
             "Max wait while establishing the SSH connection (seconds); auto-retries on timeout"
         }
         "开启同步" => "Enable sync",
-        "开启后，大文件传输中断可从断点续传：目标小于源时追加，大小相等或目标更大一律全量重传。同名旧文件会先弹窗确认，选择\"覆盖\"即全量重传，不会误追加。适合大文件经不稳定链路传输，默认开启。" => {
-            "When enabled, interrupted large-file transfers resume from the breakpoint: the destination is appended to only if it is smaller than the source; equal or larger destinations are always re-sent in full. An existing file with the same name is confirmed via a conflict dialog — choosing Overwrite always re-sends in full and never appends. Intended for large files over unstable links; on by default."
+        "中断后从断点继续：目标小于源时追加，否则全量重传；同名旧文件先弹窗确认，不会误追加。默认开启。" => {
+            "Resumes from the breakpoint after an interruption: append when the destination is smaller than the source, otherwise re-send in full. A same-name file is confirmed via a dialog first, so nothing is appended by mistake. On by default."
         }
         "开启比较" => "Enable comparison",
         "开始传输 {0} 项 → {1}" => "Transferring {0} item(s) → {1}",
@@ -338,6 +386,7 @@ pub fn t(zh: &'static str) -> &'static str {
         "打开目录" => "Open folder",
         "打开目标" => "Open target",
         "执行" => "Execute",
+        "扫描中" => "Scanning",
         "批量删除失败（{0} 项，首项 {1}）：{2}" => {
             "Batch delete failed ({0} items, first: {1}): {2}"
         }
@@ -403,7 +452,6 @@ pub fn t(zh: &'static str) -> &'static str {
         "本应用以 GNU AGPL-3.0 许可证开源发布。ifrees.top 发布版额外集成了独立分发的增值组件，这些组件不包含在本仓库源码。" => {
             "The app is released as open source under the GNU AGPL-3.0 license. The release from ifrees.top additionally bundles separately distributed value-added components that are not part of this repository's source."
         }
-        "本次扫描中重复" => "Duplicate in this scan",
         "权限" => "Permissions",
         "权限已更新为 {0}" => "Permissions updated to {0}",
         "校验不匹配" => "Mismatch",
@@ -418,6 +466,26 @@ pub fn t(zh: &'static str) -> &'static str {
         "正在传输 {0}…" => "Transferring {0}…",
         "正在准备传输（探测目标/统计文件）…" => {
             "Preparing transfer (checking target/counting files)…"
+        }
+        "已落位 {0} 项已开始传输，本次确认只处理剩余 {1} 项（其中冲突 {2} 项）" => {
+            "{0} items already queued and transferring; this confirmation only covers the remaining {1} ({2} conflicts)"
+        }
+        "预检超时：{0} 项未完成探测，已按远端不存在放行（传输时按续传决策兜底）" => {
+            "Precheck timeout: {0} items were not probed and queued as if absent (resume policy decides at transfer time)"
+        }
+        // F1：覆盖确认三按钮按下必有确定结果（入队或明确放弃）——对账日志键。
+        "已跳过 {0} 个冲突项，无剩余任务入队" => {
+            "Skipped {0} conflicting items; no tasks left to queue"
+        }
+        "已取消传输确认：{0} 项未入队" => {
+            "Transfer confirmation canceled: {0} items not queued"
+        }
+        "已放弃上一批待确认的 {0} 项（未入队）" => {
+            "Abandoned {0} unconfirmed items from the previous batch (not queued)"
+        }
+        // 覆盖确认弹窗勾选语义提示行（F-10 方案A：逐项勾选分流）。
+        "勾选的冲突项覆盖上传，未勾选的跳过" => {
+            "Checked conflicts are overwritten and uploaded; unchecked ones are skipped"
         }
         "正在扫描…" => "Scanning…",
         "正在检查…" => "Checking…",
@@ -464,11 +532,12 @@ pub fn t(zh: &'static str) -> &'static str {
         "界面配色跟随系统，或手动指定深浅" => {
             "Follow the system theme, or pick dark or light manually"
         }
+        "跟随系统" => "Follow system",
         "登录方式" => "Authentication",
         "登录重试延迟（秒）" => "Retry delay (s)",
         "目录不存在: {0}" => "Directory not found: {0}",
-        "目录传输文件数较多时用单流打包替代逐文件往返（海量小文件数量级提速）；本地或服务端没有 tar、命令失败时自动回退逐文件，结果不变。tar 模式为整目录单任务，失败只能整体重试。" => {
-            "For directories with many files, a single packed stream replaces per-file round trips (orders of magnitude faster for huge numbers of small files). Falls back to per-file transfer automatically when tar is unavailable locally or on the server, or when a command fails, with the same result. Tar mode is one task for the whole directory; a failure restarts everything."
+        "目录文件数达到阈值时用单流打包替代逐文件往返（海量小文件数量级提速）；远端 tar+gzip 不可用或本地扫描失败时回退逐文件传输，开始传输后失败只能整体重试。" => {
+            "For directories with many files, a single packed stream replaces per-file round trips (orders of magnitude faster for huge numbers of small files). Falls back to per-file transfer when remote tar+gzip is unavailable or the local scan fails; once started, a failure restarts the whole transfer."
         }
         "目录内文件数达到该值才改用单流打包，少量文件逐文件直传更快" => {
             "Switch to single-stream packing only when a directory contains at least this many files; per-file transfer is faster for small batches."
@@ -504,8 +573,8 @@ pub fn t(zh: &'static str) -> &'static str {
         "群组" => "Group",
         "脚本文件" => "Script File",
         "自动" => "Auto",
-        "自动：按服务端支持情况选最强算法（SHA256 → SHA512 → SM3）；固定算法不可用时校验跳过" => {
-            "Auto: pick the strongest algorithm the server supports (SHA256 → SHA512 → SM3). A fixed algorithm that is unavailable skips verification."
+        "自动：按可用性顺位选用（SHA256 → SHA512 → SM3）；固定算法不可用时校验跳过" => {
+            "Auto: pick the first available algorithm in order (SHA256 → SHA512 → SM3). A fixed algorithm that is unavailable skips verification."
         }
         "覆盖" => "Overwrite",
         "视频文件" => "Video File",
@@ -542,19 +611,17 @@ pub fn t(zh: &'static str) -> &'static str {
             "Connection failed: {0}. Retrying (attempt {2}/{3}) in {1} s …"
         }
         "连接成功" => "Connection successful",
+        "连接已断开" => "Disconnected",
         "连接打开方式" => "Open connections in",
         "连接超时（秒）" => "Connect timeout (s)",
         "选择主机" => "Choose host",
-        "选择外部编辑器的可执行文件（如 notepad++、VS Code）。路径留空时回退使用内置编辑器。" => {
-            "Pick the executable of your external editor (e.g. Notepad++, VS Code). Leave empty to fall back to the built-in editor."
+        "外部编辑器可执行文件（如 notepad++、VS Code）；留空使用内置编辑器。" => {
+            "Executable of the external editor (e.g. Notepad++, VS Code); leave empty to use the built-in editor."
         }
         "选择打开文件使用的编辑器" => "Which editor opens when editing files",
         "选择要扫描的来源" => "Choose sources to scan",
         "选择要浏览的本地或远端文件系统" => {
             "Choose a local or remote file system to browse"
-        }
-        "逐文件传输成功时把源文件的修改时间同步到目标侧，与 tar 打包传输的行为统一；仅同步文件本身，目录时间戳不做。同步失败只记日志，不影响传输结果。默认开启。" => {
-            "Sync the source file's last-modified time to the destination after each per-file transfer, matching tar-archive transfers; files only, not directories. Failures are logged only and never fail the transfer. On by default."
         }
         "速度" => "Speed",
         "重命名" => "Rename",
@@ -572,16 +639,17 @@ pub fn t(zh: &'static str) -> &'static str {
             "Connecting to {0} for the first time. The host identity cannot be verified.\n\nHost key fingerprint (SHA256):\n{1}\n\nTrust this host and continue?"
         }
         // T6 差集补账：以下为全仓扫描出的漏翻键（差集守卫测试 i18n::tests 拦截）。
-        "SM3 暂不支持" => "SM3 not supported",
+        "关闭 {0}" => "Close {0}",
         "[远程]" => "[Remote]",
         "主机尚未保存进存档，指纹仅本会话生效" => {
             "Host not saved to profiles yet; the fingerprint only lasts for this session"
         }
         "传输连接超时" => "Transfer connection timed out",
-        "全部覆盖" => "Overwrite all",
         "内部错误：目录任务未展开" => "Internal error: directory task was not expanded",
         "内部错误：非目录任务" => "Internal error: not a directory task",
         "加载中…" => "Loading…",
+        "正在删除…" => "Deleting…",
+        "目录读取失败" => "Failed to read directory",
         "同步浏览: 两侧目录仍不一致" => "Sync browse: directories still out of sync",
         "命令无输出" => "Command produced no output",
         "命令超时（10 秒）" => "Command timed out (10 s)",
@@ -599,13 +667,6 @@ pub fn t(zh: &'static str) -> &'static str {
         }
         "无远程连接档案" => "No remote connection profile",
         "未连接远程主机" => "Not connected to a remote host",
-        "本机 tar 进程异常退出" => "Local tar process exited abnormally",
-        "本机 tar 进程无 stderr 管道（内部异常）" => {
-            "Local tar process has no stderr pipe (internal error)"
-        }
-        "本机 tar 进程无 stdout 管道（内部异常）" => {
-            "Local tar process has no stdout pipe (internal error)"
-        }
         "正在建立 SSH 连接" => "Establishing SSH connection",
         "正在连接…" => "Connecting…",
         "注册码格式错误" => "Invalid license key format",
@@ -621,7 +682,6 @@ pub fn t(zh: &'static str) -> &'static str {
         "认证失败：私钥被服务器拒绝" => {
             "Authentication failed: the server rejected the private key"
         }
-        "跳过冲突项" => "Skip conflicts",
         "连接不可用（内部状态异常）" => {
             "Connection unavailable (unexpected internal state)"
         }
@@ -636,6 +696,15 @@ pub fn t(zh: &'static str) -> &'static str {
             "[tar accel] Local directory scan failed, falling back to per-file: {0}"
         }
         "[{0}] 上传编辑副本…" => "[{0}] Uploading edited copy…",
+        // CR-6 内置编辑器保存回传闭环：失败态 / 回执 / 终端日志。
+        "[{0}] 回传未完成：{1}" => "[{0}] Upload incomplete: {1}",
+        "回传未完成：{0}" => "Upload incomplete: {0}",
+        "未找到主机会话" => "Host session not found",
+        "正在回传…" => "Uploading…",
+        "已回传 {0} 字节 · {1}" => "Uploaded {0} bytes · {1}",
+        "{0} 已回传 {1} 字节，远端 mtime {2}：{3}" => {
+            "{0} uploaded {1} bytes, remote mtime {2}: {3}"
+        }
         "[中转] 阶段 1/2 下载：{0} → 本地中转" => {
             "[relay] Stage 1/2 download: {0} -> local relay"
         }
@@ -643,6 +712,9 @@ pub fn t(zh: &'static str) -> &'static str {
             "[relay] Stage 2/2 upload: local relay -> {0}"
         }
         "[传输] 失败：{0} → {1}：{2}" => "[transfer] Failed: {0} -> {1}: {2}",
+        "[本地] 批量删除失败 {0} 项：{1}" => {
+            "[local] Batch delete failed for {0} item(s): {1}"
+        }
         "[本地] 删除失败 {0}：{1}" => "[local] Delete failed {0}: {1}",
         "[本地] 已删除 {0}" => "[local] Deleted {0}",
         "[续传] 从断点续传：{0}（{1}/{2} 字节）" => {
@@ -667,7 +739,6 @@ pub fn t(zh: &'static str) -> &'static str {
         "创建中转目录失败：{0}" => "Failed to create relay directory: {0}",
         "创建临时目录失败：{0}" => "Failed to create temp directory: {0}",
         "合并目录失败：{0}" => "Failed to merge directory: {0}",
-        "启动本机 tar 失败：{0}" => "Failed to start local tar: {0}",
         "命令退出码 {0}" => "Command exit code {0}",
         "复制落盘失败：{0}（副本已加入列表，保存可重试）" => {
             "Failed to copy to disk: {0} (the entry was still added; use Save to retry)"
@@ -683,6 +754,9 @@ pub fn t(zh: &'static str) -> &'static str {
         }
         "新建文件失败：{0}（{1}）" => "Failed to create file: {0} ({1})",
         "新建文件夹失败：{0}（{1}）" => "Failed to create folder: {0} ({1})",
+        "远程重命名：{0} → {1}" => "Remote rename: {0} → {1}",
+        "重命名失败：{0}（{1}）" => "Rename failed: {0} ({1})",
+        "保留修改时间" => "Preserve modified time",
         "服务端命令超时：{0}" => "Server command timed out: {0}",
         "本机解包任务失败：{0}" => "Local unpack task failed: {0}",
         "枚举源目录失败：{0}" => "Failed to enumerate source directory: {0}",
@@ -701,6 +775,8 @@ pub fn t(zh: &'static str) -> &'static str {
         "计算失败：{0}" => "Hash computation failed: {0}",
         "认证超时（{0} 秒）" => "Authentication timed out ({0} s)",
         "设置保存失败：{0}" => "Failed to save settings: {0}",
+        // CR-2：设置落盘失败全局提示条（持续可见，成功落盘后自动消失）。
+        "设置未保存，正在自动重试" => "Settings not saved - retrying automatically",
         "读取失败：{0}" => "Read failed: {0}",
         "读取源失败：{0}" => "Failed to read source: {0}",
         "读取源文件失败：{0}" => "Failed to read source file: {0}",

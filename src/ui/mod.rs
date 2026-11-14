@@ -23,6 +23,8 @@ use crate::theme;
 /// Header.xaml.cs UpdateTitleBarMetrics：按钮高 = caption 条高 − 10，上下各留 5；
 /// 元素最大高 33（按钮/胶囊），故取 33 + 10 = 43，元素尺寸不变、条内垂直居中）。
 pub const HEADER_H: f32 = 43.0;
+/// CR-2：设置落盘失败全局提示条高（12px 字 + 上下留白）。
+const SAVE_BAR_H: f32 = 26.0;
 /// ShellBorder BorderThickness（左,上,右,下）。
 const SHELL_BORDER: (f32, f32, f32, f32) = (5.0, 0.0, 5.0, 5.0);
 /// 单个窗格最小宽（拖拽钳制，防拖没）。
@@ -70,7 +72,247 @@ pub struct PendingTx {
     /// 批级传输档案所在侧（Upload/Relay = 目标远程侧；Download = 源远程侧；
     /// 本地→本地 = 源侧）。STAT 回流与入队均按此侧取 ssh / 连接档案。
     pub profile_side: usize,
+    /// 发起侧面板（S-1「正在准备传输」瞬态状态栏的挂靠与结算清除点；
+    /// C# UpdateStatus 打在发起 FileView 的状态栏）。
+    pub src_pane: usize,
+    /// 计时基线（预检超时兜底，滑动窗语义 T20-H②：任一回流即刷新——60s
+    /// 零回流才算断流；批量 STAT 分轮回流的自然间歇不误判超窗）。
+    pub at: std::time::Instant,
     pub items: Vec<PendingItem>,
+    /// 已回流条目总数（含冲突；集齐判定游标：resolved == items.len() 即全量
+    /// 结算。T20-E 策略：冲突只标记不中止，流式全程不停）。
+    pub resolved: usize,
+    /// 待落位余量：已回流、无冲突、未落位条目数（流式落位判定游标，摘批
+    /// 递减；冲突项不计数——冲突项留置到 Settle 统一进弹窗，T20-E）。
+    pub ready: usize,
+    /// 流式落位阈值（settings.dnd_stream_batch，快照）：余量满 N 即入队一批。
+    /// usize::MAX = 禁用流式（本地确认弹窗批次 / 弹窗交接批次）。
+    pub batch: usize,
+    /// 已落位批次号（enqueue 返回；弹窗「取消」按批次回溯清行，T20-H）。
+    pub batches: Vec<u64>,
+    /// 已落位累计条数（流式 Place 逐批累加；弹窗范围行「已落位 M 项已开始
+    /// 传输」数据源——流式中止后已落位项不可逆，弹窗必须写明范围，T20-H）。
+    pub placed: usize,
+}
+
+/// 状态栏瞬态文案：正在准备传输（S-1 接通 i18n.rs:428 死键；C#
+/// StatusPreparingTransfer，FileView.xaml.cs:3069 入队前冲突探测/统计期间
+/// 无任务行承载，状态栏先给一句明确提示避免「点了没反应」）。
+fn preparing_msg() -> String {
+    t("正在准备传输（探测目标/统计文件）…").to_owned()
+}
+
+/// 当前语言的准备提示精确判定（T20-E-R）：语言作入参，纯逻辑便于中英各落
+/// 一钉，不改写全局 language 态。旧实现硬编码中文前缀，英文态
+/// preparing_msg() 不以之中开头 → 结算后状态栏准备提示永不清除。
+fn is_preparing_msg(m: &str, en: bool) -> bool {
+    m == crate::i18n::t_for("正在准备传输（探测目标/统计文件）…", en)
+}
+
+/// 清除瞬态准备提示：仅当仍是**当前语言**的准备提示才清（期间被列目录
+/// 错误等覆写则保留），结算点共用。
+fn clear_preparing_msg(st: &mut State, pane: usize) {
+    let en = crate::i18n::is_en();
+    let p = pane_view_mut(st, pane);
+    if p.msg.as_deref().is_some_and(|m| is_preparing_msg(m, en)) {
+        p.msg = None;
+    }
+}
+
+/// 批次回流集齐后的处置（覆盖确认弹窗 / 直接入队）：T20-E 流式集齐 Settle
+/// 与预检超时兜底共用。冲突 → 弹窗批次保留 pending_tx（seq 清零，迟到回流
+/// 落空匹配；弹窗确认走 enqueue_pending）——此前清空 pending_tx 开弹窗致
+/// 确认空转（修复，T20-H）；此前流式已落位批次号随行，弹窗「取消」按批次
+/// 清行。流式已落位 M 项不可逆（T20-H）：placed > 0 时弹窗挂范围行写明
+/// 「本次确认只处理剩余 N 项」，防止用户以为整批还在手上。
+fn settle_batch(st: &mut State, profile_side: usize, src_pane: usize, items: Vec<PendingItem>) {
+    let (prev_batches, placed) = st
+        .pending_tx
+        .take()
+        .map(|p| (p.batches, p.placed))
+        .unwrap_or((Vec::new(), 0));
+    st.pending_tx = None;
+    clear_preparing_msg(st, src_pane); // S-1 瞬态提示结算清除
+    if items.iter().any(|pi| pi.conflict) {
+        let conflicts = items.iter().filter(|pi| pi.conflict).count();
+        let note = scope_note_for(placed, items.len(), conflicts);
+        st.pending_tx = Some(PendingTx {
+            seq: 0,
+            profile_side,
+            src_pane,
+            at: std::time::Instant::now(),
+            items,
+            resolved: 0,
+            ready: 0,
+            batch: usize::MAX,
+            batches: prev_batches,
+            placed: 0,
+        });
+        let rows = match &st.pending_tx {
+            Some(ptx) => confirm_data(&ptx.items),
+            None => Vec::new(),
+        };
+        // F-10 方案A：弹窗勾选态随弹窗创建填默认值（目标较新默认不勾）。
+        st.conflict_sel = Some(conflict_defaults(&rows));
+        st.dialog = dialogs::Dialog::TransferConfirm { rows, note };
+    } else {
+        enqueue_tasks(
+            st,
+            profile_side,
+            items.into_iter().map(into_task).collect(),
+            0,
+        );
+    }
+}
+
+/// 范围行门控（T20-E-R）：placed > 0（已有流式落位、不可逆）才挂范围行。
+/// 抽成函数让 settle_batch 与钉子共用同一判定，钉子不再对拍恒假常量
+/// `(0usize > 0).then(...)`（门控改坏也不会红）。
+fn scope_note_for(placed: usize, remaining: usize, conflicts: usize) -> Option<String> {
+    (placed > 0).then(|| scope_note(placed, remaining, conflicts))
+}
+
+/// 弹窗范围行文案（纯逻辑便于钉子）：流式已落位 M 项不可逆，写明本次确认
+/// 只处理剩余 N 项（其中冲突 C 项）。placed = 0（无流式前置）→ None。
+fn scope_note(placed: usize, remaining: usize, conflicts: usize) -> String {
+    tfmt(
+        "已落位 {0} 项已开始传输，本次确认只处理剩余 {1} 项（其中冲突 {2} 项）",
+        &[
+            &placed.to_string(),
+            &remaining.to_string(),
+            &conflicts.to_string(),
+        ],
+    )
+}
+
+// ── T20-H 流式落位：万级拖拽批次冲突预检 StatBatch 流式回流，每回流满
+// dnd_stream_batch 个无冲突条目即入队一批（队列逐批长出，估算与传输并行）。
+
+/// 流式落位判定（每条 STAT 回流后调用，T20-E 策略：冲突只标记不中止——
+/// 冲突项留置到集齐统一进弹窗，非冲突项照常逐批落位，流式全程不停）。
+enum StreamStep {
+    None,
+    /// 无冲突余量集满一批 → 入队一批（pending_tx 保留继续收集）。
+    Place,
+    /// 全部回流已结算 → settle_batch 统一处置（无冲突尾批直接入队收尾；
+    /// 含冲突则弹窗批级决策，已落位批次随行供取消撤回）。
+    Settle,
+}
+
+/// 判定（纯逻辑，便于钉子测试）：集齐 → Settle；无冲突余量满阈值 → Place。
+fn stream_step(ptx: &PendingTx) -> StreamStep {
+    if ptx.resolved == ptx.items.len() {
+        StreamStep::Settle
+    } else if ptx.ready >= ptx.batch {
+        StreamStep::Place
+    } else {
+        StreamStep::None
+    }
+}
+
+/// 从 pending_tx 摘出 `need` 个已回流**无冲突**条目（保持回流序），余下
+/// （未回流 + 冲突留置 + 回流未满批）留置；不变式：resolved == items 中
+/// stat_path 为 None 的条数（含冲突留置；摘批同步递减）、ready == 其中
+/// 非冲突数（冲突项不计入 ready）。
+fn stream_take(ptx: &mut PendingTx, need: usize) -> Vec<PendingItem> {
+    let mut out = Vec::with_capacity(need);
+    let mut rest = Vec::with_capacity(ptx.items.len() - need);
+    for pi in ptx.items.drain(..) {
+        if pi.stat_path.is_none() && !pi.conflict && out.len() < need {
+            out.push(pi);
+        } else {
+            rest.push(pi);
+        }
+    }
+    ptx.items = rest;
+    ptx.ready -= need;
+    ptx.resolved -= need;
+    out
+}
+
+/// 落位一批（Place 步）：无冲突条目立即入队（队列逐批长出），批次号随行；
+/// placed 累计（弹窗范围行「已落位 M 项」数据源，T20-H）。
+fn stream_place(st: &mut State) {
+    let (profile_side, items) = {
+        let Some(ptx) = &mut st.pending_tx else {
+            return;
+        };
+        (ptx.profile_side, stream_take(ptx, ptx.ready))
+    };
+    let placed = items.len();
+    let tasks: Vec<crate::transfer::NewTask> = items.into_iter().map(into_task).collect();
+    let batch = enqueue_tasks(st, profile_side, tasks, 0);
+    if let Some(ptx) = &mut st.pending_tx {
+        ptx.batches.push(batch);
+        ptx.placed += placed;
+    }
+}
+
+/// 集齐（Settle 步，T20-E：无冲突与含冲突统一走此收尾）：全部剩余条目
+/// （尾批无冲突 + 冲突留置）交 settle_batch——无冲突直接入队收尾；含冲突
+/// 走弹窗批级决策（含「已落位 M 项」范围行），非冲突项决策后照常入队。
+fn stream_settle(st: &mut State) {
+    let items = match st
+        .pending_tx
+        .as_mut()
+        .filter(|ptx| ptx.resolved == ptx.items.len())
+    {
+        Some(ptx) => std::mem::take(&mut ptx.items),
+        None => return,
+    };
+    let Some(ptx) = &st.pending_tx else {
+        return;
+    };
+    let (side, pane) = (ptx.profile_side, ptx.src_pane);
+    settle_batch(st, side, pane, items);
+}
+
+/// 弹窗「取消」结算（T20-H）：丢弃 pending 批次；流式已落位行按批次号
+/// 回溯清行（等待/扫描 → 已取消，传输中置块边界取消请求）。本地确认弹窗
+/// 批次（batches 空）行为同旧——仅丢弃 pending。
+/// F1：取消按钮与 shell 关闭路径（Esc / 遮罩 / ×）共用本结算，四路语义
+/// 一致不留悬挂 pending（seq=0 批次超窗兜底不覆盖，残留即永久驻留）。
+pub(crate) fn cancel_pending_stream(st: &mut State) {
+    st.conflict_sel = None; // F-10 方案A：勾选态随弹窗关闭一并清空
+    let Some(ptx) = st.pending_tx.take() else {
+        return;
+    };
+    let n = ptx.items.len();
+    if !ptx.batches.is_empty()
+        && let Some(q) = st.transfer.as_ref()
+    {
+        q.cancel_batches(&ptx.batches);
+    }
+    // F1：取消 = 明确放弃整批——终端落对账日志，防「零入队零提示零日志」。
+    st.terminal.push((
+        crate::local::now_hms(),
+        tfmt("已取消传输确认：{0} 项未入队", &[&n.to_string()]),
+    ));
+}
+
+/// 预检超时兜底窗口（T20-G③ 引入，T20-H② 改滑动窗）：StatBatch 常态秒级
+/// 回流，`at` 随任一回流刷新——连续 60s 零回流才算断流。固定窗在万级批次
+/// 下会误判（10k÷32 并发 = 313 轮 × RTT ≈ 31~63s，贴窗），误判即把未回流
+/// 项清成「远端不存在」静默放行（F-12）。
+const STAT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 超窗仍未集齐的批次强制结算：未回流条目清 stat_path 放行（真冲突由
+/// worker 传输路径的续传决策兜底），但不再静默——probe_incomplete 标记
+/// 置真，结算点终端落对账提示。返回 probe_incomplete 条数（0 = 未触发）。
+/// 本地确认弹窗批次（seq=0，无回流等待）不受兜底影响——弹窗可停留任意久。
+fn force_settle_expired(ptx: &mut PendingTx, timeout: std::time::Duration) -> usize {
+    if ptx.seq != 0 && ptx.at.elapsed() >= timeout {
+        let mut n = 0;
+        for pi in &mut ptx.items {
+            if pi.stat_path.take().is_some() {
+                pi.probe_incomplete = true;
+                n += 1;
+            }
+        }
+        n
+    } else {
+        0
+    }
 }
 
 /// 批内条目。
@@ -84,6 +326,9 @@ pub struct PendingItem {
     /// 目标大小 / mtime（远程 STAT / 本地 metadata；conflict 时填充）。
     pub dst_size: Option<u64>,
     pub dst_mtime: Option<i64>,
+    /// 超窗兜底标记（T20-H②）：预检超窗时未回流条目按「远端不存在」放行，
+    /// 但不再静默——本位标记置真，终端落对账提示（消费于超窗结算点）。
+    pub probe_incomplete: bool,
 }
 
 /// 会话标识键（P2 同主机共享会话用：同主机同端口同用户 = 共享会话）。
@@ -150,6 +395,9 @@ pub struct RemoteTab {
     pub ext_write: Option<u64>,
     /// 外部编辑会话轮询节流点。
     pub ext_poll: std::time::Instant,
+    /// 窗格状态栏当前是否挂着写锁等待文案（项6 独立清除标记——msg 为
+    /// Option<String>，不能按中文前缀清除（英文模式残留），置位/清零成对）。
+    pub lock_msg_on: bool,
 }
 
 /// 单侧远程域：tab 集（永不为空由「最后关闭回占位」维护）+ 活动 tab + 会话池。
@@ -200,6 +448,16 @@ pub struct ExtEdit {
     pub quiet_since: Option<std::time::Instant>,
     /// 静默期内最近一次快照（稳定判定）。
     pub quiet_snap: Option<(u64, i64)>,
+    /// 写锁等待起点（快照稳定但编辑器仍持写句柄时起算；None = 未在等锁）。
+    /// 超时兜底分级依据：≥ SOFT 出软提示、≥ TIMEOUT 进兜底（项6）。
+    pub lock_wait_since: Option<std::time::Instant>,
+    /// 超时 WARN 已打过（去重硬要求：每次异常最多 1 条 WARN + 1 条 INFO，
+    /// 禁止每轮 poll 刷屏——终端 400 行裁剪会冲掉回执）。
+    pub lock_warned: bool,
+    /// 本次等锁的超时框已弹过，不再重复弹（与 lock_warned 的日志去重分离：
+    /// 弹框被占用时本轮不弹不置位，下轮补弹；关闭超时框后标记保持 true，
+    /// 等待态照旧——CR-10）。
+    pub lock_dialog_done: bool,
 }
 
 /// 占位远程 tab（空态引导；无会话 sid=0）：两侧初始态 / 该侧最后 tab 关闭重建用。
@@ -221,10 +479,20 @@ fn placeholder_remote_tab(id: u32) -> RemoteTab {
         ext_stat: None,
         ext_write: None,
         ext_poll: std::time::Instant::now(),
+        lock_msg_on: false,
     }
 }
 
 /// 主窗口 UI 状态。
+/// CR-1：本地 I/O 工作线程在途槽。req 留副本，线程异常退出时据此清 loading
+/// 并回滚，不让窗格永久卡在「加载中…」。
+pub struct LocalJob {
+    pub side: usize,
+    pub tab_id: u32,
+    pub req: crate::local::LocalPaneReq,
+    pub rx: std::sync::mpsc::Receiver<crate::local::LocalPaneReply>,
+}
+
 pub struct State {
     pub icons: crate::icons::Cache,
     /// 系统真实文件图标（C# SystemIconService；文件列表行专用）。
@@ -252,6 +520,14 @@ pub struct State {
     pub dialog: dialogs::Dialog,
     /// 右键菜单状态。
     pub menu: Option<dialogs::MenuState>,
+    /// 右键菜单体上一帧的屏幕 rect（draw_menu 每帧回写、root() 帧首消费）：
+    /// 「体外按下即关」判定用（C# MenuFlyout light dismiss 的按下时机）。
+    pub menu_rect: Option<egui::Rect>,
+    /// 队列菜单重连在途会话数（S-8）：>0 = 队列行菜单「重连」显示为
+    /// 「正在重连…」置灰；Ev::Connected / Ev::Failed(连接) 逐个回账，归零恢复
+    /// （C# RowReconnectItem_Click 重连等待态同位）。普通连接提交不记账，
+    /// 菜单态与专用日志均不受影响。
+    pub reconnecting: u32,
     /// 编辑框全局右键菜单钩子（面包屑编辑框等 TextEdit 的复制/剪切/粘贴）。
     pub ctx_menu: ctx_menu::CtxMenu,
     /// 面包屑编辑态：来源窗格 + 路径文本。
@@ -264,6 +540,9 @@ pub struct State {
     /// 窗格层发来的远程新建请求（(侧, tab id, 全路径, 是否目录)；root() 统一经
     /// 该 tab 所属会话发出；完成走 Ev::Created 重列）。
     pub new_reqs: Vec<(usize, u32, String, bool)>,
+    /// 窗格层发来的远程重命名请求 (side, tab_id, old, new)——P0-1 落盘管线
+    /// （同 new_reqs：inflight 发号 + new_pending 保活，Ev::Created 统一重列）。
+    pub rename_reqs: Vec<(usize, u32, String, String)>,
     /// 目录树懒展开请求在途 (侧, tab id, tag, 路径)：盖章处发号，root() 消费
     /// 发出后保留在途，Ev::Listing / Ev::Failed 按 tag 命中填树/复位，过期 tag
     /// 保留在途等待真正响应。
@@ -278,7 +557,7 @@ pub struct State {
     pub sync_nav: Option<(usize, u32, String)>,
     /// 比对标记失配重排请求（窗格层置位）。
     pub compare_req: bool,
-    /// 拖拽传输请求（FV-25：目标侧, 被拖条目行号；窗格层 Drop 置位）。
+    /// 拖拽传输请求（FV-25：发起/源侧, 被拖条目行号；窗格层 Drop 置位）。
     pub dnd_transfer: Option<(usize, Vec<usize>)>,
     /// 文件夹选择在途（FV-01：open_dir 后台 STA 线程弹框；root() 每帧轮询回执）。
     pub pick: Option<crate::local::PickJob>,
@@ -290,6 +569,11 @@ pub struct State {
     pub terminal: Vec<(String, String)>,
     /// 待入队传输批次（覆盖确认进行中）。
     pub pending_tx: Option<PendingTx>,
+    /// F-10 方案A：冲突确认弹窗逐项勾选态（与弹窗 rows 行序对齐；None = 无
+    /// 确认弹窗）。settle_batch / 本地批次创建时填默认值（conflict_defaults），
+    /// 应用/取消后清空。存 State 而非 Dialog 内：弹窗每帧重绘，勾选改动须
+    /// 跨帧存活且与 rows 解耦（rows 可被流式 Settle 重建）。
+    pub conflict_sel: Option<Vec<bool>>,
     /// 统一请求号/tag 发号源（自增）：list/delete/mkdir/create_file 的 tag 与
     /// Stat/ReadFile/WriteFile/Exec 的 req 同一计数空间，全局唯一互不混淆。
     pub stat_seq: u64,
@@ -301,6 +585,9 @@ pub struct State {
     pub q_owner_tabs: Vec<(u8, u32)>,
     /// 上一帧队列是否有活动任务（忙→静沿触发两侧刷新）。
     pub q_active: bool,
+    /// T16 忙期间节流刷新快照（归属 tab -> (上次刷新时刻, 完成计数基线)）：
+    /// C# baseline+lastSeen 的 per-tab 等价；静沿/空闲清空（每批次重新取基线）。
+    pub q_refresh: std::collections::HashMap<(u8, u32), (f64, u64)>,
     /// G17「取消队列并关闭」：(侧, tab id, 起始时刻) 等待块边界退出；退出或
     /// 5s 超时兜底后执行关闭。
     pub tab_close_wait: Option<(usize, u32, std::time::Instant)>,
@@ -312,11 +599,34 @@ pub struct State {
     pub chk_computing: bool,
     /// 校验码：本地计算线程回执。
     pub chk_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// CR-1：本地列目录 / 删除的线程在途槽（帧尾统一驱动，UI 帧内零文件系统 I/O）。
+    pub local_jobs: Vec<LocalJob>,
+    /// CR-2：设置落盘失败在途（帧首由 `settings::save_error` 刷新）。主窗口
+    /// 底部全局条据此切出一条、心跳据此走慢档兜底；成功落盘后自动归零。
+    pub save_err_pending: bool,
     /// 打开的编辑器文档 + 保存回传事件队列。
     pub editors: crate::editor::EditorHub,
+    /// 内置编辑器回传前远端 mtime 冲突探测在途：请求号沿用 stat_seq 发号，
+    /// Ev::Stat 按 req 认领；副本内容随槽带入（分派时一次 fs::read，无冲突
+    /// 直通分支复用，单次保存不再读两遍全文；冲突路径弹窗「覆盖」走 doc_upload
+    /// 重读最新内容——弹框前槽已 take 清空，不会拿旧字节覆盖）。
+    pub doc_stat: Option<DocStatSlot>,
     /// 主机指纹确认请求——HostPanel「测试连接」专用槽（无侧归属；窗格会话的
     /// 指纹请求在各会话 SideSession.fp_ask，覆盖层按 会话池 → 测试槽 顺序查找）。
     pub fp_ask_test: Option<dialogs::FpAsk>,
+    /// C2（F-9）：弹窗帧滚轮暂存（root 帧首 stash + dialogs::draw 入口回填）。
+    /// ScrollArea 读后清零且不看层、frame 内首个命中者独占——不 stash 会被
+    /// 遮罩下的主界面滚动区抢先消费，弹窗内部滚动区（设置页/传输确认表/导入
+    /// 预览）永远拿不到滚轮。
+    pub scroll_stash: egui::Vec2,
+    /// C3（F-9）：上一帧弹窗变体判别值（dialogs::draw 入口算 Dialog::kind()，
+    /// 变体变更且非 None = 弹窗打开首帧 → dialog_fresh 供 body 聚焦首控件）。
+    pub dialog_kind: u8,
+    /// C3②（F-9）：弹窗打开首帧旗标（draw 入口重算，body 读它做初焦点）。
+    pub dialog_fresh: bool,
+    /// C3③（F20/F-9）：Enter→主钮旗标（shell 入口算：无焦点控件或焦点在文本
+    /// 框时才置——焦点在可点控件上时 Space/Enter 由 egui 直接触发其点击，防双触发）。
+    pub shell_enter: bool,
 }
 
 /// 远程连接状态。
@@ -502,54 +812,25 @@ pub(crate) fn tab_pane_mut(
     })
 }
 
-/// 本地 tab 标题（P4 §6 现算）：当前目录名；根视图/驱动器列表 = 此电脑
-///（盘根 file_name 为 None 同口径，C# 同以根列表页标题显示）。
-fn local_tab_title(p: &panes::FilePane) -> String {
-    p.path
-        .as_ref()
-        .and_then(|path| path.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| t("此电脑").to_owned())
-}
-
-/// 远程目录末段（P4 §6 现算）："/" → "/"；"/home/user" → "user"；空态 None → ""。
-fn remote_dir_label(rp: Option<&str>) -> String {
-    match rp {
-        None => String::new(),
-        // 尾斜杠（理论上不会出现）跳过空段取真末段；全空段（根）→ "/"。
-        Some(p) => p
-            .rsplit('/')
-            .find(|s| !s.is_empty())
-            .unwrap_or("/")
-            .to_owned(),
-    }
-}
-
 /// 侧 tab 条合成视图：本地 tab 在前（「本地」固定第一，对齐现状）+ 远程 tab 在
 /// 后；active 下标 = 活动项在扁平列表中的位置；born 由 tab id 反查下标。绘制层
 /// （tab_strip/folder）零改动——每帧合成临时 Tabs 传入，回写经 id 映射。
 fn build_tabs_view(st: &State, side: usize) -> panes::Tabs {
     let mut items = Vec::new();
     for lt in &st.locals[side].tabs {
-        // P4 §6：本地 tab 标题现算（当前目录名；根视图/驱动器列表 = 此电脑），
-        // 避免漏更新——导航落位即换标题，无需各写点回写。
+        // 本地 tab 固定标题「本地」，不随导航目录变化。
         items.push(panes::TabItem {
             id: lt.id,
-            title: local_tab_title(&lt.pane),
+            title: t("本地").to_owned(),
             kind: panes::TabKind::Local,
         });
     }
     for rt in &st.remotes[side].tabs {
-        // P4 §6：远程 tab 标题 = {label} {目录末段}；label 存 tab.title（连接
-        // 落位时写），目录末段由 pane.remote_path 现算；空态只显 label。
-        let dir = remote_dir_label(rt.pane.remote_path.as_deref());
+        // 远程 tab 标题 = 连接落位写入的主机命名（host_tab_naming：名称+ip），
+        // 不随导航目录变化；空态占位 tab 为「远程」。
         items.push(panes::TabItem {
             id: rt.id,
-            title: if dir.is_empty() {
-                rt.title.clone()
-            } else {
-                format!("{} {dir}", rt.title)
-            },
+            title: rt.title.clone(),
             kind: panes::TabKind::Remote,
         });
     }
@@ -613,12 +894,16 @@ impl Default for State {
             tab_born: [None, None],
             dialog: dialogs::Dialog::None,
             menu: None,
+            menu_rect: None,
+            reconnecting: 0,
             ctx_menu: ctx_menu::CtxMenu::default(),
             crumb_edit: None,
             // 设置弹窗初值来自 settings.json（C# AppSettingsService 同款）。
             settings: dialogs::Settings::from_store(),
             list_reqs: Vec::new(),
+            q_refresh: std::collections::HashMap::new(),
             new_reqs: Vec::new(),
+            rename_reqs: Vec::new(),
             tree_req: None,
             sync_base: None,
             sync_mirror: None,
@@ -630,6 +915,7 @@ impl Default for State {
             queue_tab: 0,
             terminal: Vec::new(),
             pending_tx: None,
+            conflict_sel: None,
             stat_seq: 0,
             inflight: std::collections::HashMap::new(),
             q_owner_tabs: Vec::new(),
@@ -639,27 +925,172 @@ impl Default for State {
             chk_pending: None,
             chk_computing: false,
             chk_rx: None,
+            local_jobs: Vec::new(),
+            save_err_pending: false,
             editors: crate::editor::EditorHub::new(),
+            doc_stat: None,
             fp_ask_test: None,
+            scroll_stash: egui::Vec2::ZERO,
+            dialog_kind: 0,
+            dialog_fresh: false,
+            shell_enter: false,
         }
     }
 }
 
+// ── 光标意图收口（F-8）────────────────────────────────────────────────
+// egui 0.37 的 output.cursor_icon 按视口存放，但过去各控件各自 set_cursor_icon，
+// 注册顺序即覆盖顺序：帧尾 edge_resize 会反转菜单 / 弹层的 Default 复位，
+// 且「hover 才设形」的控件在指针离开后无人覆盖，光标会跨帧粘滞。
+// 改为每帧各控件只上报意图，帧尾按优先级裁决一次写入；无意图即 Default。
+/// 光标意图优先级（高→低）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CursorLayer {
+    Dialog,
+    Drag,
+    Edge,
+    Hover,
+}
+
+impl CursorLayer {
+    /// 数值越大优先级越高；同层保留先写者，避免注册更晚的边缘带反超拖拽。
+    fn rank(self) -> u8 {
+        match self {
+            CursorLayer::Hover => 0,
+            CursorLayer::Edge => 1,
+            CursorLayer::Drag => 2,
+            CursorLayer::Dialog => 3,
+        }
+    }
+}
+
+/// 意图槽按视口分：eframe 多视口共享 `ctx.data_mut` 的 IdTypeMap，
+/// 而 output.cursor_icon 是按视口存的，共用固定 Id 会让先裁决的视口取走后者意图。
+fn cursor_slot(ctx: &egui::Context) -> egui::Id {
+    // 0.37 起 Id::new 已弃用；Id::unique 是固定 seed 的稳定哈希，可作固定槽。
+    egui::Id::unique(("ifree.cursor_intent", ctx.viewport_id()))
+}
+
+/// 上报本帧光标意图；仅更高优先级覆盖，同层先写者胜。
+pub(crate) fn cursor_intent(ctx: &egui::Context, layer: CursorLayer, icon: egui::CursorIcon) {
+    let id = cursor_slot(ctx);
+    ctx.data_mut(|d| {
+        let cur: Option<(CursorLayer, egui::CursorIcon)> = d.get_temp(id).unwrap_or(None);
+        if cur
+            .map(|(prev, _)| layer.rank() > prev.rank())
+            .unwrap_or(true)
+        {
+            d.insert_temp(id, Some((layer, icon)));
+        }
+    });
+}
+
+/// 帧尾唯一一次 `set_cursor_icon`：取走意图 → 写入；无意图 → Default。
+pub fn cursor_decide(ctx: &egui::Context) {
+    let id = cursor_slot(ctx);
+    let intent = ctx
+        .data_mut(|d| d.remove_temp::<Option<(CursorLayer, egui::CursorIcon)>>(id))
+        .flatten();
+    ctx.set_cursor_icon(
+        intent
+            .map(|(_, icon)| icon)
+            .unwrap_or(egui::CursorIcon::Default),
+    );
+}
+
+/// 本帧是否有弹层 / 菜单 / 待决指纹确认。main.rs 在 crate 根，访问不到私有的
+/// ui::dialogs，故由本模块算好再传给 edge_resize。
+pub fn frame_modal(st: &State) -> bool {
+    !matches!(st.dialog, dialogs::Dialog::None) || st.menu.is_some() || dialogs::fp_ask_pending(st)
+}
+
+/// CR-2：失败条几何（纯函数，可钉）。返回 (剩余主区, 条 rect)。窗口过矮时
+/// 不切条，避免负高度 rect 破坏四容器几何（此时失败态仍有终端日志兜底）。
+fn save_error_bar_rect(full: Rect, pending: bool) -> (Rect, Option<Rect>) {
+    if !pending || full.height() <= HEADER_H + SAVE_BAR_H + TOP_ROW_MIN + BOTTOM_MIN {
+        return (full, None);
+    }
+    let (rest, bar) = full.split_top_bottom_at_y(full.bottom() - SAVE_BAR_H);
+    (rest, Some(bar))
+}
+
+/// CR-2：设置落盘失败全局条（主窗口底部，持续可见）。只显示、不抢焦点、
+/// 不弹窗、不拦操作；恢复可写后 `maybe_flush` 自动落盘并清失败态，下一帧
+/// 该条自动消失。错误原因取持续快照，终端日志的一次性 take 不影响它。
+fn draw_save_error_bar(ui: &mut egui::Ui, r: Rect, p: &theme::Palette) {
+    let mut bar = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(r)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    bar.painter().rect_filled(r, 0.0, p.dialog_title_bar);
+    bar.painter().line_segment(
+        [r.left_top(), r.right_top()],
+        egui::Stroke::new(1.0, theme::WARNING),
+    );
+    bar.add_space(10.0);
+    bar.add(
+        egui::Label::new(
+            egui::RichText::new(t("设置未保存，正在自动重试"))
+                .color(theme::WARNING)
+                .size(12.0),
+        )
+        .truncate(),
+    );
+    bar.add_space(8.0);
+    bar.add(
+        egui::Label::new(
+            egui::RichText::new(crate::settings::save_error().unwrap_or_default())
+                .color(p.text_secondary)
+                .size(12.0),
+        )
+        .truncate(),
+    );
+}
+
 /// 每帧入口。
 pub fn root(ui: &mut egui::Ui, st: &mut State) {
-    // 光标每帧复位（egui 0.37 光标跨帧粘滞：output.rs take() 保留旧值，框架不兜底；
-    // 分隔条/列宽 thumb 等「hover 才设形」的光标在指针离开后无人覆盖，会卡在
-    // resize 形态带到其他部件上。C# Cursor 为元素属性、离开自动恢复——对齐之：
-    // 帧首先归默认箭头，随后各 hover 部件的 set_cursor_icon 顺序覆盖）。
-    ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+    // C2（F-9）：弹窗帧滚轮收口——ScrollArea 读后清零且不看层（frame 内首个
+    // 命中者独占），不 stash 会被遮罩下的主界面滚动区抢先消费。帧首 stash +
+    // 清零 → dialogs::draw 入口回填：主界面滚动区拿 0，弹窗内部照常。
+    if !matches!(st.dialog, dialogs::Dialog::None) || dialogs::fp_ask_pending(st) {
+        st.scroll_stash = ui
+            .ctx()
+            .input_mut(|i| std::mem::take(&mut i.smooth_scroll_delta));
+    }
+    // 光标复位不在帧首做：各控件只上报意图，帧尾 ui::cursor_decide 统一裁决
+    // 一次写入（无意图即 Default），既避免跨帧粘滞，也避免注册顺序反转优先级。
     let p = theme::palette(ui.ctx());
 
-    // 设置防抖落盘（500ms；未到期预约重绘）。
+    // 设置防抖落盘（500ms 防抖 + CR-2 失败退避重试；等待期间主动预约重绘）。
     crate::settings::maybe_flush(ui.ctx());
-    // 设置落盘失败显式上报（H4：take 语义，一次失败只报一条，不每帧刷屏）。
+    // 设置落盘失败：终端日志仍一条（不刷屏），CR-2 另置持续失败快照供
+    // 主窗口底部全局条每帧绘制——tab 关闭 / 终端抽屉收起都看得见。
     if let Some(e) = crate::settings::take_save_error() {
         st.terminal.push((crate::local::now_hms(), e));
     }
+    st.save_err_pending = crate::settings::save_error().is_some();
+
+    // 右键菜单一势关闭+重开（对齐 C# MenuFlyout light dismiss：按下即关，抬起
+    // 照常派发给下层控件）：菜单开着且本帧有主/副键「按下」、按下点在上一帧
+    // 菜单体 rect 外 → 先关旧菜单。关在窗格绘制之前——抬起时行/表头/foot 的
+    // secondary_clicked 照常命中，右键同势关旧开新，不必先手动关菜单（旧实现
+    // 覆盖层挂全窗 catcher：最后注册吞掉一切点击且只认左键，右键被静默吞掉，
+    // 即「右键很涩」的根因）。按下点在菜单体内：不关，交给 draw_menu 的体感应
+    // 面兜住防穿透。位置取 interact_pos（按下帧即按下点；同帧按下+抬起时
+    // press_origin 已被清空，interact_pos 仍为点击位置）。
+    if st.menu.is_some()
+        && let Some(r) = st.menu_rect
+    {
+        let outside_press = ui.ctx().input(|i| {
+            i.pointer.any_pressed() && i.pointer.interact_pos().is_none_or(|p| !r.contains(p))
+        });
+        if outside_press {
+            st.menu = None;
+        }
+    }
+    // 菜单体 rect 由本帧 draw_menu 重写（菜单刚开/刚关的帧为 None，跳过判定）。
+    st.menu_rect = None;
 
     // SSH 事件入账 + 空态文案随连接状态（先于窗格绘制）。
     apply_ssh_events(st, ui.ctx());
@@ -684,9 +1115,13 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
         }
     }
 
-    // 传输队列：worker 日志入终端面板；忙→静沿刷新两侧（传输结果立即可见）。
+    // 传输队列：worker 日志入终端面板；批次结束汇总（T18-2 LogTransferDone）
+    // 同通路入终端；忙→静沿刷新两侧（传输结果立即可见）。
     if let Some(q) = &st.transfer {
         for line in q.drain_log() {
+            st.terminal.push((crate::local::now_hms(), line));
+        }
+        for line in q.drain_batch_reports() {
             st.terminal.push((crate::local::now_hms(), line));
         }
         if st.terminal.len() > 200 {
@@ -724,9 +1159,84 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
                     st.list_reqs.push((side, tab_id, rp));
                 }
             }
+            // 批次收尾：节流快照清空（T16，下一批次重新取基线）。
+            st.q_refresh.clear();
         } else {
             // 忙期间每帧重算归属集合（新入队任务即时纳入定向刷新范围）。
             st.q_owner_tabs = owners;
+            if active {
+                // T16 忙期间节流刷新（C# RefreshOppositeWhileTransferringAsync
+                // :3311-3352 按帧等价）：每 3s 检查归属 tab，完成计数有增量且
+                // 用户仍停在目标目录才重列目标窗格——传输中逐步可见，不干扰
+                // 翻走浏览、慢传计数不变不打无谓请求。忙→静沿最终刷新仍兜底
+                // （上分支），两机制互补：节流管传输中、静沿管收尾。
+                let now = ui.ctx().time();
+                let targets = q.with_items(|items| {
+                    crate::transfer::refresh_targets(
+                        items
+                            .iter()
+                            .map(|i| (&i.owner, i.dest_is_remote(), i.dest.as_str(), i.status)),
+                    )
+                });
+                for ((side, tab_id), done, dests) in targets {
+                    let side_idx = side as usize;
+                    // 快照：批次忙起点取基线（C# baseline），刷新时更新（lastSeen）。
+                    let snap = st.q_refresh.entry((side, tab_id)).or_insert((now, done));
+                    // 该 tab 当前目录（本地宽松 / 远程 Ordinal 由 same_dest_dir 分流）。
+                    let cur = st
+                        .locals
+                        .get(side_idx)
+                        .and_then(|l| l.tabs.iter().find(|t| t.id == tab_id))
+                        .map(|t| {
+                            (
+                                t.pane
+                                    .path
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().into_owned()),
+                                false,
+                            )
+                        })
+                        .or_else(|| {
+                            st.remotes
+                                .get(side_idx)
+                                .and_then(|r| r.tabs.iter().find(|t| t.id == tab_id))
+                                .map(|t| (t.pane.remote_path.clone(), true))
+                        });
+                    let same_dir = cur.is_some_and(|(p, remote)| {
+                        p.is_some_and(|p| {
+                            dests
+                                .iter()
+                                .any(|d| crate::transfer::same_dest_dir(&p, d, remote))
+                        })
+                    });
+                    if crate::transfer::refresh_due(
+                        now,
+                        snap.0,
+                        done.saturating_sub(snap.1),
+                        same_dir,
+                    ) {
+                        // 刷新时刻与完成计数快照随刷新更新。
+                        *snap = (now, done);
+                        // 刷新动作与忙→静沿同款：本地 = 刷新 + 动效；远程 = 发号重列。
+                        if let Some(lt) =
+                            st.locals[side_idx].tabs.iter_mut().find(|t| t.id == tab_id)
+                        {
+                            crate::local::refresh(&mut lt.pane);
+                            lt.pane.refresh_at = Some(now);
+                        } else if let Some(rp) = st.remotes[side_idx]
+                            .tabs
+                            .iter()
+                            .find(|t| t.id == tab_id)
+                            .and_then(|t| t.pane.remote_path.clone())
+                        {
+                            st.list_reqs.push((side_idx, tab_id, rp));
+                        }
+                    }
+                }
+            } else {
+                // 空闲帧：快照清空（下次忙重新取基线）。
+                st.q_refresh.clear();
+            }
         }
         st.q_active = active;
     }
@@ -744,41 +1254,12 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
         st.chk_rx = None;
     }
 
-    // 编辑器保存回传（T7）：远程文档写回远端；本地文档写盘已在编辑器内完成。
-    // 左右可连同一主机（两份独立会话）：按 doc_id 反查文档 RemoteRef.host →
-    // 遍历两侧会话池匹配持有该主机的会话（P1 首个命中侧，行为同现状），写回
-    // 走该会话。
+    // 编辑器保存回传（T7/CR-6）：远程文档写盘成功 → 副本读出 → 会话匹配 →
+    // STAT 冲突探测（±1s 判据同外部链路）→ 无冲突写回远端；读失败 / 失配 /
+    // 写失败一律回写 doc 失败态（副本保留，再按 Ctrl+S 可重试），禁止吞事件。
+    // 本地文档写盘已在编辑器内完成。
     for ev in crate::editor::EditorHub::drain_saved() {
-        st.terminal.push((
-            crate::local::now_hms(),
-            tfmt("[{0}] 上传编辑副本…", &[&ev.remote_path]),
-        ));
-        let host = st.editors.docs.iter().find_map(|doc| {
-            let d = doc.lock().unwrap();
-            (d.id == ev.doc_id)
-                .then(|| d.remote.as_ref().map(|r| r.host.clone()))
-                .flatten()
-        });
-        let mut found: Option<(usize, u64)> = None;
-        if let Some(h) = host {
-            'outer: for (side, rs) in st.remotes.iter().enumerate() {
-                for s in &rs.sessions {
-                    if s.host.as_ref().is_some_and(|x| x.host == h) {
-                        found = Some((side, s.sid));
-                        break 'outer;
-                    }
-                }
-            }
-        }
-        if let Some((side, sid)) = found
-            && let Some(ss) = st.remotes[side].sessions.iter_mut().find(|s| s.sid == sid)
-        {
-            ss.ssh.write_file(
-                ev.remote_path.clone(),
-                ev.doc_id,
-                std::fs::read(&ev.local_path).unwrap_or_default(),
-            );
-        }
+        saved_upload_dispatch(st, ui.ctx(), ev);
     }
     // 编辑器窗口声明/回收（deferred viewport：不声明即关；主题随主窗口）。
     editor_window::show_all(
@@ -826,6 +1307,9 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
     }
 
     let full = ui.max_rect();
+    // CR-2：落盘失败时从窗口底部切出一条全局提示条（不覆盖四个窗格，也不随
+    // tab 关闭 / 终端抽屉收起消失）。成功落盘后 rect 变 None，布局自动还原。
+    let (full, save_bar) = save_error_bar_rect(full, st.save_err_pending);
 
     // 全窗打底：HeaderAreaBrush（C# ShellBorder 背景/边框/两条分隔条同色）。
     ui.painter().rect_filled(full, 0.0, p.header_area);
@@ -925,6 +1409,26 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
             Slot::Remote(active_remote_slot(st, 1).expect("remote side keeps its active tab"))
         },
     ];
+    // T20-4（C# CanTransferToOpposite :3010-3015）：跨窗格拖拽就绪 = 两侧窗格
+    // 已导航（本地=非「此电脑」根态；远程=已入远程目录）+ 远程侧活动 tab 所属
+    // 会话在池（断开即出池 = `_sftp.IsConnected` 同口径；本地侧恒就绪）。
+    // 每帧一次经 Hooks 下发 pane 层（C# DragOver 逐帧判定同观感）。
+    let side_ready = |s: usize| match &slots[s] {
+        Slot::Local(i) => {
+            let pn = &st.locals[s].tabs[*i].pane;
+            (pn.path.is_some() || pn.remote_path.is_some(), true)
+        }
+        Slot::Remote(j) => {
+            let t = &st.remotes[s].tabs[*j];
+            (
+                t.pane.remote_path.is_some(),
+                st.remotes[s].sessions.iter().any(|ss| ss.sid == t.sid),
+            )
+        }
+    };
+    let (nav0, conn0) = side_ready(0);
+    let (nav1, conn1) = side_ready(1);
+    let dnd_ready = panes::can_transfer_to_oppo(nav0, conn0, nav1, conn1);
     let mut hooks = dialogs::Hooks {
         menu: &mut st.menu,
         ctx_menu: &mut st.ctx_menu,
@@ -936,6 +1440,7 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
         sync_nav: &mut sync_nav_tmp,
         compare_req: &mut st.compare_req,
         transfer: &mut st.dnd_transfer,
+        dnd_ready,
         pick: &mut st.pick,
         tab_close: None,
     };
@@ -1023,7 +1528,7 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
         }
     }
 
-    // 拖拽 Drop（FV-25）：目标侧 + 被拖条目 → 批量传输入队。
+    // 拖拽 Drop（FV-25）：发起/源侧 + 被拖条目 → 批量传输入队（菜单同契约）。
     if let Some((side, rows)) = st.dnd_transfer.take() {
         begin_transfer_multi(st, side, &rows);
     }
@@ -1081,6 +1586,22 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
         }
         st.remotes[side].tabs[pos].new_pending += 1;
     }
+    // 远程重命名（P0-1 落盘）：同 new_reqs 模式发号入队；完成由 Ev::Created
+    // 按 inflight 定位重列（成败细节走终端日志），不再做列表条目的假改名。
+    for (side, tab_id, path, new_path) in std::mem::take(&mut st.rename_reqs) {
+        let Some(pos) = st.remotes[side].tabs.iter().position(|t| t.id == tab_id) else {
+            continue;
+        };
+        let sid = st.remotes[side].tabs[pos].sid;
+        // 先发号记 inflight（&mut st 独占段），再借会话发命令。
+        let tag = next_seq(st);
+        st.inflight.insert(tag, (side, tab_id));
+        let Some(ss) = st.remotes[side].sessions.iter().find(|s| s.sid == sid) else {
+            continue;
+        };
+        ss.ssh.rename(tag, path, new_path);
+        st.remotes[side].tabs[pos].new_pending += 1;
+    }
     if let Some((side, tab_id, tag, path)) = st.tree_req.take()
         && let Some(pos) = st.remotes[side].tabs.iter().position(|t| t.id == tab_id)
     {
@@ -1132,16 +1653,136 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
     panes::terminal(ui, bottom_right, st);
 
     header::draw(ui, header_rect, st, &p);
+    // CR-2：失败条在弹窗之前画（底部独占区域，不与四容器 / 弹窗重叠）。
+    if let Some(r) = save_bar {
+        draw_save_error_bar(ui, r, &p);
+    }
     // 弹窗与右键菜单最后画（最顶层）。
     dialogs::draw(ui, st, &p);
 
-    // 有在途异步（任侧连接中 / 等枚举 / 连接对话框等待 / 传输进行中 / 冲突确认中）
-    // 时保持重绘，及时收到工作线程事件（egui 无事件不重绘）。
-    let busy = !st.list_reqs.is_empty()
+    // CR-1：本地列目录 / 删除的线程驱动与回执入账（本帧窗格已绘制完，
+    // 消费后主动约一帧，让新列表 / loading 文案即时上屏）。
+    if poll_local_jobs(st) {
+        ui.ctx().request_repaint();
+    }
+
+    // 分档心跳（项7）：在途异步（任侧连接中 / 等枚举 / 连接对话框等待 / 传输
+    // 进行中 / 冲突确认中 / 编辑器回传在途）保持 120ms 快帧；仅外部编辑会话
+    // （防抖 / 写锁探测）在途时降到 300ms（对齐 POLL_MS，探测每 300ms 才有
+    // 意义，120ms 里过半帧纯空转）；已进入写锁超时兜底再降到 1s；全清不请求
+    // ——心跳自停（egui 无事件不重绘，链路完结 CPU 自然回落）。编辑器回传链
+    // 的 STAT 回流 → WriteFile → 回执认领与外部编辑的快照防抖 / 写锁探测 /
+    // 询问弹窗均靠帧驱动消费。egui 多个 request_repaint_after 取最小，host_panel
+    // / import_dialog 既有 120ms 请求不受影响。
+    if let Some(d) = repaint_delay(st) {
+        ui.ctx().request_repaint_after(d);
+    }
+}
+
+/// CR-1：帧尾统一驱动本地 I/O。① 取走各本地 tab 登记的 `pending_local` 起线程；
+/// ② 收回执按 (侧, tab id) 精确入账——tab 已关只留终端日志、不写窗格，避免
+/// 回执落到切换后的新 tab。返回是否消费了回执（供调用方约下一帧）。
+pub fn poll_local_jobs(st: &mut State) -> bool {
+    for side in 0..2 {
+        let pending: Vec<(u32, crate::local::LocalPaneReq, bool)> = st.locals[side]
+            .tabs
+            .iter_mut()
+            .filter_map(|t| {
+                let show_hidden = t.pane.show_hidden;
+                t.pane
+                    .pending_local
+                    .take()
+                    .map(|req| (t.id, req, show_hidden))
+            })
+            .collect();
+        for (tab_id, req, show_hidden) in pending {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let job_req = req.clone();
+            std::thread::Builder::new()
+                .name("local-io".into())
+                .spawn(move || {
+                    let _ = tx.send(crate::local::run_local(req, show_hidden));
+                })
+                .ok();
+            st.local_jobs.push(LocalJob {
+                side,
+                tab_id,
+                req: job_req,
+                rx,
+            });
+        }
+    }
+
+    let mut replies: Vec<(usize, u32, crate::local::LocalPaneReply)> = Vec::new();
+    st.local_jobs.retain(|job| match job.rx.try_recv() {
+        Ok(reply) => {
+            replies.push((job.side, job.tab_id, reply));
+            false
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => true,
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            replies.push((
+                job.side,
+                job.tab_id,
+                crate::local::LocalPaneReply::worker_gone(job.req.clone()),
+            ));
+            false
+        }
+    });
+
+    let consumed = !replies.is_empty();
+    for (side, tab_id, reply) in replies {
+        let deleted = if matches!(&reply.req, crate::local::LocalPaneReq::Delete { .. }) {
+            Some(crate::local::delete_log_lines(&reply.deleted))
+        } else {
+            None
+        };
+        let logs = if let Some(tab) = st
+            .locals
+            .get_mut(side)
+            .and_then(|ls| ls.tabs.iter_mut().find(|t| t.id == tab_id))
+        {
+            crate::local::apply_local(&mut tab.pane, reply)
+        } else {
+            // tab 已关：不写窗格，删除成败仍留终端痕迹（绝不写「已删除 N 项」汇总）。
+            deleted.unwrap_or_default()
+        };
+        for line in logs {
+            st.terminal.push((crate::local::now_hms(), line));
+        }
+    }
+    if st.terminal.len() > 200 {
+        st.terminal.drain(0..st.terminal.len() - 200);
+    }
+    consumed
+}
+
+/// 心跳分档（纯函数，项7，可单测四档）。判定序：在途 > 写锁超时兜底 >
+/// 外部编辑会话 > 全清（None）。分档条件包含 ext_write / ext_stat /
+/// doc_stat / pending_upload——别只按 ext_edits 判，否则确认框点覆盖后
+/// 回执帧会变慢。
+fn repaint_delay(st: &State) -> Option<std::time::Duration> {
+    const FAST: std::time::Duration = std::time::Duration::from_millis(120);
+    const POLL: std::time::Duration = std::time::Duration::from_millis(300);
+    const SLOW: std::time::Duration = std::time::Duration::from_millis(1000);
+    let in_flight = !st.list_reqs.is_empty()
+        // CR-1：本地 I/O 在途（已起线程 / 已登记待起线程）同样要保活，
+        // 否则 egui 空闲不重绘，回执永远不到账。
+        || !st.local_jobs.is_empty()
+        || st
+            .locals
+            .iter()
+            .any(|ls| ls.tabs.iter().any(|t| t.pane.pending_local.is_some()))
         || st.tree_req.is_some()
         || st.pending_tx.is_some()
         || st.chk_pending.is_some()
         || st.chk_computing
+        || st.doc_stat.is_some()
+        || st
+            .editors
+            .docs
+            .iter()
+            .any(|d| d.lock().unwrap().pending_upload)
         || st.remotes.iter().any(|rs| {
             rs.sessions
                 .iter()
@@ -1151,6 +1792,8 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
                         || t.del_pending > 0
                         || t.new_pending > 0
                         || t.pending_ed.is_some()
+                        || t.ext_stat.is_some()
+                        || t.ext_write.is_some()
                 })
         })
         || st
@@ -1168,10 +1811,37 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
         || matches!(st.dialog, dialogs::Dialog::Import { scanning: true, .. })
         || st.fp_ask_test.is_some()
         || st.pick.is_some();
-    if busy {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(120));
+    if in_flight {
+        return Some(FAST);
     }
+    // CR-2：设置落盘失败在途（等 2s 退避重试）：1s 慢档兜底保活，不进 FAST
+    // ——失败期间每 120ms 空转无意义。maybe_flush 已按 RETRY_BACKOFF 精确
+    // 预约重绘，这里只防「预约被其它事件吞掉」的极端情况。
+    if st.save_err_pending {
+        return Some(SLOW);
+    }
+    // 写锁超时兜底（任一会话等待 ≥TIMEOUT）：1s 慢档（提醒秒数与 WARN 去重
+    // 均靠轮询帧驱动，1s 粒度足够）。
+    let lock_wait = st.remotes.iter().any(|rs| {
+        rs.tabs.iter().any(|t| {
+            t.ext_edits.iter().any(|e| {
+                e.lock_wait_since
+                    .is_some_and(|s| s.elapsed().as_millis() >= LOCK_TIMEOUT_MS)
+            })
+        })
+    });
+    if lock_wait {
+        return Some(SLOW);
+    }
+    // 仅外部编辑会话存在（防抖 / 写锁探测）：300ms（POLL_MS 口径，零功能损失）。
+    if st
+        .remotes
+        .iter()
+        .any(|rs| rs.tabs.iter().any(|t| !t.ext_edits.is_empty()))
+    {
+        return Some(POLL);
+    }
+    None
 }
 
 /// 消费 SSH 工作线程事件（连接成功/失败、目录枚举结果）：按侧遍历会话池逐会话
@@ -1179,6 +1849,24 @@ pub fn root(ui: &mut egui::Ui, st: &mut State) {
 /// 级事件（枚举/删除/新建/下载/写回/STAT）落该会话挂靠 tab（P1 每 tab 恰一会话；
 /// req 全局唯一，Stat/Exec 回流仍按 req 匹配）。
 fn apply_ssh_events(st: &mut State, ctx: &egui::Context) {
+    // 预检超时兜底（T20-G③，T20-H② 滑动窗）：每帧先检查在途批次——连续
+    // 超窗零回流才强制放行（队列必须形成），未回流项带 probe_incomplete
+    // 标记 + 终端对账提示，不静默（F-12）。
+    if let Some(ptx) = &mut st.pending_tx {
+        let n = force_settle_expired(ptx, STAT_PROBE_TIMEOUT);
+        if n > 0 {
+            let items = std::mem::take(&mut ptx.items);
+            let (side, pane) = (ptx.profile_side, ptx.src_pane);
+            settle_batch(st, side, pane, items);
+            st.terminal.push((
+                crate::local::now_hms(),
+                tfmt(
+                    "预检超时：{0} 项未完成探测，已按远端不存在放行（传输时按续传决策兜底）",
+                    &[&n.to_string()],
+                ),
+            ));
+        }
+    }
     for side in 0..2 {
         let sids: Vec<u64> = st.remotes[side].sessions.iter().map(|s| s.sid).collect();
         for sid in sids {
@@ -1191,7 +1879,16 @@ fn apply_ssh_events(st: &mut State, ctx: &egui::Context) {
             for ev in evs {
                 apply_ssh_event(st, ctx, side, sid, ev);
             }
+            // CR-7：一批事件只裁一次终端（阈值仍 400），不再逐条 drain。
+            trim_terminal(&mut st.terminal);
         }
+    }
+}
+
+/// CR-7 终端批量裁剪：保留末 400 行，由 apply_ssh_events 每批末调用一次。
+fn trim_terminal(terminal: &mut Vec<(String, String)>) {
+    if terminal.len() > 400 {
+        terminal.drain(0..terminal.len() - 400);
     }
 }
 
@@ -1213,6 +1910,14 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
             root,
             confirmed,
         } => {
+            // S-8 队列菜单重连回账：在途时记专用成功日志（键 LogReconnected，
+            // C# RowReconnectItem_Click 的 Connected 回执同文案）并逐个归账；
+            // 普通连接提交不记账，不打这行。
+            if st.reconnecting > 0 {
+                st.reconnecting -= 1;
+                st.terminal
+                    .push((crate::local::now_hms(), tfmt("已重新连接：{0}", &[&label])));
+            }
             // 会话复位 + 挂靠 tab 初始目录优先级（C# AttachConnectedSession；抽
             // initial_remote_dir 与会话复用落位共用）：同步目录 > 上次浏览目录 >
             // 登录主目录；上次浏览目录失效回退主目录一次，同步目录失效直接报错
@@ -1362,6 +2067,13 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
             if what == "连接" {
                 if let Some(ss) = st.remotes[side].sessions.iter_mut().find(|s| s.sid == sid) {
                     ss.state = RemoteState::Failed(tfmt("连接失败：{0}", &[&msg]));
+                }
+                // S-8 队列菜单重连回账：在途时记专用失败日志（键 LogReconnectFailed）
+                // 并逐个归账（连接失败也是回执，菜单态归零恢复）。
+                if st.reconnecting > 0 {
+                    st.reconnecting -= 1;
+                    st.terminal
+                        .push((crate::local::now_hms(), tfmt("重连失败：{0}", &[&msg])));
                 }
                 // 连接失败：就地关闭当前弹窗（HostPicker/HostPanel 卡片发起的失败
                 // 不留门，C# 同语义）；错误文案留在挂靠 tab 空态/状态栏。
@@ -1546,10 +2258,9 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
             // 主动断开已即时复位 UI；被动掉线检测随 keepalive 接入。
         }
         crate::ssh::Ev::Log { msg } => {
+            // CR-7：不在每条事件裁剪；由 apply_ssh_events 每批末统一 trim 一次。
+            // 递归删除日志洪泛时避免每条事件都 Vec::drain 造成的重复搬移。
             st.terminal.push((crate::local::now_hms(), msg));
-            if st.terminal.len() > 400 {
-                st.terminal.drain(0..st.terminal.len() - 400);
-            }
         }
         crate::ssh::Ev::Deleted { tag } => {
             // tag → 归属 tab（inflight 记录发号映射；未知 tag = tab 已关，静默
@@ -1691,6 +2402,9 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
                                             baseline,
                                             quiet_since: None,
                                             quiet_snap: None,
+                                            lock_wait_since: None,
+                                            lock_warned: false,
+                                            lock_dialog_done: false,
                                         });
                                     }
                                     if let Err(e) =
@@ -1776,20 +2490,38 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
                     }
                 }
             } else {
-                // 远程编辑回传完成：mtime 回填 base（避免自冲突）+ 终端日志。
+                // 内置编辑器回传回流（CR-6⑥）：请求号 = doc_id。Ok → mtime 回填
+                // base + 清 pending/dirty + 写回执（字节数 · 远端路径）+ 终端日志带
+                // 三实数；Err → 失败态（副本保留，再按 Ctrl+S 可重试）。
                 match result {
                     Ok(mtime) => {
-                        for doc in &st.editors.docs {
-                            let mut d = doc.lock().unwrap();
-                            if d.id == req
-                                && let Some(r) = &mut d.remote
-                            {
-                                r.base_mtime = mtime;
-                            }
-                        }
+                        let len = st
+                            .editors
+                            .docs
+                            .iter()
+                            .find(|doc| doc.lock().unwrap().id == req)
+                            .map(|doc| {
+                                let mut d = doc.lock().unwrap();
+                                if let Some(r) = &mut d.remote {
+                                    r.base_mtime = mtime;
+                                }
+                                let n = std::fs::metadata(&d.path).map(|m| m.len()).unwrap_or(0);
+                                d.pending_upload = false;
+                                d.dirty = false;
+                                d.save_err = None;
+                                d.last_receipt = Some(tfmt("已回传 {0} 字节 · {1}", &[&n, &path]));
+                                n
+                            })
+                            .unwrap_or(0);
+                        // 回执唤醒编辑器子视口（项2）：状态栏「正在回传…」
+                        // → 回执文案自动流转，不等用户碰编辑器窗口。
+                        ctx.request_repaint_of(editor_viewport(req));
                         st.terminal.push((
                             crate::local::now_hms(),
-                            tfmt("{0} 已上传编辑副本 {1}", &[&tag, &path]),
+                            tfmt(
+                                "{0} 已回传 {1} 字节，远端 mtime {2}：{3}",
+                                &[&tag, &len, &mtime.unwrap_or(0), &path],
+                            ),
                         ));
                         // 上传落盘 → 即时重列挂靠 tab 当前目录（比 C# 更好的即时反馈：
                         // 浏览视图直接反映新大小/修改时间，无需手动刷新）。
@@ -1803,6 +2535,16 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
                         }
                     }
                     Err(e) => {
+                        for doc in &st.editors.docs {
+                            let mut d = doc.lock().unwrap();
+                            if d.id == req {
+                                d.pending_upload = false;
+                                d.dirty = true;
+                                d.save_err = Some(tfmt("回传未完成：{0}", &[&e]));
+                            }
+                        }
+                        // 回执唤醒编辑器子视口（项2）：失败红字立即上状态栏。
+                        ctx.request_repaint_of(editor_viewport(req));
                         st.terminal.push((
                             crate::local::now_hms(),
                             tfmt("{0} 上传 {1} 失败：{2}", &[&tag, &path, &e]),
@@ -1854,6 +2596,7 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
                             tab: tab_id,
                             name,
                             remote_path: path.clone(),
+                            src: dialogs::ExtConflictSrc::External,
                         };
                     } else {
                         ext_upload(st, side, tab_id, &path);
@@ -1861,39 +2604,84 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
                 }
             }
             if !ext_handled {
-                // 冲突探测回流：批次全部确认 → 弹覆盖确认或直接入队。
-                let mut done: Option<(usize, Vec<PendingItem>)> = None;
-                if let Some(ptx) = &mut st.pending_tx
-                    && ptx.seq == req
-                {
-                    if let Some(pi) = ptx
-                        .items
-                        .iter_mut()
-                        .find(|pi| pi.stat_path.as_deref() == Some(path.as_str()))
-                    {
-                        pi.stat_path = None;
-                        pi.conflict = exists;
-                        if exists {
-                            pi.dst_size = size;
-                            pi.dst_mtime = mtime;
+                // 内置编辑器回传探测回流（CR-6④）：±1s 判据同外部链路。无冲突 /
+                // 远端未报 mtime / 文件不存在 → 读副本写回（请求号 = doc_id，内置
+                // FileWritten 分支按 doc.id 认领）；有冲突 → 覆盖确认弹窗（内置，
+                // 「覆盖」走 doc_upload）。不匹配的回流把槽放回（别侧事件不吃）。
+                let mut doc_handled = false;
+                if let Some((req_no, doc_id, rpath, lpath, data, base)) = st.doc_stat.take() {
+                    if req_no == req {
+                        doc_handled = true;
+                        let doc = st
+                            .editors
+                            .docs
+                            .iter()
+                            .find(|doc| doc.lock().unwrap().id == doc_id)
+                            .cloned();
+                        let conflict = mtime_conflict(base, mtime, exists);
+                        if conflict {
+                            let name = doc
+                                .as_ref()
+                                .map(|doc| doc.lock().unwrap().title.clone())
+                                .unwrap_or_default();
+                            st.dialog = dialogs::Dialog::ExtEditConflict {
+                                side,
+                                tab: 0,
+                                name,
+                                remote_path: rpath,
+                                src: dialogs::ExtConflictSrc::Internal {
+                                    doc_id,
+                                    local_path: lpath,
+                                },
+                            };
+                        } else {
+                            // 副本内容复用分派时的读取（槽内 data，项3）：无冲突
+                            // 直通不再二次 fs::read。
+                            if let Some(ss) =
+                                st.remotes[side].sessions.iter_mut().find(|s| s.sid == sid)
+                            {
+                                ss.ssh.write_file(rpath, doc_id, data);
+                            } else {
+                                doc_upload_failed(st, ctx, doc_id, t("未找到主机会话"));
+                            }
                         }
-                    }
-                    if ptx.items.iter().all(|pi| pi.stat_path.is_none()) {
-                        done = Some((ptx.profile_side, std::mem::take(&mut ptx.items)));
+                    } else {
+                        st.doc_stat = Some((req_no, doc_id, rpath, lpath, data, base));
                     }
                 }
-                if let Some((profile_side, items)) = done {
-                    st.pending_tx = None;
-                    if items.iter().any(|pi| pi.conflict) {
-                        st.dialog = dialogs::Dialog::TransferConfirm {
-                            rows: confirm_data(&items),
-                        };
-                    } else {
-                        enqueue_tasks(
-                            st,
-                            profile_side,
-                            items.into_iter().map(|pi| pi.task).collect(),
-                        );
+                if !doc_handled {
+                    // 冲突探测回流（T20-E 流式落位）：冲突只标记不中止——冲突项
+                    // 留置到集齐统一进弹窗，非冲突项每满阈值即入队一批（队列逐批
+                    // 增长，流式全程不停）；全量回流结算统一收尾。
+                    let mut step = StreamStep::None;
+                    if let Some(ptx) = &mut st.pending_tx
+                        && ptx.seq == req
+                    {
+                        // 滑动窗基线（T20-H②）：任一回流（含重复/落空路径）即刷新
+                        // ——60s 零回流才断流，分轮回流的自然间歇不误判超窗。
+                        ptx.at = std::time::Instant::now();
+                        if let Some(pi) = ptx
+                            .items
+                            .iter_mut()
+                            .find(|pi| pi.stat_path.as_deref() == Some(path.as_str()))
+                        {
+                            pi.stat_path = None;
+                            pi.conflict = exists;
+                            if exists {
+                                pi.dst_size = size;
+                                pi.dst_mtime = mtime;
+                            }
+                            ptx.resolved += 1;
+                            if !exists {
+                                ptx.ready += 1; // 冲突项不计入落位余量
+                            }
+                            step = stream_step(ptx);
+                        }
+                    }
+                    match step {
+                        StreamStep::Place => stream_place(st),
+                        StreamStep::Settle => stream_settle(st),
+                        StreamStep::None => {}
                     }
                 }
             }
@@ -1902,6 +2690,16 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
 }
 
 // ── 外部编辑器远程会话（对齐 C# ExternalEditSession 全套）──────
+
+/// 写锁等待软提醒阈值（项6）：等待超过 3s 窗格状态栏出「等待编辑器完成保存…」。
+const LOCK_SOFT_MS: u128 = 3000;
+/// 写锁等待超时兜底阈值（项6）：等待超过 10s 终端恰 1 条 WARN、状态栏持久
+/// 提示、弹退出对话框（立即重试探测 / 取消本次回传）。超时 ≠ 放行上传。
+const LOCK_TIMEOUT_MS: u128 = 10000;
+
+/// doc_stat 槽类型：(请求号, doc_id, 远端路径, 副本路径, 副本内容, 基准
+/// mtime)。独立别名（type_complexity 收口）；形状见 State.doc_stat 文档。
+pub(crate) type DocStatSlot = (u64, u64, String, std::path::PathBuf, Vec<u8>, Option<i64>);
 
 /// 本地临时副本快照（长度 + mtime 秒；C# (Length, LastWriteTimeUtc.Ticks)
 /// 等价，秒级粒度足够——编辑器保存间隔远大于 1s）。读不到 → (0, 0)。
@@ -1967,7 +2765,9 @@ fn ext_write_lock_released(path: &std::path::Path) -> bool {
         )
     };
     if h == INVALID_HANDLE_VALUE {
-        unsafe { GetLastError() == ERROR_SHARING_VIOLATION }
+        // 共享冲突 = 编辑器仍持写句柄（锁未释放）→ 继续等；其余失败
+        //（不存在 / 权限）按已释放放行（C# 只对 IOException 推迟）。
+        unsafe { GetLastError() != ERROR_SHARING_VIOLATION }
     } else {
         unsafe { CloseHandle(h) };
         true
@@ -1977,6 +2777,137 @@ fn ext_write_lock_released(path: &std::path::Path) -> bool {
 #[cfg(not(windows))]
 fn ext_write_lock_released(_path: &std::path::Path) -> bool {
     true
+}
+
+// ── 内置编辑器保存回传（CR-6：副本 → 会话 → STAT 冲突探测 → WriteFile）──
+
+/// 回传冲突判定（CR-6④）：与外部 STAT 分支同款判据——远端已存在且回流
+/// mtime 与下载基准差 ≥1s（秒级粒度）；任一侧未报 mtime / 文件不存在不判。
+/// 纯函数便于钉子做「同款夹具内外同判定」比对。
+fn mtime_conflict(base_mtime: Option<i64>, remote_mtime: Option<i64>, exists: bool) -> bool {
+    match (base_mtime, remote_mtime) {
+        (Some(a), Some(b)) => exists && a.abs_diff(b) >= 1,
+        _ => false,
+    }
+}
+
+/// 内置编辑器回传失败态回写（CR-6）：副本保留、pending 清零、dirty 回 true、
+/// save_err 记原因——状态栏红字提示，再按 Ctrl+S 可重试。回执唤醒编辑器
+/// 子视口（项2）：编辑器独立视口不自重绘，不唤醒则状态栏红字挂到用户碰它。
+fn doc_upload_failed(st: &mut State, ctx: &egui::Context, doc_id: u64, reason: &str) {
+    for doc in &st.editors.docs {
+        let mut d = doc.lock().unwrap();
+        if d.id == doc_id {
+            d.pending_upload = false;
+            d.dirty = true;
+            d.save_err = Some(tfmt("回传未完成：{0}", &[&reason.to_string()]));
+        }
+    }
+    ctx.request_repaint_of(editor_viewport(doc_id));
+}
+
+/// 编辑器文档视口 id（与 editor_window::show_all 声明口径一致，确定性重建）。
+fn editor_viewport(doc_id: u64) -> egui::ViewportId {
+    egui::ViewportId(egui::Id::unique(("editor", doc_id)))
+}
+
+/// 会话池匹配（P1 首个命中侧，行为同现状）：遍历两侧会话找持有该主机的会话。
+fn session_for_host(st: &State, host: &str) -> Option<(usize, u64)> {
+    st.remotes.iter().enumerate().find_map(|(side, rs)| {
+        rs.sessions
+            .iter()
+            .find(|s| s.host.as_ref().is_some_and(|x| x.host == host))
+            .map(|s| (side, s.sid))
+    })
+}
+
+/// 内置编辑器保存回传分派（CR-6③）：副本读出（失败即失败态、不发任何 ssh
+/// 请求）→ 会话匹配（失配同失败态，禁止 drain 后吞掉）→ STAT 冲突探测挂
+/// doc_stat 槽（请求号沿用 stat_seq 发号，Ev::Stat 按 req 认领）。副本全文
+/// 随槽带入（项3：单次保存只发生一次 fs::read；无冲突直通复用，冲突「覆盖」
+/// 走 doc_upload 重读最新）。槽被占（上一回传探测在途）时事件重新入队下一帧
+/// 再处理，防单槽覆盖丢事件。
+fn saved_upload_dispatch(st: &mut State, ctx: &egui::Context, ev: crate::editor::SavedEvent) {
+    if st.doc_stat.is_some() {
+        crate::editor::EditorHub::push_saved(ev);
+        return;
+    }
+    st.terminal.push((
+        crate::local::now_hms(),
+        tfmt("[{0}] 上传编辑副本…", &[&ev.remote_path]),
+    ));
+    // 副本读失败即刻失败态（对齐外部链路：绝不以空字节写远端）。
+    let data = match std::fs::read(&ev.local_path) {
+        Ok(d) => d,
+        Err(e) => {
+            let msg = e.to_string();
+            st.terminal.push((
+                crate::local::now_hms(),
+                tfmt("[{0}] 回传未完成：{1}", &[&ev.remote_path, &msg]),
+            ));
+            doc_upload_failed(st, ctx, ev.doc_id, &msg);
+            return;
+        }
+    };
+    let Some((side, sid)) = session_for_host(st, &ev.host) else {
+        let msg = t("未找到主机会话").to_owned();
+        st.terminal.push((
+            crate::local::now_hms(),
+            tfmt("[{0}] 回传未完成：{1}", &[&ev.remote_path, &msg]),
+        ));
+        doc_upload_failed(st, ctx, ev.doc_id, &msg);
+        return;
+    };
+    st.stat_seq += 1;
+    let req = st.stat_seq;
+    st.doc_stat = Some((
+        req,
+        ev.doc_id,
+        ev.remote_path.clone(),
+        ev.local_path.clone(),
+        data,
+        ev.base_mtime,
+    ));
+    if let Some(ss) = st.remotes[side].sessions.iter_mut().find(|s| s.sid == sid) {
+        ss.ssh.stat(ev.remote_path.clone(), req);
+    } else {
+        st.doc_stat = None;
+        doc_upload_failed(st, ctx, ev.doc_id, t("未找到主机会话"));
+    }
+}
+
+/// 内置编辑器「覆盖」回传（CR-6⑤ 冲突弹窗分派）：读副本 → 会话匹配 → 直接
+/// WriteFile（请求号 = doc_id，Ev::FileWritten 内置分支按 doc.id 认领）。
+pub(super) fn doc_upload(
+    st: &mut State,
+    ctx: &egui::Context,
+    doc_id: u64,
+    local_path: &std::path::Path,
+    remote_path: &str,
+) {
+    let data = match std::fs::read(local_path) {
+        Ok(d) => d,
+        Err(e) => {
+            let msg = e.to_string();
+            doc_upload_failed(st, ctx, doc_id, &msg);
+            return;
+        }
+    };
+    let host = st.editors.docs.iter().find_map(|doc| {
+        let d = doc.lock().unwrap();
+        (d.id == doc_id)
+            .then(|| d.remote.as_ref().map(|r| r.host.clone()))
+            .flatten()
+    });
+    let Some((side, sid)) = host.as_deref().and_then(|h| session_for_host(st, h)) else {
+        doc_upload_failed(st, ctx, doc_id, t("未找到主机会话"));
+        return;
+    };
+    if let Some(ss) = st.remotes[side].sessions.iter_mut().find(|s| s.sid == sid) {
+        ss.ssh.write_file(remote_path.to_owned(), doc_id, data);
+    } else {
+        doc_upload_failed(st, ctx, doc_id, t("未找到主机会话"));
+    }
 }
 
 /// 外部编辑回传：读临时副本全文 → WriteFile（请求号从 stat_seq 分配并占用
@@ -2012,12 +2943,18 @@ fn ext_upload(st: &mut State, side: usize, tab_id: u32, remote_path: &str) {
 /// 外部编辑会话轮询（egui 帧驱动，C# FileSystemWatcher + 防抖 + 写锁检测
 /// 等价实现——watcher 仅作「有动静」信号源，最终判定同为快照比对）：
 /// - 每 300ms 对各会话本地副本取快照（长度+mtime）；
-/// - 快照 ≠ 基准 → 起算 800ms 静默期（C# DebounceMs；期内再变重新计时）；
+/// - 快照 ≠ 基准 → 起算静默期（期内再变重新计时）；
 /// - 静默期满且快照稳定且写锁已释放 → 触发一次询问（触发即更新基准：
 ///   同一次保存只问一次，「暂不保存」后再保存会再问）；
+/// - 静默期满且快照稳定但写锁未释放 → 记等待起点、分级提醒（项6）：
+///   0–SOFT 无提醒；SOFT–TIMEOUT 窗格状态栏软提示；≥TIMEOUT 进兜底——
+///   终端恰 1 条 WARN + 状态栏持久提示 + 弹 ExtEditLockWait 退出对话框。
+///   超时 ≠ 放行上传：暂缓等待、锁释放后自动继续走原确认框，全程不上传。
 /// - 弹窗占用时不触发也不动基准（下轮再问），防弹窗套弹窗。
 fn poll_ext_edits(st: &mut State) {
-    const QUIET_MS: u128 = 800; // C# ExternalEditSession.DebounceMs
+    // 快照稳定一次即触发（= 一个 POLL_MS；C# DebounceMs 800ms 缩短——外部
+    // Ctrl+S 到弹确认框不再白等 1.1s；防抖语义不变：期内再变重新起算）。
+    const QUIET_MS: u128 = POLL_MS;
     const POLL_MS: u128 = 300;
     let now = std::time::Instant::now();
     for side in 0..2 {
@@ -2042,6 +2979,16 @@ fn poll_ext_edits(st: &mut State) {
             for e in tab.ext_edits.iter_mut() {
                 let snap = ext_snapshot(&e.local);
                 if snap == e.baseline {
+                    // 快照回基线：等待结束（锁释放后被编辑器改回 / 会话复位），
+                    // 清锁等待状态与窗格提示（独立标记成对清，防英文残留）。
+                    if e.lock_wait_since.take().is_some() {
+                        e.lock_warned = false;
+                        e.lock_dialog_done = false; // 下次等锁超时可再弹（CR-10）
+                        if tab.lock_msg_on {
+                            tab.pane.msg = None;
+                            tab.lock_msg_on = false;
+                        }
+                    }
                     e.quiet_since = None;
                     e.quiet_snap = None;
                     continue;
@@ -2053,6 +3000,19 @@ fn poll_ext_edits(st: &mut State) {
                             && since.elapsed().as_millis() >= QUIET_MS
                             && ext_write_lock_released(&e.local) =>
                     {
+                        // 锁等待结束：恰 1 条 INFO + 清窗格提示（项6 去重要求）。
+                        if e.lock_wait_since.take().is_some() {
+                            e.lock_warned = false;
+                            e.lock_dialog_done = false; // 下次等锁超时可再弹（CR-10）
+                            st.terminal.push((
+                                crate::local::now_hms(),
+                                t("写锁已释放，继续回传").to_owned(),
+                            ));
+                            if tab.lock_msg_on {
+                                tab.pane.msg = None;
+                                tab.lock_msg_on = false;
+                            }
+                        }
                         // 弹窗占用 → 基准不动，下轮再问。
                         if let dialogs::Dialog::None = st.dialog {
                             // 触发即更新基准：同一次保存只问一次。
@@ -2067,14 +3027,69 @@ fn poll_ext_edits(st: &mut State) {
                             };
                         }
                     }
-                    // 快照稳定但写锁未释放（编辑器仍在保存）→ 继续等待。
-                    Some(_) if e.quiet_snap == Some(snap) => {}
+                    // 快照稳定但写锁未释放（编辑器仍在保存）→ 记等待起点 +
+                    // 分级提醒（软提示 → 超时兜底 WARN + 退出对话框，项6）。
+                    Some(since)
+                        if e.quiet_snap == Some(snap)
+                            && since.elapsed().as_millis() >= QUIET_MS =>
+                    {
+                        let started = e.lock_wait_since.get_or_insert(now);
+                        let wait = started.elapsed().as_millis();
+                        if wait >= LOCK_TIMEOUT_MS {
+                            if !e.lock_warned {
+                                e.lock_warned = true;
+                                st.terminal.push((
+                                    crate::local::now_hms(),
+                                    tfmt(
+                                        "写锁未释放，已暂缓回传：{0}（{1}s）——不会上传半写文件",
+                                        &[&e.name, &wait],
+                                    ),
+                                ));
+                            }
+                            // 超时框去重（CR-10，与 lock_warned 日志去重分离）：
+                            // 本次等锁只弹一次；被别的框占用时本轮不弹不置位，
+                            // 下轮补弹（挪进 !lock_warned 块会在占用时永久不弹）。
+                            if !e.lock_dialog_done && matches!(st.dialog, dialogs::Dialog::None) {
+                                st.dialog = dialogs::Dialog::ExtEditLockWait {
+                                    side,
+                                    tab: tab_id,
+                                    name: e.name.clone(),
+                                    remote_path: e.remote_path.clone(),
+                                };
+                                e.lock_dialog_done = true;
+                            }
+                        }
+                    }
                     // 首次变化 / 期内又变 → 重新起算静默期。
                     _ => {
                         e.quiet_since = Some(now);
                         e.quiet_snap = Some(snap);
                     }
                 }
+            }
+            // 窗格状态栏提示（项6，每轮 poll 重算、无状态残留）：≥SOFT 软
+            // 提示 / ≥TIMEOUT 持久提示；清零走独立标记 lock_msg_on（成对置位）。
+            let lockmsg = tab.ext_edits.iter().find_map(|e| {
+                let s = e.lock_wait_since.as_ref()?;
+                let wait = s.elapsed().as_millis();
+                (wait >= LOCK_SOFT_MS).then(|| {
+                    if wait >= LOCK_TIMEOUT_MS {
+                        tfmt("写锁未释放，已暂缓回传：{0}（{1}s）", &[&e.name, &wait])
+                    } else {
+                        t("等待编辑器完成保存…").to_owned()
+                    }
+                })
+            });
+            match lockmsg {
+                Some(m) => {
+                    tab.pane.msg = Some(m);
+                    tab.lock_msg_on = true;
+                }
+                None if tab.lock_msg_on => {
+                    tab.pane.msg = None;
+                    tab.lock_msg_on = false;
+                }
+                None => {}
             }
         }
     }
@@ -2135,6 +3150,7 @@ fn build_transfer(
                     dest: remote.clone(),
                     size,
                     force: false,
+                    probe_incomplete: false,
                     kind,
                     owner,
                 },
@@ -2179,6 +3195,7 @@ fn build_transfer(
                     dest: remote_dst.clone(),
                     size,
                     force: false,
+                    probe_incomplete: false,
                     kind,
                     owner,
                 },
@@ -2210,6 +3227,7 @@ fn build_transfer(
                     dest: local.to_string_lossy().into_owned(),
                     size,
                     force: false,
+                    probe_incomplete: false,
                     kind,
                     owner,
                 },
@@ -2241,6 +3259,7 @@ fn build_transfer(
                     dest: to.to_string_lossy().into_owned(),
                     size,
                     force: false,
+                    probe_incomplete: false,
                     kind,
                     owner,
                 },
@@ -2264,6 +3283,20 @@ pub(crate) fn begin_transfer_multi(st: &mut State, pane: usize, rows: &[usize]) 
     if built.is_empty() {
         return;
     }
+    // F1③：上批尚在暂存（确认弹窗待决策 / 预检回流中）时新拖拽显式接管——
+    // 未落位暂存部分不再无提示覆盖丢弃，终端落对账日志并关旧确认弹窗；
+    // 已落位行不可逆，继续传输（batches 不回溯清行）。
+    if let Some(old) = st.pending_tx.take() {
+        let n = old.items.len();
+        st.terminal.push((
+            crate::local::now_hms(),
+            tfmt("已放弃上一批待确认的 {0} 项（未入队）", &[&n.to_string()]),
+        ));
+        if matches!(st.dialog, dialogs::Dialog::TransferConfirm { .. }) {
+            st.dialog = dialogs::Dialog::None;
+            st.conflict_sel = None; // 旧弹窗勾选态随弹窗一并作废
+        }
+    }
     let profile_side = built[0].1;
     let mut items: Vec<PendingItem> = built
         .into_iter()
@@ -2274,24 +3307,34 @@ pub(crate) fn begin_transfer_multi(st: &mut State, pane: usize, rows: &[usize]) 
             src_mtime,
             dst_size: None,
             dst_mtime: None,
+            probe_incomplete: false,
         })
         .collect();
     if items[0].stat_path.is_some() {
-        // 远程目标：整批共用一个请求号逐条异步 STAT（发往目标侧活动远程 tab
-        // 的会话）；Ev::Stat 回流按 profile_side 匹配会话聚合。
+        // 远程目标：整批共用一个请求号批量并发 STAT（T20-G③：一次 StatBatch
+        // 替代逐条——此前逐条串行 = O(n×RTT)，万级批次分钟级才回流，队列长期
+        // 无法形成；Ev::Stat 回流按 profile_side 匹配会话聚合不变）。
+        // T20-H 流式落位：回流结果每满 dnd_stream_batch 个无冲突条目即入队
+        // 一批（队列逐批长出，估算与传输并行；冲突即中止转确认弹窗）。
+        // S-1：探测期间源面板状态栏挂瞬态提示（C# :3069「点了没反应」对策）。
         st.stat_seq += 1;
         let seq = st.stat_seq;
         if let Some(ss) = active_remote_session(st, profile_side) {
-            for pi in &items {
-                if let Some(path) = &pi.stat_path {
-                    ss.ssh.stat(path.clone(), seq);
-                }
-            }
+            let paths: Vec<String> = items.iter().filter_map(|pi| pi.stat_path.clone()).collect();
+            ss.ssh.stat_batch(paths, seq);
         }
+        pane_view_mut(st, pane).msg = Some(preparing_msg());
         st.pending_tx = Some(PendingTx {
             seq,
             profile_side,
+            src_pane: pane,
+            at: std::time::Instant::now(),
+            resolved: 0,
+            ready: 0,
+            batch: dnd_stream_batch(),
+            batches: Vec::new(),
             items,
+            placed: 0,
         });
     } else {
         // 本地目标同步探测：逐条探测，仅真实冲突项进确认清单（C# 批量一次弹窗）。
@@ -2310,17 +3353,28 @@ pub(crate) fn begin_transfer_multi(st: &mut State, pane: usize, rows: &[usize]) 
         }
         if any {
             let rows = confirm_data(&items);
+            // F-10 方案A：本地批次弹窗勾选态默认值（目标较新默认不勾）。
+            st.conflict_sel = Some(conflict_defaults(&rows));
             st.pending_tx = Some(PendingTx {
                 seq: 0,
                 profile_side,
+                src_pane: pane,
+                at: std::time::Instant::now(),
+                // 本地批次无回流（seq=0）：流式禁用，走确认弹窗批级决策。
+                resolved: 0,
+                ready: 0,
+                batch: usize::MAX,
+                batches: Vec::new(),
                 items,
+                placed: 0,
             });
-            st.dialog = dialogs::Dialog::TransferConfirm { rows };
+            st.dialog = dialogs::Dialog::TransferConfirm { rows, note: None };
         } else {
             enqueue_tasks(
                 st,
                 profile_side,
                 items.into_iter().map(|pi| pi.task).collect(),
+                0,
             );
         }
     }
@@ -2347,32 +3401,99 @@ fn confirm_data(items: &[PendingItem]) -> Vec<dialogs::ConflictRow> {
         .collect()
 }
 
-/// 覆盖确认结算：skip=true 丢弃冲突条目；冲突任务置 force（C# forceOverwrite：
-/// 用户明确覆盖 → 跳过续传决策直接全量，防旧小文件被误判为中断半成品）。
-pub(crate) fn enqueue_pending(st: &mut State, skip_conflicts: bool) {
+/// F-10 方案A：冲突行勾选默认值（纯逻辑便于钉子）——目标较新（dst_mtime >
+/// src_mtime）时覆盖会砸掉较新的目标文件 → 默认不勾（跳过）；其余默认勾选
+/// （覆盖上传）。目标无 mtime → 勾选。
+pub(crate) fn conflict_defaults(rows: &[dialogs::ConflictRow]) -> Vec<bool> {
+    rows.iter()
+        .map(|r| !r.dst_mtime.is_some_and(|m| m > r.src_mtime))
+        .collect()
+}
+
+/// PendingItem 版默认勾选（sel 缺项 / None 兜底，与 conflict_defaults 同判据）。
+fn item_default(pi: &PendingItem) -> bool {
+    !pi.dst_mtime.is_some_and(|m| m > pi.src_mtime)
+}
+
+/// PendingItem → NewTask 提取（F-12 三处提取点共用：settle_batch 直入 /
+/// stream_place 逐批 / settle_tasks 确认结算）：预检超窗透传位随任务入队
+/// ——消费=透传，标记只写不读即失去意义；下游 resume_decision 凭此禁
+/// Append（防超窗放行项把远端同名旧目标当断点静默拼接）。
+fn into_task(mut pi: PendingItem) -> crate::transfer::NewTask {
+    pi.task.probe_incomplete = pi.probe_incomplete;
+    pi.task
+}
+
+/// 覆盖确认结算映射（纯逻辑便于钉子，F1 + F-10 方案A）：sel = 弹窗逐项
+/// 勾选态（与冲突行序对齐；None / 缺项 = 按默认勾选值推断——目标较新跳过、
+/// 其余覆盖）。勾选冲突任务置 force（C# forceOverwrite：用户明确覆盖 →
+/// 跳过续传决策直接全量，防旧小文件被误判为中断半成品）；未勾选冲突项
+/// 剔除并计数 skipped；非冲突项照常入队。返回 (待入队任务, skipped 条数)。
+fn settle_tasks(
+    items: Vec<PendingItem>,
+    sel: Option<&[bool]>,
+) -> (Vec<crate::transfer::NewTask>, u64) {
+    let mut j = 0usize;
+    let mut skipped = 0u64;
+    let tasks: Vec<crate::transfer::NewTask> = items
+        .into_iter()
+        .filter_map(|mut pi| {
+            if pi.conflict {
+                let upload = sel
+                    .and_then(|s| s.get(j).copied())
+                    .unwrap_or_else(|| item_default(&pi));
+                j += 1;
+                if !upload {
+                    skipped += 1;
+                    return None;
+                }
+                pi.task.force = true;
+            }
+            Some(into_task(pi))
+        })
+        .collect();
+    (tasks, skipped)
+}
+
+/// 覆盖确认结算：按弹窗勾选态（st.conflict_sel，F-10 方案A）分流——勾选
+/// 冲突项置 force 入队、未勾选剔除计数。F1：按下「应用」必有确定结果——
+/// 入队，或全不勾时终端落对账日志（skipped 计数可见，不再零入队零提示零日志）。
+pub(crate) fn enqueue_pending(st: &mut State) {
     let Some(ptx) = st.pending_tx.take() else {
         return;
     };
+    let sel = st.conflict_sel.take();
     let profile_side = ptx.profile_side;
-    let tasks: Vec<crate::transfer::NewTask> = ptx
-        .items
-        .into_iter()
-        .filter(|pi| !pi.conflict || !skip_conflicts)
-        .map(|mut pi| {
-            if pi.conflict {
-                pi.task.force = true;
-            }
-            pi.task
-        })
-        .collect();
+    let (tasks, skipped) = settle_tasks(ptx.items, sel.as_deref());
     if !tasks.is_empty() {
-        enqueue_tasks(st, profile_side, tasks);
+        enqueue_tasks(st, profile_side, tasks, skipped);
+    } else if skipped > 0 {
+        // F1：全冲突批选「跳过冲突项」→ 零入队但明确放弃，留对账日志。
+        st.terminal.push((
+            crate::local::now_hms(),
+            tfmt(
+                "已跳过 {0} 个冲突项，无剩余任务入队",
+                &[&skipped.to_string()],
+            ),
+        ));
     }
 }
 
+/// 流式落位阈值快照（settings.dnd_stream_batch；内定值不进设置面板，手编
+/// settings.json 可调；下限 1 兜底）。
+fn dnd_stream_batch() -> usize {
+    crate::settings::with(|s| s.dnd_stream_batch).max(1) as usize
+}
+
 /// 入队（惰性建队列线程；远程任务按目标侧活动远程 tab 会话的连接档案建传输
-/// 连接）。
-fn enqueue_tasks(st: &mut State, profile_side: usize, tasks: Vec<crate::transfer::NewTask>) {
+/// 连接）。`skipped` = 覆盖确认「跳过冲突项」条数（无冲突路径恒 0）。
+/// 返回批次号（T20-H 流式落位逐批记录，供弹窗取消回溯清行）。
+fn enqueue_tasks(
+    st: &mut State,
+    profile_side: usize,
+    tasks: Vec<crate::transfer::NewTask>,
+    skipped: u64,
+) -> u64 {
     // G12：队列按批持该侧活动远程 tab 会话探测快照实时句柄（本地任务无会话时
     // 用空快照）——双侧会话后传输后校验跟批次侧走；先取句柄再建队列，避免
     // &mut st 借用冲突。
@@ -2386,7 +3507,7 @@ fn enqueue_tasks(st: &mut State, profile_side: usize, tasks: Vec<crate::transfer
     let q = st
         .transfer
         .get_or_insert_with(crate::transfer::TransferQueue::new);
-    q.enqueue(profile, probe, tasks);
+    q.enqueue(profile, probe, tasks, skipped)
 }
 
 /// G17 关闭确认门（C# FolderContainer.OnTabCloseConfirming）：该 tab 归属的
@@ -2592,11 +3713,94 @@ fn splitter(ui: &mut egui::Ui, rect: Rect, vertical: bool, st: &mut State) {
         st.bottom_h -= d.y;
     }
     if resp.hovered() {
-        ui.ctx().set_cursor_icon(if vertical {
-            egui::CursorIcon::ResizeHorizontal
-        } else {
-            egui::CursorIcon::ResizeVertical
-        });
+        cursor_intent(
+            ui.ctx(),
+            CursorLayer::Hover,
+            if vertical {
+                egui::CursorIcon::ResizeHorizontal
+            } else {
+                egui::CursorIcon::ResizeVertical
+            },
+        );
+    }
+}
+
+/// 无边框窗口边缘缩放（C# ExtendsContentIntoTitleBar 回归修复）：decorations(false)
+/// 让系统缩放边随装饰一起消失 → 4 边 + 4 角各挂一层透明拖拽命中区，drag_started
+/// 即交给 winit 系统缩放循环（ViewportCommand::BeginResize；Windows 走
+/// WM_SYSCOMMAND SC_SIZE，对无边框窗口同样生效；min_inner_size 在模态循环内
+/// 仍由 WM_GETMINMAXINFO 钳制）。最大化时整层跳过；须在帧尾调用（注册最晚 =
+/// 命中优先级最高，只盖住贴边 6px，不干扰内容与弹层）。
+pub fn edge_resize(ui: &mut egui::Ui, modal: bool) {
+    // 弹层 / 菜单期间整层跳过（连 BeginResize 一起限）：既不让帧尾注册的贴边
+    // 命中区抢弹层边缘，也不让 Edge 意图压过 Dialog 层的 Default。
+    // 不前移到 dialogs::draw 之前——注册最晚 = 命中优先级最高是 BeginResize
+    // 成立的前提；dialog shell 的抢命中已由 F-9 的 Foreground 分层解决。
+    if modal {
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    if ctx.input(|i| i.viewport().maximized).unwrap_or(false) {
+        return;
+    }
+    let r = ctx.input(|i| i.viewport_rect());
+    let edge = 6.0; // 边命中厚度（对齐 WinUI 缩放边手感 6-8 逻辑px）
+    let corner = 16.0; // 角命中宽度（角部难瞄准，放宽）
+    use egui::{CursorIcon, Pos2, ResizeDirection, Sense, Vec2, ViewportCommand};
+    // 角区放数组尾部：注册更晚，命中优先于边区。
+    let zones: [(Rect, ResizeDirection, CursorIcon); 8] = [
+        (
+            Rect::from_min_max(r.left_top(), Pos2::new(r.right(), r.top() + edge)),
+            ResizeDirection::North,
+            CursorIcon::ResizeNorth,
+        ),
+        (
+            Rect::from_min_max(Pos2::new(r.left(), r.bottom() - edge), r.right_bottom()),
+            ResizeDirection::South,
+            CursorIcon::ResizeSouth,
+        ),
+        (
+            Rect::from_min_max(r.left_top(), Pos2::new(r.left() + edge, r.bottom())),
+            ResizeDirection::West,
+            CursorIcon::ResizeWest,
+        ),
+        (
+            Rect::from_min_max(Pos2::new(r.right() - edge, r.top()), r.right_bottom()),
+            ResizeDirection::East,
+            CursorIcon::ResizeEast,
+        ),
+        (
+            Rect::from_min_size(r.min, Vec2::splat(corner)),
+            ResizeDirection::NorthWest,
+            CursorIcon::ResizeNorthWest,
+        ),
+        (
+            Rect::from_min_size(Pos2::new(r.right() - corner, r.top()), Vec2::splat(corner)),
+            ResizeDirection::NorthEast,
+            CursorIcon::ResizeNorthEast,
+        ),
+        (
+            Rect::from_min_size(
+                Pos2::new(r.left(), r.bottom() - corner),
+                Vec2::splat(corner),
+            ),
+            ResizeDirection::SouthWest,
+            CursorIcon::ResizeSouthWest,
+        ),
+        (
+            Rect::from_min_size(r.max - Vec2::splat(corner), Vec2::splat(corner)),
+            ResizeDirection::SouthEast,
+            CursorIcon::ResizeSouthEast,
+        ),
+    ];
+    for (rect, dir, icon) in zones {
+        let resp = ui.allocate_rect(rect, Sense::drag());
+        if resp.hovered() {
+            cursor_intent(&ctx, CursorLayer::Edge, icon);
+        }
+        if resp.drag_started() {
+            ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+        }
     }
 }
 
@@ -2688,13 +3892,12 @@ mod initial_dir_tests {
 }
 
 // ============================================================================
-// P4 单测：SessionKey 复用匹配（P2 会话池真复用的判定键，PartialEq 口径）+
-// tab 标题现算纯函数（§6：本地目录名 / 远程目录末段）。
+// P4 单测：SessionKey 复用匹配（P2 会话池真复用的判定键，PartialEq 口径）。
 // ============================================================================
 
 #[cfg(test)]
 mod p4_tests {
-    use super::{SessionKey, remote_dir_label};
+    use super::SessionKey;
 
     #[test]
     fn session_key_same_triple_matches() {
@@ -2731,12 +3934,1832 @@ mod p4_tests {
         assert_ne!(a, port);
         assert_ne!(a, user);
     }
+}
 
+// ============================================================================
+// T20-G③ 单测：批量 STAT 预检超时兜底（回流丢失批次强制放行）。
+// ============================================================================
+
+#[cfg(test)]
+mod t20g_tests {
+    use super::*;
+
+    /// 批次条目夹具：stat_path 挂起（Some）/ 已回流（None）。
+    fn pend_item(stat_path: Option<String>) -> PendingItem {
+        PendingItem {
+            task: crate::transfer::NewTask {
+                source: "/src/a.bin".into(),
+                dest: "/dst/a.bin".into(),
+                size: 1,
+                force: false,
+                probe_incomplete: false,
+                owner: crate::transfer::TaskOwner {
+                    src: (0, 1),
+                    dst: (1, 2),
+                },
+                kind: crate::transfer::Kind::UploadFile {
+                    local: "/src/a.bin".into(),
+                    remote: "/dst/a.bin".into(),
+                },
+            },
+            stat_path,
+            conflict: false,
+            src_mtime: 0,
+            dst_size: None,
+            dst_mtime: None,
+            probe_incomplete: false,
+        }
+    }
+
+    fn pend_tx(seq: u64, items: Vec<PendingItem>) -> PendingTx {
+        PendingTx {
+            seq,
+            profile_side: 1,
+            src_pane: 0,
+            at: std::time::Instant::now(),
+            resolved: 0,
+            ready: 0,
+            batch: 4,
+            batches: Vec::new(),
+            placed: 0,
+            items,
+        }
+    }
+
+    /// 钉子（T20-G③ 预检超时兜底）：回流丢失的批次（stat_path 仍挂起）在
+    /// 超窗后被强制结算——全部条目 stat_path 清 None 可处置；零窗判定即触发。
     #[test]
-    fn remote_dir_label_last_segment() {
-        assert_eq!(remote_dir_label(Some("/")), "/");
-        assert_eq!(remote_dir_label(Some("/home/user")), "user");
-        assert_eq!(remote_dir_label(Some("/etc/")), "etc"); // 尾斜杠兜底取真末段
-        assert_eq!(remote_dir_label(None), "");
+    fn stat_probe_timeout_forces_settle() {
+        let mut ptx = pend_tx(
+            7,
+            vec![pend_item(None), pend_item(Some("/dst/a.bin".into()))],
+        );
+        assert_eq!(
+            force_settle_expired(&mut ptx, std::time::Duration::ZERO),
+            1,
+            "仅未回流条目计数 probe_incomplete"
+        );
+        assert!(ptx.items.iter().all(|pi| pi.stat_path.is_none()));
+        assert!(ptx.items[1].probe_incomplete, "未回流条目带标记");
+        assert!(!ptx.items[0].probe_incomplete, "已回流条目不带标记");
+    }
+
+    /// 钉子（兜底不误伤本地确认弹窗批次）：seq=0（本地同步探测、无回流等待，
+    /// 弹窗可停留任意久）不受超时兜底影响。
+    #[test]
+    fn stat_probe_timeout_spares_local_confirm_batch() {
+        let mut local = pend_tx(0, vec![pend_item(Some("/dst/b.bin".into()))]);
+        assert_eq!(
+            force_settle_expired(&mut local, std::time::Duration::ZERO),
+            0
+        );
+        assert!(local.items[0].stat_path.is_some());
+    }
+
+    // ── T20-H/E 流式落位钉子 ────────────────────────────────────
+
+    /// 钉子（逐批落位边界）：10 条批次阈值 4——第 4/8 条回流触发 Place、
+    /// 第 10 条（全量结算）触发 Settle 统一收尾，其余步进 None；stream_take
+    /// 摘批后不变式保持（resolved == 余下 stat_path None 条数）。
+    #[test]
+    fn stream_places_by_threshold_and_settles_remainder() {
+        let mut ptx = pend_tx(
+            9,
+            (0..10)
+                .map(|i| pend_item(Some(format!("/dst/f{i:03}.bin"))))
+                .collect(),
+        );
+        let n = ptx.items.len();
+        let mut places = 0;
+        let mut settled = false;
+        let mut placed_total = 0;
+        for _ in 0..n {
+            // 逐条回流：清 stat_path（事件处理器同款）后判定。
+            let pi = ptx
+                .items
+                .iter_mut()
+                .find(|pi| pi.stat_path.is_some())
+                .unwrap();
+            pi.stat_path = None;
+            ptx.resolved += 1;
+            ptx.ready += 1;
+            match stream_step(&ptx) {
+                StreamStep::Place => {
+                    places += 1;
+                    let need = ptx.ready;
+                    let batch = stream_take(&mut ptx, need);
+                    assert_eq!(batch.len(), ptx.batch);
+                    placed_total += batch.len();
+                }
+                StreamStep::Settle => {
+                    settled = true;
+                    assert_eq!(ptx.resolved, ptx.items.len());
+                    assert_eq!(
+                        ptx.ready,
+                        ptx.items.len(),
+                        "尾批余量（无冲突测试：全部可落位）"
+                    );
+                    placed_total += ptx.ready;
+                }
+                StreamStep::None => {}
+            }
+            assert_eq!(
+                ptx.resolved,
+                ptx.items.iter().filter(|p| p.stat_path.is_none()).count(),
+                "不变式：resolved == 余下已回流未落位条数"
+            );
+            assert_eq!(
+                ptx.ready,
+                ptx.items
+                    .iter()
+                    .filter(|p| p.stat_path.is_none() && !p.conflict)
+                    .count(),
+                "不变式：ready == 余下无冲突已回流未落位条数"
+            );
+        }
+        assert_eq!(places, 2, "阈值 4 × 10 条：恰在 4/8 两次落位");
+        assert!(settled, "第 10 条全量结算统一收尾");
+        assert_eq!(placed_total, 10, "全部条目逐批落位无遗漏");
+    }
+
+    /// 钉子（E 策略：冲突不停流）：冲突只标记不中止——非冲突项照常按阈值
+    /// 落位（ready 不含冲突项），流式全程不停；冲突项留置到集齐由 Settle
+    /// 统一进弹窗（尾批无冲突 + 冲突项一起交 settle_batch 分流）。
+    #[test]
+    fn stream_conflicts_do_not_stop_placing_and_settle_at_complete() {
+        let mut ptx = pend_tx(
+            9,
+            (0..12)
+                .map(|i| pend_item(Some(format!("/dst/g{i}.bin"))))
+                .collect(),
+        );
+        ptx.batch = 4;
+        // 回流序：c(冲突) ok ok c ok ok ok ok c ok ok ok——第 5 条回流时
+        // ready=4 触发 Place（冲突不占阈值），第 9 条再次 Place。
+        let pattern = [
+            true, false, false, true, false, false, false, false, true, false, false, false,
+        ];
+        let mut places = 0;
+        let mut placed_total = 0;
+        let mut settled = false;
+        for (i, conflict) in pattern.iter().enumerate() {
+            let pi = ptx
+                .items
+                .iter_mut()
+                .find(|pi| pi.stat_path.is_some())
+                .unwrap();
+            pi.stat_path = None;
+            ptx.resolved += 1;
+            if *conflict {
+                pi.conflict = true;
+            } else {
+                ptx.ready += 1;
+            }
+            match stream_step(&ptx) {
+                StreamStep::Place => {
+                    places += 1;
+                    let need = ptx.ready;
+                    let batch = stream_take(&mut ptx, need);
+                    assert!(!batch.is_empty() && !batch.iter().any(|p| p.conflict));
+                    placed_total += batch.len();
+                }
+                StreamStep::Settle => {
+                    settled = true;
+                    assert_eq!(i, pattern.len() - 1, "Settle 仅在集齐（最后一条回流）");
+                }
+                StreamStep::None => {}
+            }
+            assert_eq!(ptx.seq, 9, "E 策略无中止，seq 恒保留");
+        }
+        assert_eq!(
+            places, 2,
+            "12 条（含 3 冲突）阈值 4：恰两次落位（4+4 无冲突）"
+        );
+        assert_eq!(placed_total, 8, "仅无冲突项落位，冲突项不占批");
+        assert!(settled, "集齐统一 Settle");
+        assert_eq!(
+            ptx.ready, 1,
+            "尾批 1 条无冲突未走 Place（不足阈值，随 Settle 交接）"
+        );
+        assert_eq!(
+            ptx.items.iter().filter(|p| p.conflict).count(),
+            3,
+            "冲突项全数留置（弹窗数据源）"
+        );
+        assert_eq!(ptx.items.len(), 4, "尾批 1 无冲突 + 3 冲突 → 统一确认");
+    }
+
+    /// 钉子（滑动窗超时，T20-H②）：固定窗在万级批次下误判（分轮回流自然
+    /// 间歇 > 剩余窗）——`at` 随任一回流刷新后不再触发；连续零回流超窗才
+    /// 强制结算，且仅未回流条目带 probe_incomplete（可见不放行静默，F-12）。
+    #[test]
+    fn sliding_window_refreshes_on_arrival_and_marks_probe_incomplete() {
+        let mut ptx = pend_tx(
+            9,
+            (0..8)
+                .map(|i| pend_item(Some(format!("/dst/s{i}.bin"))))
+                .collect(),
+        );
+        // 分轮回流：每轮回流刷新 at（事件处理器同款），轮间歇超固定窗也不误判。
+        for _ in 0..4 {
+            let pi = ptx
+                .items
+                .iter_mut()
+                .find(|pi| pi.stat_path.is_some())
+                .unwrap();
+            pi.stat_path = None;
+            ptx.resolved += 1;
+            ptx.at = std::time::Instant::now(); // 回流刷新基线
+        }
+        assert_eq!(
+            force_settle_expired(&mut ptx, std::time::Duration::from_secs(60)),
+            0,
+            "刚回流过（滑动窗重置）不触发兜底"
+        );
+        // 断流：基线回拨 61s（连续零回流超窗）→ 强制结算，仅未回流 4 条带标记。
+        ptx.at = std::time::Instant::now() - std::time::Duration::from_secs(61);
+        let n = force_settle_expired(&mut ptx, std::time::Duration::from_secs(60));
+        assert_eq!(n, 4, "仅未回流条目计数");
+        assert!(ptx.items.iter().all(|pi| pi.stat_path.is_none()));
+        assert_eq!(
+            ptx.items.iter().filter(|p| p.probe_incomplete).count(),
+            4,
+            "标记恰落在未回流条目上"
+        );
+    }
+
+    /// 钉子（弹窗范围行数据源，T20-H；T20-E-R 改真调门控函数）：placed > 0
+    /// → 写明「已落位 M 项…只处理剩余 N 项（其中冲突 C 项）」；placed = 0
+    /// （无流式前置）→ 不挂范围行。断言走 settle_batch 共用的 scope_note_for，
+    /// 不再对拍恒假常量 `(0usize > 0).then(...)`。
+    #[test]
+    fn scope_note_covers_placed_items_only_when_streaming_placed() {
+        assert!(
+            scope_note_for(0, 5, 2).is_none(),
+            "placed=0 不挂范围行（整批在手，无不可逆前置）"
+        );
+        let note = scope_note_for(512, 100, 3).expect("placed>0 必挂范围行");
+        for frag in ["512", "100", "3"] {
+            assert!(
+                note.contains(frag),
+                "范围行须含 M/N/C 实数：{frag} 缺失于「{note}」"
+            );
+        }
+    }
+
+    /// 钉子（T20-E-R 端到端真调）：逐条回流 → stream_place 逐批入队 →
+    /// stream_settle 尾批收尾，队列总数 == 10 且零缺项 / 零重复、零悬挂
+    /// pending。既有两枚流式钉只调 stream_step / stream_take 纯逻辑，
+    /// 未走真调链（stream_place / stream_settle 测试调用原为零）。
+    #[test]
+    fn stream_place_then_settle_enqueues_every_item() {
+        let mut st = State::default();
+        // pend_item 的 NewTask.dest 是固定 /dst/a.bin（只有 stat_path 带序号），
+        // 端到端钉要按目标路径查零缺项 → 逐条把 dest / kind.remote 设成唯一值。
+        let mut ptx = pend_tx(
+            9,
+            (0..10)
+                .map(|i| {
+                    let dest = format!("/dst/e{i:03}.bin");
+                    let mut pi = pend_item(Some(dest.clone()));
+                    pi.task.dest = dest.clone();
+                    pi.task.kind = crate::transfer::Kind::UploadFile {
+                        local: format!("/src/e{i:03}.bin").into(),
+                        remote: dest,
+                    };
+                    pi
+                })
+                .collect(),
+        );
+        ptx.batch = 4;
+        st.pending_tx = Some(ptx);
+        let mut places = 0;
+        let mut settled = false;
+        for _ in 0..10 {
+            {
+                let ptx = st.pending_tx.as_mut().unwrap();
+                let pi = ptx
+                    .items
+                    .iter_mut()
+                    .find(|pi| pi.stat_path.is_some())
+                    .unwrap();
+                pi.stat_path = None;
+                ptx.resolved += 1;
+                ptx.ready += 1;
+            }
+            match stream_step(st.pending_tx.as_ref().unwrap()) {
+                StreamStep::Place => {
+                    places += 1;
+                    stream_place(&mut st);
+                }
+                StreamStep::Settle => {
+                    settled = true;
+                    stream_settle(&mut st);
+                }
+                StreamStep::None => {}
+            }
+        }
+        assert_eq!(places, 2, "阈值 4 × 10 条：4/8 两次 Place");
+        assert!(settled, "第 10 条集齐走 stream_settle");
+        assert!(st.pending_tx.is_none(), "结算后无悬挂 pending");
+        assert!(matches!(st.dialog, dialogs::Dialog::None), "无冲突不出弹窗");
+        let q = st.transfer.as_ref().expect("逐批入队");
+        assert_eq!(
+            q.with_items(|items| items.len()),
+            10,
+            "落位 8 + 尾批 2 = 10"
+        );
+        for k in 0..10 {
+            let needle = format!("/dst/e{k:03}.bin");
+            assert_eq!(
+                q.with_items(|items| items
+                    .iter()
+                    .filter(|i| i.dest.starts_with(needle.as_str()))
+                    .count()),
+                1,
+                "{needle} 恰入队一次（零缺项 / 零重复）"
+            );
+        }
+    }
+
+    /// 钉子（T20-E-R 万级规模）：10000 条 / 单位 256 / 中段冲突 → 落位数
+    /// + 剩余入队数 == 10000，零缺项；冲突项全数留置、全数回流完毕。
+    /// 纯逻辑对拍 stream_step / stream_take，**不启动真实队列线程**：worker
+    /// 会并发领取 Waiting 行，万级下测状态不稳且拖慢门禁。
+    #[test]
+    fn ten_thousand_stream_batches_keep_every_item() {
+        const N: usize = 10_000;
+        let mut items: Vec<PendingItem> = (0..N)
+            .map(|i| pend_item(Some(format!("/dst/f{i:05}.bin"))))
+            .collect();
+        // 中段冲突：5000~5002 三条留置，不占 ready、不进 Place。
+        for i in [5000usize, 5001, 5002] {
+            items[i].conflict = true;
+        }
+        let mut ptx = pend_tx(9, items);
+        ptx.batch = 256;
+        let mut placed = 0usize;
+        loop {
+            let mut newly = 0usize;
+            let mut newly_ready = 0usize;
+            for pi in ptx.items.iter_mut() {
+                if newly == 256 {
+                    break;
+                }
+                if pi.stat_path.take().is_some() {
+                    newly += 1;
+                    if !pi.conflict {
+                        newly_ready += 1;
+                    }
+                }
+            }
+            if newly == 0 {
+                break;
+            }
+            ptx.resolved += newly;
+            ptx.ready += newly_ready;
+            loop {
+                match stream_step(&ptx) {
+                    StreamStep::Place => {
+                        let need = ptx.ready;
+                        let batch = stream_take(&mut ptx, need);
+                        assert!(!batch.iter().any(|p| p.conflict), "冲突项不进落位批");
+                        placed += batch.len();
+                    }
+                    StreamStep::Settle | StreamStep::None => break,
+                }
+            }
+        }
+        let remaining = ptx.items.len();
+        assert_eq!(
+            placed + remaining,
+            N,
+            "落位数 {placed} + 剩余入队数 {remaining} == 10000，零缺项"
+        );
+        assert!(
+            placed >= N - 3 - 256,
+            "绝大多数按 256 逐批落位，未被卡住（placed={placed}）"
+        );
+        assert!(
+            remaining <= 256 + 3,
+            "尾批不超过一个单位 + 冲突留置项（remaining={remaining}）"
+        );
+        assert_eq!(
+            ptx.items.iter().filter(|p| p.conflict).count(),
+            3,
+            "中段 3 条冲突全数留置到集齐（无提前弹窗）"
+        );
+        assert_eq!(
+            ptx.items.iter().filter(|p| p.stat_path.is_some()).count(),
+            0,
+            "全数回流完毕，无挂起 STAT"
+        );
+    }
+
+    /// 钉子（阈值下限兜底）：batch 归一 ≥1——0/负值经 dnd_stream_batch 兜底
+    /// 为 1（逐条落位不丢失）；usize::MAX 禁用流式（确认弹窗批次永不 Place）。
+    #[test]
+    fn stream_batch_threshold_floor_and_disabled() {
+        assert_eq!(0i32.max(1) as usize, 1);
+        let mut ptx = pend_tx(9, vec![pend_item(Some("/dst/h.bin".into()))]);
+        ptx.batch = usize::MAX;
+        let pi = ptx
+            .items
+            .iter_mut()
+            .find(|pi| pi.stat_path.is_some())
+            .unwrap();
+        pi.stat_path = None;
+        ptx.resolved += 1;
+        ptx.ready += 1;
+        // 禁用流式时全量结算仍走 Settle（余量随统一收尾落位，不依赖阈值）。
+        assert!(matches!(stream_step(&ptx), StreamStep::Settle));
+    }
+
+    /// 钉子（F-12 端到端）：超窗结算走 apply_ssh_events 生产分支——终端落
+    /// 「预检超时」对账提示、批次清空直接入队；NewTask 透传位经 into_task
+    /// 提取路径为真（消费=透传，resume_decision 禁 Append 的判定层数据源）。
+    #[test]
+    fn probe_timeout_settle_terminal_notice_and_task_passthrough() {
+        // ① 生产结算分支：apply_ssh_events 帧首消费超窗 pending_tx。
+        let mut st = State::default();
+        let mut ptx = pend_tx(
+            9,
+            vec![pend_item(None), pend_item(Some("/dst/a.bin".into()))],
+        );
+        ptx.at = std::time::Instant::now() - std::time::Duration::from_secs(61);
+        st.pending_tx = Some(ptx);
+        apply_ssh_events(&mut st, &egui::Context::default());
+        assert!(st.pending_tx.is_none(), "超窗批结算清空");
+        assert!(
+            st.terminal.iter().any(|(_, m)| m.contains("预检超时")),
+            "终端落对账提示：{:?}",
+            st.terminal
+        );
+        let q = st.transfer.as_ref().expect("放行项直接入队");
+        assert_eq!(q.with_items(|items| items.len()), 2, "整批放行入队");
+        // ② NewTask 透传位：超时标记项经 into_task 提取后为真（队列行字段
+        // transfer 模块私有，此处对拍同一提取路径的纯函数产物）。
+        let mut ptx2 = pend_tx(
+            9,
+            vec![pend_item(None), pend_item(Some("/dst/a.bin".into()))],
+        );
+        ptx2.at = std::time::Instant::now() - std::time::Duration::from_secs(61);
+        force_settle_expired(&mut ptx2, std::time::Duration::from_secs(60));
+        let (tasks, _) = settle_tasks(ptx2.items, None);
+        assert!(!tasks[0].probe_incomplete, "已回流项不带透传位");
+        assert!(tasks[1].probe_incomplete, "超时放行项 NewTask 透传位为真");
+    }
+}
+
+// ============================================================================
+// T20-F1 单测：覆盖确认「应用（逐项勾选，F-10 方案A）/ 取消」与 shell 关闭
+// 路径（Esc / 遮罩 / ×）按下必有确定结果——入队或明确放弃整批，不留悬挂
+// pending（seq=0 批次超窗兜底不覆盖，残留即 busy 恒真 120ms 重绘）。
+// 端到端链全调生产函数（settle_batch / enqueue_pending / settle_tasks /
+// cancel_pending_stream / dialogs::shell），不手写重演状态变化。
+// ============================================================================
+
+#[cfg(test)]
+mod t20f1_tests {
+    use super::*;
+
+    /// 批次条目夹具：n_ok 个无冲突（/dst/ok{i}）+ n_conflict 个冲突
+    /// （/dst/c{i}），全部已回流（stat_path None，冲突标记就位）——
+    /// settle_batch 集齐态直入。
+    fn conf_items(n_ok: usize, n_conflict: usize) -> Vec<PendingItem> {
+        (0..n_ok + n_conflict)
+            .map(|i| {
+                let conflict = i >= n_ok;
+                let dest = if conflict {
+                    format!("/dst/c{i}.bin")
+                } else {
+                    format!("/dst/ok{i}.bin")
+                };
+                PendingItem {
+                    task: crate::transfer::NewTask {
+                        source: format!("/src/f{i}.bin"),
+                        dest: dest.clone(),
+                        size: 1,
+                        force: false,
+                        probe_incomplete: false,
+                        owner: crate::transfer::TaskOwner {
+                            src: (0, 1),
+                            dst: (1, 2),
+                        },
+                        kind: crate::transfer::Kind::UploadFile {
+                            local: format!("/src/f{i}.bin").into(),
+                            remote: dest,
+                        },
+                    },
+                    stat_path: None,
+                    conflict,
+                    src_mtime: 0,
+                    dst_size: None,
+                    dst_mtime: None,
+                    probe_incomplete: false,
+                }
+            })
+            .collect()
+    }
+
+    /// 钉子（结算映射纯逻辑，F1 要求 2 + F-10 方案A）：勾选 = 冲突任务置
+    /// force 入队；不勾 = 剔除冲突项入队其余 + skipped 计数（C# skipped 汇总
+    /// {1} 数据源）；混合勾选逐项分流。
+    #[test]
+    fn settle_tasks_selection_splits_per_item() {
+        let (tasks, skipped) = settle_tasks(conf_items(2, 2), Some(&[true, true]));
+        assert_eq!(skipped, 0, "全勾不计 skipped");
+        assert_eq!(tasks.len(), 4, "全勾 = 全量入队");
+        for (i, task) in tasks.iter().enumerate() {
+            assert_eq!(
+                task.force,
+                i >= 2,
+                "勾选冲突项 force（C# forceOverwrite），非冲突项不置"
+            );
+        }
+        let (tasks, skipped) = settle_tasks(conf_items(2, 2), Some(&[false, false]));
+        assert_eq!(skipped, 2, "全不勾 = 冲突项计数");
+        assert_eq!(tasks.len(), 2, "全不勾 = 剔除冲突项后入队其余");
+        assert!(tasks.iter().all(|t| !t.force), "非冲突项不带 force");
+        // 混合勾选：只勾第 2 个冲突项 → 第 1 个跳过、第 2 个 force 入队。
+        let (tasks, skipped) = settle_tasks(conf_items(2, 2), Some(&[false, true]));
+        assert_eq!(skipped, 1, "未勾冲突项计入 skipped");
+        assert_eq!(tasks.len(), 3, "非冲突 2 项 + 勾选冲突 1 项");
+        let forced: Vec<_> = tasks.iter().filter(|t| t.force).collect();
+        assert_eq!(forced.len(), 1, "仅勾选的冲突项带 force");
+        assert!(
+            forced[0].dest.starts_with("/dst/c3"),
+            "勾选的是第 2 个冲突项：{:?}",
+            forced[0].dest
+        );
+    }
+
+    /// 钉子（F-10 方案A）：conflict_defaults —— 目标较新默认不勾（覆盖会砸
+    /// 掉较新目标），其余默认勾选；目标无 mtime → 勾选。
+    #[test]
+    fn conflict_defaults_newer_dst_unchecked() {
+        let row = |src_mtime: i64, dst_mtime: Option<i64>| dialogs::ConflictRow {
+            name: "a.bin".into(),
+            src_size: 1,
+            src_mtime,
+            dst_size: Some(1),
+            dst_mtime,
+        };
+        let rows = vec![
+            row(100, Some(200)), // 目标较新 → 不勾
+            row(200, Some(100)), // 源较新 → 勾
+            row(100, Some(100)), // 相等（差 <1s 视为同批）→ 勾
+            row(100, None),      // 无目标 mtime → 勾
+        ];
+        assert_eq!(
+            conflict_defaults(&rows),
+            vec![false, true, true, true],
+            "目标较新默认不勾，其余默认勾选"
+        );
+    }
+
+    /// 钉子（端到端「应用」）：远程 STAT 全回流含冲突 → settle_batch 弹
+    /// 窗批次暂存（完整 NewTask 在 pending_tx.items，rows 仅展示）→ 勾选态
+    /// 默认全勾（夹具无目标 mtime）→ enqueue_pending 全量入队，无悬挂。
+    #[test]
+    fn conflict_settle_overwrite_enqueues_all() {
+        let mut st = State::default();
+        settle_batch(&mut st, 1, 0, conf_items(3, 2));
+        assert!(
+            matches!(st.dialog, dialogs::Dialog::TransferConfirm { .. }),
+            "冲突批出确认弹窗"
+        );
+        assert_eq!(
+            st.conflict_sel.as_deref(),
+            Some([true, true].as_slice()),
+            "弹窗创建即填勾选默认值（夹具无目标 mtime → 全勾）"
+        );
+        let ptx = st.pending_tx.as_ref().expect("弹窗批次暂存");
+        assert_eq!(ptx.seq, 0, "弹窗批次 seq 清零（迟到回流落空匹配）");
+        assert_eq!(
+            ptx.items.len(),
+            5,
+            "完整任务项保留在 pending_tx（NewTask 数据源）"
+        );
+        assert_eq!(ptx.items.iter().filter(|p| p.conflict).count(), 2);
+        enqueue_pending(&mut st);
+        assert!(st.pending_tx.is_none(), "应用后无悬挂 pending");
+        assert!(st.conflict_sel.is_none(), "勾选态随应用 take 清空");
+        let q = st.transfer.as_ref().expect("应用 = 入队");
+        assert_eq!(q.with_items(|items| items.len()), 5, "队列任务数 = 全量");
+        assert_eq!(
+            q.with_items(|items| items
+                .iter()
+                .filter(|i| i.dest.starts_with("/dst/c"))
+                .count()),
+            2,
+            "冲突任务照常入队（force 由 settle_tasks 钉子断言）"
+        );
+    }
+
+    /// 钉子（端到端「全部不勾」）：settle_batch → 勾选态全清 → enqueue_pending
+    /// ——只入队非冲突余项，无悬挂。
+    #[test]
+    fn conflict_settle_skip_enqueues_rest_only() {
+        let mut st = State::default();
+        settle_batch(&mut st, 1, 0, conf_items(3, 2));
+        st.conflict_sel = Some(vec![false, false]);
+        enqueue_pending(&mut st);
+        assert!(st.pending_tx.is_none(), "应用后无悬挂 pending");
+        assert!(st.conflict_sel.is_none(), "勾选态随应用 take 清空");
+        let q = st.transfer.as_ref().expect("非冲突余项仍入队");
+        assert_eq!(
+            q.with_items(|items| items.len()),
+            3,
+            "队列任务数 = 非冲突数"
+        );
+        assert!(
+            q.with_items(|items| items.iter().all(|i| i.dest.starts_with("/dst/ok"))),
+            "未勾冲突项被剔除"
+        );
+    }
+
+    /// 钉子（F1 零结果场景）：全冲突批全不勾 → 零入队但必须有
+    /// 确定结果——终端落对账日志（skipped 计数可见），不再零提示零日志。
+    #[test]
+    fn all_conflict_skip_aborts_with_terminal_log_and_zero_enqueue() {
+        let mut st = State::default();
+        settle_batch(&mut st, 1, 0, conf_items(0, 3));
+        st.conflict_sel = Some(vec![false, false, false]);
+        enqueue_pending(&mut st);
+        assert!(st.pending_tx.is_none());
+        assert!(st.transfer.is_none(), "全冲突 + 全不勾 = 零入队");
+        assert_eq!(st.terminal.len(), 1, "对账日志可见（skipped 计数不丢）");
+        assert!(
+            st.terminal[0].1.contains('3'),
+            "日志含 skipped 实数：{:?}",
+            st.terminal[0].1
+        );
+    }
+
+    /// 钉子（端到端「取消」）：settle_batch → cancel_pending_stream——
+    /// 暂存清空、勾选态清空、队列零新增、终端落对账日志（明确放弃整批）。
+    #[test]
+    fn cancel_clears_pending_without_enqueue() {
+        let mut st = State::default();
+        settle_batch(&mut st, 1, 0, conf_items(3, 2));
+        cancel_pending_stream(&mut st);
+        assert!(st.pending_tx.is_none(), "取消后暂存清空");
+        assert!(st.conflict_sel.is_none(), "取消后勾选态清空");
+        assert!(st.transfer.is_none(), "队列零新增");
+        assert_eq!(st.terminal.len(), 1, "明确放弃留对账日志");
+        assert!(
+            st.terminal[0].1.contains('5'),
+            "日志含未入队条数：{:?}",
+            st.terminal[0].1
+        );
+    }
+
+    /// 钉子（本地目标回归）：本地批次（stat_path None）无冲突 → settle_batch
+    /// 直接入队收尾（不出弹窗、不留暂存）。
+    #[test]
+    fn local_settle_without_conflict_enqueues_directly() {
+        let mut st = State::default();
+        settle_batch(&mut st, 0, 0, conf_items(4, 0));
+        assert!(matches!(st.dialog, dialogs::Dialog::None), "无冲突不出弹窗");
+        assert!(st.pending_tx.is_none());
+        let q = st.transfer.as_ref().expect("无冲突直接入队");
+        assert_eq!(q.with_items(|items| items.len()), 4);
+    }
+
+    /// 钉子（端到端 shell 关闭路径，F1 要求 2）：确认弹窗 Esc 关闭（遮罩 /
+    /// × 与 Esc 共用同一关闭分支）→ 按「取消」结算——暂存清空、busy 判据的
+    /// pending_tx 项复位（不再恒真 120ms 重绘）。
+    #[test]
+    fn shell_close_esc_settles_pending() {
+        let mut st = State::default();
+        settle_batch(&mut st, 1, 0, conf_items(2, 1));
+        assert!(st.pending_tx.is_some());
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let p = crate::theme::palette(&ctx);
+        let mut out = ctx.run_ui(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let r = dialogs::shell(
+                    ui,
+                    &mut st,
+                    &p,
+                    640.0,
+                    360.0,
+                    t("传输确认"),
+                    false,
+                    0.0,
+                    false,
+                    None,
+                    // C1/F-9：关闭回调收口 shell 层——宿主自声明暂存态处置，
+                    // 语义与 transfer_confirm_dialog 内部调用点一致（F1）。
+                    dialogs::ShellOpts {
+                        on_close: dialogs::CloseAction::CancelPendingStream,
+                        ..Default::default()
+                    },
+                    |_, _, _| {},
+                );
+                assert!(!r, "Esc 关闭");
+            });
+        });
+        // 无渲染器消费字体纹理增量（epaint Drop debug_assert 会因未应用
+        // delta 恐慌）——测试只关心状态链，显式清空。
+        out.textures_delta.clear();
+        assert!(matches!(st.dialog, dialogs::Dialog::None));
+        assert!(
+            st.pending_tx.is_none(),
+            "关闭路径结算悬挂 pending（busy 判据 pending_tx 项复位）"
+        );
+        assert!(
+            st.terminal.iter().any(|(_, m)| m.contains('3')),
+            "关闭 = 明确放弃，终端留对账日志"
+        );
+    }
+
+    /// 钉子（T20-E-R 英文态假状态）：旧实现硬编码中文前缀，英文
+    /// preparing_msg() 结算后永不清除。新判定按当前语言精确比较，中英
+    /// 各一钉（语言作参数，不改写全局 language 态 → 并行零串扰）。
+    #[test]
+    fn preparing_msg_clears_in_both_languages() {
+        let zh = "正在准备传输（探测目标/统计文件）…";
+        let en = "Preparing transfer (checking target/counting files)…";
+        assert_eq!(crate::i18n::t_for(zh, false), zh);
+        assert_eq!(crate::i18n::t_for(zh, true), en, "英文键活且逐字一致");
+        assert!(is_preparing_msg(zh, false), "中文态识别中文准备提示");
+        assert!(!is_preparing_msg(en, false), "中文态不误清英文提示");
+        assert!(!is_preparing_msg(zh, true), "英文态不误清中文提示");
+        assert!(is_preparing_msg(en, true), "英文态能识别英文准备提示");
+        assert!(
+            !en.starts_with("正在准备传输"),
+            "旧前缀实现在英文态恒不匹配（回归证据）"
+        );
+        // 真调：当前语言（默认中文）下清准备提示，被错误覆写过的不误清。
+        let mut st = State::default();
+        pane_view_mut(&mut st, 0).msg = Some(preparing_msg());
+        clear_preparing_msg(&mut st, 0);
+        assert!(
+            pane_view_mut(&mut st, 0).msg.is_none(),
+            "准备提示结算后清除"
+        );
+        pane_view_mut(&mut st, 0).msg = Some("目录读取失败".into());
+        clear_preparing_msg(&mut st, 0);
+        assert_eq!(
+            pane_view_mut(&mut st, 0).msg.as_deref(),
+            Some("目录读取失败"),
+            "期间被错误覆写则保留"
+        );
+    }
+
+    /// 钉子（T20-E-R 取消已落位批次）：流式已落位批次号非空时，
+    /// cancel_pending_stream 走 q.cancel_batches 回溯；pending 清空、
+    /// 勾选态清空、终端留对账日志，且本弹窗零新入队。
+    #[test]
+    fn cancel_settles_already_placed_batches() {
+        let mut st = State::default();
+        // 先真入队一批（建立队列 + 首批次号 1），再让确认弹窗挂上该批次。
+        let first: Vec<crate::transfer::NewTask> =
+            conf_items(2, 0).into_iter().map(into_task).collect();
+        enqueue_tasks(&mut st, 1, first, 0);
+        let before = st
+            .transfer
+            .as_ref()
+            .unwrap()
+            .with_items(|items| items.len());
+        assert_eq!(before, 2, "已落位批次在队列里");
+        settle_batch(&mut st, 1, 0, conf_items(2, 1));
+        if let Some(ptx) = st.pending_tx.as_mut() {
+            ptx.batches.push(1);
+            ptx.placed = before;
+            ptx.resolved = ptx.items.len();
+        }
+        cancel_pending_stream(&mut st);
+        assert!(st.pending_tx.is_none(), "取消后暂存清空");
+        assert!(st.conflict_sel.is_none(), "勾选态清空");
+        assert_eq!(
+            st.transfer
+                .as_ref()
+                .unwrap()
+                .with_items(|items| items.len()),
+            before,
+            "取消不新增队列行（已落位批次按 cancel_batches 结算，不删行）"
+        );
+        assert!(
+            st.terminal.iter().any(|(_, m)| m.contains('3')),
+            "明确放弃留对账日志（未入队条数）"
+        );
+    }
+}
+
+// ── CR-6 内置编辑器保存回传闭环钉子 ─────────────────────────
+
+#[cfg(test)]
+mod cr6_tests {
+    use super::*;
+    use crate::ssh::Ev;
+
+    /// 会话池夹具：sid=1、键 (host, 22, "u")。SSH 句柄离线 spawn（worker 空转；
+    /// 任何 write_file 请求都会回一条 Ev::FileWritten——用 poll() 断言「没发」）。
+    fn sess(host: &str) -> SideSession {
+        SideSession {
+            sid: 1,
+            key: SessionKey {
+                host: host.into(),
+                port: 22,
+                user: "u".into(),
+            },
+            ssh: crate::ssh::Ssh::spawn(),
+            host: None,
+            profile: None,
+            state: RemoteState::Off,
+            root: None,
+            fp_ask: None,
+            refs: 1,
+        }
+    }
+
+    /// 等 worker 回执：无连接下 write_file 必回 FileWritten（Err）——窗口内
+    /// 一条都没有 = 请求从未发出（write_file 调用数为 0 的链路级实证）。
+    fn has_file_written(ssh: &crate::ssh::Ssh) -> bool {
+        for _ in 0..40 {
+            if ssh
+                .poll()
+                .iter()
+                .any(|e| matches!(e, Ev::FileWritten { .. }))
+            {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// 钉子（CR-6③ 副本读失败）：不发任何 ssh 请求（STAT 槽不挂 = write_file
+    /// 调用数为 0、远端内容不变），doc 置失败态可重试（dirty 回 true、
+    /// pending 清零、save_err 记因、副本路径不动）。池内挂会话：读失败先于
+    /// 会话匹配短路，无论匹配与否都不发任何 ssh 请求。
+    #[test]
+    fn saved_upload_read_failure_sends_no_ssh_and_stays_retryable() {
+        let mut st = State::default();
+        st.remotes[0].sessions.push(sess("h1"));
+        let bad = std::env::temp_dir().join("ifreesftp-cr6-missing-copy.txt");
+        let _ = std::fs::remove_file(&bad);
+        st.editors
+            .open_remote("h1", &bad, "/r.txt".into(), Some(1000), true);
+        saved_upload_dispatch(
+            &mut st,
+            &egui::Context::default(),
+            crate::editor::SavedEvent {
+                doc_id: 1,
+                local_path: bad.clone(),
+                remote_path: "/r.txt".into(),
+                host: "h1".into(),
+                base_mtime: Some(1000),
+            },
+        );
+        assert!(st.doc_stat.is_none(), "读失败不挂 STAT 槽（零 ssh 请求）");
+        let d = st.editors.docs[0].lock().unwrap();
+        assert!(d.dirty, "失败态 dirty 回 true：再按 Ctrl+S 可重试");
+        assert!(!d.pending_upload, "在途态清零");
+        assert!(
+            d.save_err.as_deref().unwrap_or("").contains("回传未完成"),
+            "save_err 记因：{}",
+            d.save_err.as_deref().unwrap_or("")
+        );
+        drop(d);
+        assert!(
+            st.terminal.iter().any(|(_, m)| m.contains("回传未完成")),
+            "终端留失败对账日志"
+        );
+        assert!(
+            !has_file_written(&st.remotes[0].sessions[0].ssh),
+            "write_file 调用数为 0（远端内容不变）"
+        );
+    }
+
+    /// 钉子（CR-6③ 会话失配）：drain 后不得吞——doc 失败态回写、副本保留、
+    /// 零 ssh 请求（与外部链路「found=None 静默」缺陷对照）。
+    #[test]
+    fn saved_upload_session_mismatch_keeps_copy_and_marks_retryable() {
+        let mut st = State::default();
+        st.remotes[0].sessions.push(sess("h9")); // 与 ev.host 不匹配
+        let copy = std::env::temp_dir().join("ifreesftp-cr6-mismatch-copy.txt");
+        std::fs::write(&copy, b"payload").unwrap();
+        st.editors
+            .open_remote("h1", &copy, "/r.txt".into(), Some(1000), true);
+        saved_upload_dispatch(
+            &mut st,
+            &egui::Context::default(),
+            crate::editor::SavedEvent {
+                doc_id: 1,
+                local_path: copy.clone(),
+                remote_path: "/r.txt".into(),
+                host: "h1".into(),
+                base_mtime: Some(1000),
+            },
+        );
+        assert!(st.doc_stat.is_none(), "失配不挂 STAT 槽（零 ssh 请求）");
+        assert!(copy.exists(), "副本保留");
+        let d = st.editors.docs[0].lock().unwrap();
+        assert!(d.dirty, "失败态可重试");
+        assert!(!d.pending_upload);
+        assert!(d.save_err.is_some());
+        drop(d);
+        assert!(
+            !has_file_written(&st.remotes[0].sessions[0].ssh),
+            "write_file 调用数为 0（远端内容不变）"
+        );
+    }
+
+    /// 钉子（CR-6④ 内外同判定）：内置与外部共用同款 ±1s 判据——同款
+    /// base_mtime 冲突夹具上判定一致（远端存在且差 ≥1s 才算冲突；任一侧
+    /// 未报 mtime / 文件不存在不判）。外部分支公式照抄作比对基准。
+    #[test]
+    fn internal_conflict_verdict_matches_external_predicate() {
+        let cases: [(Option<i64>, Option<i64>, bool); 7] = [
+            (Some(1000), Some(1000), true),  // 同 mtime：无冲突
+            (Some(1000), Some(1001), true),  // 差 1s：冲突
+            (Some(1001), Some(1000), true),  // 反向差 1s：冲突
+            (Some(1000), Some(1002), true),  // 差 2s：冲突
+            (None, Some(1001), true),        // 未报基准：跳过
+            (Some(1000), None, true),        // 远端未报 mtime：跳过
+            (Some(1000), Some(1001), false), // 文件不存在：不判
+        ];
+        for (base, remote, exists) in cases {
+            // 外部 STAT 分支（ext_edits 路）原样判据。
+            let external = match (base, remote) {
+                (Some(a), Some(b)) => exists && a.abs_diff(b) >= 1,
+                _ => false,
+            };
+            assert_eq!(
+                mtime_conflict(base, remote, exists),
+                external,
+                "base={base:?} remote={remote:?} exists={exists}"
+            );
+        }
+    }
+
+    /// 钉子（CR-6⑥ 成功回执）：FileWritten::Ok → base mtime 回填（回执值 =
+    /// 随后重新 STAT 将看到的 mtime）、dirty/pending 清零、last_receipt 字节数
+    /// 与副本实长一致（= 重新 STAT 的 size）、终端日志带三实数。
+    #[test]
+    fn file_written_ok_receipt_bytes_mtime_match() {
+        let mut st = State::default();
+        st.remotes[0].sessions.push(sess("h1"));
+        let copy = std::env::temp_dir().join("ifreesftp-cr6-receipt-copy.txt");
+        let content = b"hello world"; // 11 字节
+        std::fs::write(&copy, content).unwrap();
+        st.editors
+            .open_remote("h1", &copy, "/r.txt".into(), Some(1000), true);
+        st.editors.docs[0].lock().unwrap().pending_upload = true; // save 入队在途态
+        apply_ssh_event(
+            &mut st,
+            &egui::Context::default(),
+            0,
+            1,
+            Ev::FileWritten {
+                req: 1,
+                path: "/r.txt".into(),
+                result: Ok(Some(1720000001)),
+            },
+        );
+        let d = st.editors.docs[0].lock().unwrap();
+        assert_eq!(
+            d.remote.as_ref().unwrap().base_mtime,
+            Some(1720000001),
+            "base mtime 回填 = 回执值（重新 STAT 将看到的 mtime）"
+        );
+        assert!(!d.dirty, "回执后清 dirty");
+        assert!(!d.pending_upload, "回执后在途态清零");
+        let rct = d.last_receipt.clone().unwrap();
+        drop(d);
+        assert!(rct.contains("11"), "回执带字节数：{rct}");
+        assert!(rct.contains("/r.txt"), "回执带远端路径：{rct}");
+        assert_eq!(
+            std::fs::metadata(&copy).unwrap().len(),
+            11,
+            "回执字节数 = 副本实长（= 重新 STAT 的 size）"
+        );
+        assert!(
+            st.terminal
+                .iter()
+                .any(|(_, m)| m.contains("11") && m.contains("1720000001")),
+            "终端日志带字节数/mtime 实数"
+        );
+    }
+
+    /// 钉子（写锁探测语义，反判回归）：CreateFileW(GENERIC_READ, 仅
+    /// FILE_SHARE_READ) 探测——① 无占用 → 已释放；② 他人持写句柄且不授予
+    /// 共享读（share_mode = 仅 FILE_SHARE_WRITE）→ 共享冲突 = 锁未释放
+    /// → false（此前误返 true，编辑器保存中会放行半写文件上传）；
+    /// ③ 句柄释放 → true；④ 文件不存在 → true（不推迟）。
+    #[test]
+    #[cfg(windows)]
+    fn ext_write_lock_released_sharing_violation_waits() {
+        let f = std::env::temp_dir().join("ifreesftp-extlock-probe.txt");
+        std::fs::write(&f, b"probe").unwrap();
+        // ① 无占用：已释放。
+        assert!(ext_write_lock_released(&f), "无占用应判已释放");
+        // ② 持写句柄（不授予共享读）→ 共享冲突 = 锁未释放，继续等。
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        let holder = std::fs::OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_WRITE)
+            .open(&f)
+            .expect("持锁句柄");
+        assert!(
+            !ext_write_lock_released(&f),
+            "共享冲突应判锁未释放（反判回归）"
+        );
+        // ③ 句柄释放 → 已释放。
+        drop(holder);
+        assert!(ext_write_lock_released(&f), "释放后应判已释放");
+        // ④ 文件不存在 → 已释放（不推迟）。
+        assert!(ext_write_lock_released(
+            &std::env::temp_dir().join("ifreesftp-extlock-missing.txt")
+        ));
+        let _ = std::fs::remove_file(&f);
+    }
+
+    /// 钉子（写失败回执，项5 收口）：Ev::FileWritten Err → doc 失败态置位
+    /// （save_err 记因、dirty 回 true 绝不置 false），在途态清零可重试。
+    #[test]
+    fn file_written_err_marks_doc_retryable_never_dirty_false() {
+        let ctx = egui::Context::default();
+        let mut st = State::default();
+        st.remotes[0].sessions.push(sess("h1"));
+        st.editors.open_remote(
+            "h1",
+            &std::env::temp_dir().join("ifreesftp-fwerr.txt"),
+            "/r.txt".into(),
+            Some(1000),
+            true,
+        );
+        {
+            let mut d = st.editors.docs[0].lock().unwrap();
+            d.pending_upload = true; // save 入队后的在途态
+        }
+        apply_ssh_event(
+            &mut st,
+            &ctx,
+            0,
+            1,
+            Ev::FileWritten {
+                req: 1,
+                path: "/r.txt".into(),
+                result: Err("permission denied".into()),
+            },
+        );
+        let d = st.editors.docs[0].lock().unwrap();
+        assert!(d.dirty, "写失败 dirty 必须回 true（不得 dirty=false）");
+        assert!(!d.pending_upload, "在途态清零：再按 Ctrl+S 可重试");
+        assert!(
+            d.save_err
+                .as_deref()
+                .unwrap_or("")
+                .contains("permission denied"),
+            "save_err 记因：{:?}",
+            d.save_err
+        );
+    }
+
+    /// CR-2 钉子：失败条从底部切出且不覆盖主区；窗口过矮不切（不产生负高度）。
+    #[test]
+    fn cr2_save_error_bar_geometry_does_not_overlap_panes() {
+        let full = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 800.0));
+        let (rest, none) = save_error_bar_rect(full, false);
+        assert_eq!(rest, full, "无失败态时布局一字不变");
+        assert!(none.is_none());
+        let (rest, bar) = save_error_bar_rect(full, true);
+        let bar = bar.expect("失败态应切出底部条");
+        assert_eq!(bar.bottom(), full.bottom());
+        assert_eq!(bar.height(), SAVE_BAR_H);
+        assert_eq!(rest.bottom(), bar.top(), "主区不得与提示条重叠");
+        assert_eq!(rest.top(), full.top());
+        let tiny = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 100.0));
+        let (rest, none) = save_error_bar_rect(tiny, true);
+        assert_eq!(rest, tiny, "过矮窗口不切条");
+        assert!(none.is_none());
+    }
+
+    /// CR-2 钉子：失败在途走 1s 慢档兜底（不是 120ms 空转），既有快帧优先。
+    #[test]
+    fn cr2_save_failure_uses_slow_heartbeat_not_fast() {
+        let mut st = State::default();
+        st.remotes[0].tabs.push(placeholder_remote_tab(1));
+        assert_eq!(repaint_delay(&st), None, "无失败态应自停");
+        st.save_err_pending = true;
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(1000)),
+            "失败在途应慢档兜底"
+        );
+        st.doc_stat = Some((
+            1,
+            1,
+            "/r.txt".into(),
+            std::path::PathBuf::new(),
+            vec![],
+            None,
+        ));
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(120)),
+            "其它在途工作仍优先快帧"
+        );
+    }
+
+    /// 钉子（心跳分档四档，项7）：全清 None / 在途 120ms / 仅外部会话 300ms
+    /// / 写锁超时兜底 1000ms；在途优先于兜底。
+    #[test]
+    fn repaint_delay_four_tiers() {
+        let mut st = State::default();
+        st.remotes[0].tabs.push(placeholder_remote_tab(1));
+        // 全清：不请求（自停）。
+        assert_eq!(repaint_delay(&st), None, "全清应自停");
+        // 在途（doc_stat 槽）→ 120ms。
+        st.doc_stat = Some((
+            1,
+            1,
+            "/r.txt".into(),
+            std::path::PathBuf::new(),
+            vec![],
+            None,
+        ));
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(120)),
+            "在途应 120ms"
+        );
+        st.doc_stat = None;
+        // 在途（ext_write 槽）→ 120ms（确认框覆盖后回执不吃慢档）。
+        st.remotes[0].tabs[0].ext_write = Some(9);
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(120)),
+            "ext_write 在途应 120ms"
+        );
+        st.remotes[0].tabs[0].ext_write = None;
+        // 仅外部编辑会话（防抖/写锁探测）→ 300ms。
+        let f = std::env::temp_dir().join("ifreesftp-rd-tier.txt");
+        std::fs::write(&f, b"tier").unwrap();
+        st.remotes[0].tabs[0].ext_edits.push(ExtEdit {
+            host_tag: "[h1]".into(),
+            remote_path: "/r.txt".into(),
+            name: "r.txt".into(),
+            local: f.clone(),
+            base_mtime: Some(1000),
+            baseline: (5, 1000),
+            quiet_since: None,
+            quiet_snap: None,
+            lock_wait_since: None,
+            lock_warned: false,
+            lock_dialog_done: false,
+        });
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(300)),
+            "仅外部会话应 300ms"
+        );
+        // 写锁等待超 10s（兜底）→ 1000ms。
+        st.remotes[0].tabs[0].ext_edits[0].lock_wait_since =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(11000));
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(1000)),
+            "超时兜底应 1000ms"
+        );
+        // 在途优先于兜底。
+        st.remotes[0].tabs[0].ext_stat = Some((7, "/r.txt".into()));
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(120)),
+            "在途应优先于兜底"
+        );
+        let _ = std::fs::remove_file(&f);
+    }
+
+    /// 钉子（写锁超时兜底 + 去重，项6，Windows）：持锁 ≥10s —— 终端恰 1 条
+    /// WARN（锁 Warned 去重，禁每轮刷屏）、状态栏持久提示、零 ssh 上传、
+    /// 心跳 1000ms；锁释放 → 恰 1 条 INFO、基准更新、自动弹确认框；随后
+    /// 快照回基线 → 状态栏提示成对清除（独立标记 lock_msg_on）。
+    #[test]
+    #[cfg(windows)]
+    fn lock_wait_timeout_warns_once_recovers_with_single_info() {
+        let mut st = State::default();
+        st.remotes[0].sessions.push(sess("h1"));
+        st.remotes[0].tabs.push(placeholder_remote_tab(1));
+        st.remotes[0].tabs[0].sid = 1;
+        let copy = std::env::temp_dir().join("ifreesftp-lockwait-copy.txt");
+        std::fs::write(&copy, b"payload").unwrap();
+        let host_tag = format!("[{}]", t("远程"));
+        let snap0 = ext_snapshot(&copy);
+        st.remotes[0].tabs[0].ext_edits.push(ExtEdit {
+            host_tag,
+            remote_path: "/r.txt".into(),
+            name: "r.txt".into(),
+            local: copy.clone(),
+            base_mtime: Some(1000),
+            baseline: (snap0.0 + 1, snap0.1 + 1), // ≠ 当前快照：视为编辑器已保存
+            quiet_since: Some(std::time::Instant::now() - std::time::Duration::from_millis(1000)),
+            quiet_snap: Some(ext_snapshot(&copy)),
+            lock_wait_since: Some(
+                std::time::Instant::now() - std::time::Duration::from_millis(11000),
+            ), // 已等 11s
+            lock_warned: false,
+            lock_dialog_done: false,
+        });
+        // 模拟编辑器持写句柄（不授予共享读 → 探测共享冲突）。
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        let holder = std::fs::OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_WRITE)
+            .open(&copy)
+            .expect("持锁句柄");
+        let back = |st: &mut State| {
+            st.remotes[0].tabs[0].ext_poll =
+                std::time::Instant::now() - std::time::Duration::from_millis(400);
+        };
+        // 超时轮询：WARN 恰 1 条 + 状态栏持久提示 + 零上传 + 心跳 1000ms。
+        back(&mut st);
+        poll_ext_edits(&mut st);
+        let warns = st
+            .terminal
+            .iter()
+            .filter(|(_, m)| m.contains("不会上传半写文件"))
+            .count();
+        assert_eq!(warns, 1, "超时 WARN 恰 1 条");
+        assert!(
+            st.remotes[0].tabs[0]
+                .pane
+                .msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("写锁未释放"),
+            "状态栏持久提示：{:?}",
+            st.remotes[0].tabs[0].pane.msg
+        );
+        assert!(st.remotes[0].tabs[0].lock_msg_on, "独立清除标记置位");
+        assert!(
+            matches!(
+                st.dialog,
+                dialogs::Dialog::ExtEditLockWait { ref name, .. } if name == "r.txt"
+            ),
+            "超时应弹退出对话框"
+        );
+        assert!(
+            !has_file_written(&st.remotes[0].sessions[0].ssh),
+            "超时兜底绝不放行上传（零 write_file）"
+        );
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(1000)),
+            "兜底期间心跳 1000ms"
+        );
+        // 再轮询一轮：WARN 不再重复（lock_warned 去重）。
+        back(&mut st);
+        poll_ext_edits(&mut st);
+        assert_eq!(
+            st.terminal
+                .iter()
+                .filter(|(_, m)| m.contains("不会上传半写文件"))
+                .count(),
+            1,
+            "WARN 去重：不得每轮刷屏"
+        );
+        // 锁释放：恰 1 条 INFO + 等待态清零（弹窗占用时基准不动）。
+        drop(holder);
+        back(&mut st);
+        poll_ext_edits(&mut st);
+        let infos = st
+            .terminal
+            .iter()
+            .filter(|(_, m)| m.contains("写锁已释放，继续回传"))
+            .count();
+        assert_eq!(infos, 1, "锁释放 INFO 恰 1 条");
+        assert!(st.remotes[0].tabs[0].ext_edits[0].lock_wait_since.is_none());
+        // 关掉兜底对话框：触发已重置静默期（quiet_since=now），回拨满足
+        // QUIET_MS 后下轮正常弹确认框（基准更新）。
+        st.dialog = dialogs::Dialog::None;
+        st.remotes[0].tabs[0].ext_edits[0].quiet_since =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(400));
+        back(&mut st);
+        poll_ext_edits(&mut st);
+        assert!(
+            matches!(st.dialog, dialogs::Dialog::ExtEditChanged { .. }),
+            "锁释放后自动弹确认框"
+        );
+        // 快照回基线：状态栏提示成对清除（独立标记归零，无英文残留）。
+        back(&mut st);
+        poll_ext_edits(&mut st);
+        assert!(
+            st.remotes[0].tabs[0].pane.msg.is_none() && !st.remotes[0].tabs[0].lock_msg_on,
+            "回基线后提示清除：{:?}",
+            st.remotes[0].tabs[0].pane.msg
+        );
+        let _ = std::fs::remove_file(&copy);
+    }
+
+    /// CR-10 夹具：与 lock_wait_timeout_warns_once_recovers_with_single_info
+    /// 同款——持锁 ≥10s 的外部编辑会话（baseline ≠ 快照、静默期已满、等待已
+    /// 11s）。返回 (State, 持锁句柄, 副本路径)；句柄存活即写锁未释放。
+    /// 副本名 = 进程 id + 进程内计数器：并行档三钉各占一文件互不踩
+    ///（共用固定名会在默认并行档撞出 os error 5 / error 32）。
+    #[cfg(windows)]
+    fn lockwait_fixture() -> (State, std::fs::File, std::path::PathBuf) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let mut st = State::default();
+        st.remotes[0].sessions.push(sess("h1"));
+        st.remotes[0].tabs.push(placeholder_remote_tab(1));
+        st.remotes[0].tabs[0].sid = 1;
+        let copy = std::env::temp_dir().join(format!(
+            "ifreesftp-lockwait-dialog-copy-{}-{seq}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&copy, b"payload").unwrap();
+        let host_tag = format!("[{}]", t("远程"));
+        let snap0 = ext_snapshot(&copy);
+        st.remotes[0].tabs[0].ext_edits.push(ExtEdit {
+            host_tag,
+            remote_path: "/r.txt".into(),
+            name: "r.txt".into(),
+            local: copy.clone(),
+            base_mtime: Some(1000),
+            baseline: (snap0.0 + 1, snap0.1 + 1), // ≠ 当前快照：视为编辑器已保存
+            quiet_since: Some(std::time::Instant::now() - std::time::Duration::from_millis(1000)),
+            quiet_snap: Some(ext_snapshot(&copy)),
+            lock_wait_since: Some(
+                std::time::Instant::now() - std::time::Duration::from_millis(11000),
+            ), // 已等 11s
+            lock_warned: false,
+            lock_dialog_done: false,
+        });
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        let holder = std::fs::OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_WRITE)
+            .open(&copy)
+            .expect("持锁句柄");
+        (st, holder, copy)
+    }
+
+    /// 轮询回拨（tab.ext_poll 过期，绕过 POLL_MS 节流）。
+    #[cfg(windows)]
+    fn back400(st: &mut State) {
+        st.remotes[0].tabs[0].ext_poll =
+            std::time::Instant::now() - std::time::Duration::from_millis(400);
+    }
+
+    /// 钉子（CR-10）：超时框被 Esc / × / 遮罩关闭（shell 公共出口 = 只关弹窗，
+    /// 等待态不动）后不再重现；等待计时、WARN 去重、状态栏持久提示、零上传
+    /// 全部照旧。
+    #[test]
+    #[cfg(windows)]
+    fn lock_wait_dialog_dismiss_does_not_reappear() {
+        let (mut st, holder, copy) = lockwait_fixture();
+        back400(&mut st);
+        poll_ext_edits(&mut st);
+        assert!(
+            matches!(st.dialog, dialogs::Dialog::ExtEditLockWait { .. }),
+            "首次超时弹框"
+        );
+        // 模拟 shell 公共关闭出口：st.dialog = None，等待态不动。
+        st.dialog = dialogs::Dialog::None;
+        back400(&mut st);
+        poll_ext_edits(&mut st);
+        assert!(matches!(st.dialog, dialogs::Dialog::None), "关闭后不再重现");
+        let e = &st.remotes[0].tabs[0].ext_edits[0];
+        assert!(e.lock_wait_since.is_some(), "等待态保留（继续计时）");
+        assert!(e.lock_warned, "WARN 去重标记保持");
+        assert!(e.lock_dialog_done, "弹框去重标记已置位（本次等锁不再弹）");
+        assert!(
+            st.remotes[0].tabs[0]
+                .pane
+                .msg
+                .as_deref()
+                .unwrap_or("")
+                .contains("写锁未释放"),
+            "状态栏持久提示仍在：{:?}",
+            st.remotes[0].tabs[0].pane.msg
+        );
+        assert_eq!(
+            st.terminal
+                .iter()
+                .filter(|(_, m)| m.contains("不会上传半写文件"))
+                .count(),
+            1,
+            "WARN 恰 1 条（日志去重不变）"
+        );
+        assert!(
+            !has_file_written(&st.remotes[0].sessions[0].ssh),
+            "锁未释放期间零 write_file"
+        );
+        drop(holder);
+        let _ = std::fs::remove_file(&copy);
+    }
+
+    /// 钉子（CR-10）：首次超时恰逢其它弹窗占用 → 本轮不弹、标记不置位；
+    /// 占用解除后下一轮补弹（证明弹框去重必须独立于 lock_warned）。
+    #[test]
+    #[cfg(windows)]
+    fn lock_wait_dialog_defers_when_dialog_occupied() {
+        let (mut st, holder, copy) = lockwait_fixture();
+        st.dialog = dialogs::Dialog::SyncMismatch { msg: "busy".into() };
+        back400(&mut st);
+        poll_ext_edits(&mut st);
+        assert!(
+            matches!(st.dialog, dialogs::Dialog::SyncMismatch { .. }),
+            "占用框不被顶掉"
+        );
+        assert!(
+            !st.remotes[0].tabs[0].ext_edits[0].lock_dialog_done,
+            "占用轮不置位（否则永久不弹）"
+        );
+        assert!(
+            st.remotes[0].tabs[0].ext_edits[0].lock_warned,
+            "WARN 照常打（日志去重与弹框去重分离）"
+        );
+        // 占用解除 → 下一轮补弹。
+        st.dialog = dialogs::Dialog::None;
+        back400(&mut st);
+        poll_ext_edits(&mut st);
+        assert!(
+            matches!(st.dialog, dialogs::Dialog::ExtEditLockWait { .. }),
+            "占用解除后补弹"
+        );
+        drop(holder);
+        let _ = std::fs::remove_file(&copy);
+    }
+
+    /// 钉子（CR-10）：等待态复位（「立即重试探测」按钮语义）后重新造一次
+    /// 超时 → 超时框能再弹（lock_dialog_done 复位链有效）。
+    #[test]
+    #[cfg(windows)]
+    fn lock_wait_dialog_next_wait_can_reopen() {
+        let (mut st, holder, copy) = lockwait_fixture();
+        back400(&mut st);
+        poll_ext_edits(&mut st);
+        assert!(matches!(st.dialog, dialogs::Dialog::ExtEditLockWait { .. }));
+        st.dialog = dialogs::Dialog::None;
+        // 「立即重试探测」复位等待态（与 ext_edit_lock_wait_body retry 分支同字段）。
+        let e0 = &mut st.remotes[0].tabs[0].ext_edits[0];
+        e0.quiet_since = None;
+        e0.quiet_snap = None;
+        e0.lock_wait_since = None;
+        e0.lock_warned = false;
+        e0.lock_dialog_done = false;
+        st.remotes[0].tabs[0].lock_msg_on = false;
+        // 重新造一次超时：静默满 + 等待 ≥TIMEOUT。
+        let e1 = &mut st.remotes[0].tabs[0].ext_edits[0];
+        e1.quiet_since = Some(std::time::Instant::now() - std::time::Duration::from_millis(1000));
+        e1.quiet_snap = Some(ext_snapshot(&e1.local));
+        e1.lock_wait_since =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(11000));
+        back400(&mut st);
+        poll_ext_edits(&mut st);
+        assert!(
+            matches!(st.dialog, dialogs::Dialog::ExtEditLockWait { .. }),
+            "复位后下一次等锁超时可再弹"
+        );
+        drop(holder);
+        let _ = std::fs::remove_file(&copy);
+    }
+}
+
+// ============================================================================
+// F-8 光标意图裁决钉子（纯 egui::Context / run_ui；不启 GUI、不连远程主机、
+// 不落临时文件——并行档各用例独占 Context，无共享路径）
+// ============================================================================
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    /// 造两帧真实 Ui：egui 0.37 的 hover 命中基于「上一帧注册的 WidgetRect」，
+    /// 第一帧只注册命中区，第二帧才有 hovered 并可断言（check=true）。
+    fn frame(pointer: Option<egui::Pos2>, f: impl Fn(&mut egui::Ui, bool)) {
+        let ctx = egui::Context::default();
+        for pass in 0..2 {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            ));
+            if let Some(pos) = pointer {
+                input.events.push(egui::Event::PointerMoved(pos));
+            }
+            let check = pass == 1;
+            let mut out = ctx.run_ui(input, |ui| f(ui, check));
+            // egui 0.37：丢弃 FullOutput 前须消费纹理增量，否则 drop 会 panic。
+            out.textures_delta.clear();
+        }
+    }
+
+    fn icon(ui: &egui::Ui) -> egui::CursorIcon {
+        ui.ctx().output(|o| o.cursor_icon)
+    }
+
+    /// 只在第二帧（命中区已注册）比对。
+    fn expect(check: bool, ui: &egui::Ui, want: egui::CursorIcon, msg: &str) {
+        if check {
+            assert_eq!(icon(ui), want, "{}", msg);
+        }
+    }
+
+    /// 逐层累加 + 四层正序 / 逆序 + 同层先写者：裁决结果恒为最高优先层。
+    #[test]
+    fn cursor_decide_priority() {
+        use egui::CursorIcon as I;
+        frame(None, |ui, check| {
+            let ctx = ui.ctx();
+            cursor_intent(ctx, CursorLayer::Hover, I::PointingHand);
+            cursor_decide(ctx);
+            expect(check, ui, I::PointingHand, "仅 Hover");
+
+            cursor_intent(ctx, CursorLayer::Hover, I::PointingHand);
+            cursor_intent(ctx, CursorLayer::Edge, I::ResizeEast);
+            cursor_decide(ctx);
+            expect(check, ui, I::ResizeEast, "Edge 压过 Hover");
+
+            cursor_intent(ctx, CursorLayer::Hover, I::PointingHand);
+            cursor_intent(ctx, CursorLayer::Edge, I::ResizeEast);
+            cursor_intent(ctx, CursorLayer::Drag, I::Grabbing);
+            cursor_decide(ctx);
+            expect(check, ui, I::Grabbing, "Drag 压过 Edge / Hover");
+
+            for (layer, ic) in [
+                (CursorLayer::Hover, I::PointingHand),
+                (CursorLayer::Edge, I::ResizeEast),
+                (CursorLayer::Drag, I::Grabbing),
+                (CursorLayer::Dialog, I::Default),
+            ] {
+                cursor_intent(ctx, layer, ic);
+            }
+            cursor_decide(ctx);
+            expect(check, ui, I::Default, "四层正序：Dialog 最高");
+
+            for (layer, ic) in [
+                (CursorLayer::Dialog, I::Default),
+                (CursorLayer::Drag, I::Grabbing),
+                (CursorLayer::Edge, I::ResizeEast),
+                (CursorLayer::Hover, I::PointingHand),
+            ] {
+                cursor_intent(ctx, layer, ic);
+            }
+            cursor_decide(ctx);
+            expect(check, ui, I::Default, "四层逆序：低层不得反超");
+
+            cursor_intent(ctx, CursorLayer::Hover, I::PointingHand);
+            cursor_intent(ctx, CursorLayer::Hover, I::Grabbing);
+            cursor_decide(ctx);
+            expect(check, ui, I::PointingHand, "同层保留先写者");
+        });
+    }
+
+    /// 终局兜底：意图槽 take 语义，无意图帧裁决后 Default，不粘滞 Grabbing。
+    #[test]
+    fn cursor_decide_empty_defaults() {
+        frame(None, |ui, check| {
+            let ctx = ui.ctx();
+            cursor_intent(ctx, CursorLayer::Drag, egui::CursorIcon::Grabbing);
+            cursor_decide(ctx);
+            expect(check, ui, egui::CursorIcon::Grabbing, "有 Drag 意图");
+            // released / pointer gone / dialog 切换 → 本帧不再上报 Drag。
+            cursor_decide(ctx);
+            expect(
+                check,
+                ui,
+                egui::CursorIcon::Default,
+                "无意图帧不得残留 Grabbing",
+            );
+            cursor_decide(ctx);
+            expect(check, ui, egui::CursorIcon::Default, "连续空帧仍为 Default");
+        });
+    }
+
+    /// modal=true 整层跳过（零 Edge 意图）；modal=false 贴边 hover 时 Edge 生效。
+    #[test]
+    fn edge_resize_modal_skips() {
+        let top_edge = egui::Pos2::new(400.0, 2.0);
+        frame(Some(top_edge), |ui, check| {
+            edge_resize(ui, true);
+            cursor_decide(ui.ctx());
+            expect(
+                check,
+                ui,
+                egui::CursorIcon::Default,
+                "弹层期间贴边也不得写 Edge",
+            );
+        });
+        frame(Some(top_edge), |ui, check| {
+            edge_resize(ui, false);
+            cursor_decide(ui.ctx());
+            expect(
+                check,
+                ui,
+                egui::CursorIcon::ResizeNorth,
+                "非弹层贴边应上报 Edge",
+            );
+        });
+    }
+
+    /// 自绘按钮 hover 手型；禁用态不上报（std_button 系全委托 std_button_en）。
+    #[test]
+    fn std_button_hover_points() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::new(10.0, 10.0), egui::vec2(80.0, 28.0));
+        let hover = egui::Pos2::new(50.0, 20.0);
+        frame(Some(hover), |ui, check| {
+            let p = theme::palette(ui.ctx());
+            let _ = dialogs::std_button_en(
+                ui,
+                rect,
+                "OK",
+                egui::Color32::WHITE,
+                &p,
+                egui::FontId::default(),
+                true,
+            );
+            cursor_decide(ui.ctx());
+            expect(
+                check,
+                ui,
+                egui::CursorIcon::PointingHand,
+                "enabled + hover 应手型",
+            );
+        });
+        frame(Some(hover), |ui, check| {
+            let p = theme::palette(ui.ctx());
+            let _ = dialogs::std_button_en(
+                ui,
+                rect,
+                "OK",
+                egui::Color32::WHITE,
+                &p,
+                egui::FontId::default(),
+                false,
+            );
+            cursor_decide(ui.ctx());
+            expect(check, ui, egui::CursorIcon::Default, "disabled 不得报手型");
+        });
+    }
+
+    /// 合法放置不再上报 Copy 而是 Default；DropHint 绘制一行不动。
+    #[test]
+    fn panes_copy_is_default_no_drop_hint_change() {
+        frame(None, |ui, check| {
+            cursor_intent(ui.ctx(), CursorLayer::Hover, egui::CursorIcon::Default);
+            cursor_decide(ui.ctx());
+            expect(check, ui, egui::CursorIcon::Default, "合法放置为默认箭头");
+        });
+        assert_ne!(egui::CursorIcon::Copy, egui::CursorIcon::Default);
+        let src = include_str!("panes.rs");
+        assert!(
+            src.contains("cursor_intent(ui.ctx(), CursorLayer::Hover, CursorIcon::Default)"),
+            "file_rows 合法放置分支须上报 Default 而非 Copy"
+        );
+        assert!(
+            src.contains("p.accent.gamma_multiply(0.08)"),
+            "DropHint 高亮填充不得随光标改动删除"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cr1_jobs_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn req_delete() -> crate::local::LocalPaneReq {
+        crate::local::LocalPaneReq::Delete {
+            dir: PathBuf::from("C:/cr1"),
+            targets: vec!["a.txt".to_owned()],
+            keep: Vec::new(),
+        }
+    }
+
+    /// 钉子④：删除中 tab 被关 → 回执不落到别的 tab，删除成败仍留终端痕迹。
+    #[test]
+    fn delete_reply_after_tab_close_keeps_log_and_drops_pane_update() {
+        let mut st = State::default();
+        let req = req_delete();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(crate::local::LocalPaneReply {
+            req: req.clone(),
+            entries: None,
+            deleted: vec![("C:/cr1/a.txt".to_owned(), Ok(()))],
+        })
+        .unwrap();
+        st.local_jobs.push(LocalJob {
+            side: 0,
+            tab_id: 999_999,
+            req,
+            rx,
+        });
+        assert!(poll_local_jobs(&mut st), "回执被消费");
+        assert!(st.local_jobs.is_empty(), "在途槽清空");
+        assert_eq!(st.terminal.len(), 1, "tab 已关仍留删除日志");
+        assert!(st.terminal[0].1.contains("C:/cr1/a.txt"));
+        assert!(!st.terminal[0].1.contains("已删除 1 项"));
+    }
+
+    /// 钉子⑤：工作线程异常退出（channel 断开）→ 清 loading，不留「加载中…」死态。
+    #[test]
+    fn worker_disconnect_clears_loading_and_reports_failure() {
+        let mut st = State::default();
+        let tab_id = st.locals[0].tabs[0].id;
+        // 真实请求以 pane.path 为枚举目标；夹具须对齐，否则回执按过期丢弃。
+        st.locals[0].tabs[0].pane.path = Some(PathBuf::from("C:/cr1"));
+        st.locals[0].tabs[0].pane.loading = true;
+        let (tx, rx) = std::sync::mpsc::channel::<crate::local::LocalPaneReply>();
+        drop(tx);
+        let req = crate::local::LocalPaneReq::Refresh {
+            path: PathBuf::from("C:/cr1"),
+            keep: Vec::new(),
+        };
+        st.local_jobs.push(LocalJob {
+            side: 0,
+            tab_id,
+            req,
+            rx,
+        });
+        assert!(poll_local_jobs(&mut st));
+        assert!(!st.locals[0].tabs[0].pane.loading, "断开也须清 loading");
+        assert!(
+            st.locals[0].tabs[0].pane.msg.is_some(),
+            "失败须显式提示，不静默"
+        );
+    }
+
+    /// 钉子⑥：本地 I/O 在途要保活，否则 egui 空闲不重绘、回执永远不到账。
+    #[test]
+    fn local_io_in_flight_keeps_heartbeat_busy() {
+        let mut st = State::default();
+        assert_eq!(repaint_delay(&st), None, "全清应自停");
+        st.locals[0].tabs[0].pane.pending_local = Some(crate::local::LocalPaneReq::Refresh {
+            path: PathBuf::from("C:/cr1"),
+            keep: Vec::new(),
+        });
+        assert_eq!(
+            repaint_delay(&st),
+            Some(std::time::Duration::from_millis(120)),
+            "登记待起线程即进 120ms 快帧"
+        );
+    }
+}
+
+// ============================================================================
+// CR-7：单批删除回执归零 + 终端批末裁剪（纯状态夹具，无需远程主机 / GUI）。
+// ============================================================================
+#[cfg(test)]
+mod cr7_terminal_tests {
+    use super::*;
+    use crate::ssh::Ev;
+
+    /// 200 项一个 tag：一条 Ev::Deleted 就把 del_pending 归零并触发重列，
+    /// 不会卡在「正在删除…」（按项计数的旧语义会需要 200 条回执）。
+    #[test]
+    fn single_deleted_reply_zeroes_pending_and_relists() {
+        let mut st = State::default();
+        let tab_id = st.remotes[1].tabs[0].id;
+        st.remotes[1].tabs[0].pane.remote_path = Some("/r".to_owned());
+        st.remotes[1].tabs[0].pane.loading = true;
+        st.remotes[1].tabs[0].del_pending = 1;
+        let tag = next_seq(&mut st);
+        st.inflight.insert(tag, (1, tab_id));
+        apply_ssh_event(
+            &mut st,
+            &egui::Context::default(),
+            1,
+            1,
+            Ev::Deleted { tag },
+        );
+        assert_eq!(st.remotes[1].tabs[0].del_pending, 0, "批计数归零");
+        assert!(st.inflight.is_empty(), "在途 tag 清空");
+        assert!(!st.remotes[1].tabs[0].pane.loading, "busy 链解除");
+        assert_eq!(st.list_reqs.len(), 1, "回零触发重列");
+    }
+
+    /// 批末一次裁剪即收敛：1000 行 → 保留末 400 行，再裁长度不变。
+    #[test]
+    fn trim_terminal_keeps_last_400_in_one_pass() {
+        let mut terminal: Vec<(String, String)> = (0..1000)
+            .map(|i| (i.to_string(), format!("line-{i}")))
+            .collect();
+        trim_terminal(&mut terminal);
+        assert_eq!(terminal.len(), 400);
+        assert_eq!(terminal[0].1, "line-600");
+        assert_eq!(terminal[399].1, "line-999");
+        trim_terminal(&mut terminal);
+        assert_eq!(terminal.len(), 400, "一次裁剪已收敛");
     }
 }
