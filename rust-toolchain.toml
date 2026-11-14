@@ -1,4 +1,5 @@
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnu"
+channel = "1.99"
 profile = "minimal"
-components = ["rust-src", "rust-analyzer"]
+targets = ["x86_64-pc-windows-gnu"]
+components = ["rust-src"]

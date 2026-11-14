@@ -62,7 +62,7 @@ ifreeSftp.exe           # 单文件 exe——就这一个（无运行时、无�
 
 ## 从源码构建
 
-依赖：Windows 与 [Rust](https://rustup.rs)（通道 `stable-x86_64-pc-windows-gnu`，由 `rust-toolchain.toml` 锁定）。
+依赖：Windows 与 [Rust](https://rustup.rs)（工具链由 `rust-toolchain.toml` 锁定）。
 
 ```powershell
 .\build.ps1 build      # Debug 编译（克隆即可编译）

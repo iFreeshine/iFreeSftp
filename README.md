@@ -66,7 +66,7 @@ Unzip anywhere and run `ifreeSftp.exe`. Or build from source (below).
 
 ## Build from source
 
-Requirements: Windows and [Rust](https://rustup.rs) (channel `stable-x86_64-pc-windows-gnu`, pinned by `rust-toolchain.toml`).
+Requirements: Windows and [Rust](https://rustup.rs) (toolchain pinned by `rust-toolchain.toml`).
 
 ```powershell
 .\build.ps1 build      # Debug build (compiles out of the box)

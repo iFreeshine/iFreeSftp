@@ -29,7 +29,7 @@ E:\aiProject\iFreeSftpRust\            主开发仓（私有，含闭源与素�
 |---|---|---|
 | `src\` | `ifreeSftp\src\` | 全量镜像（official 门控零引用，见 §6） |
 | `build.rs` `Cargo.toml` `Cargo.lock` | 同名 | Cargo.toml 原样（workspace 根与 member 同文件，公开仓自足） |
-| `rust-toolchain.toml` `.cargo\config.toml` `.gitattributes` `.gitignore` | 同名 | 工具链锁定 1.99 + windows-gnu 链接配置（D-019）；config.toml 同步时剥离主仓 `[build] target-dir`（私有产物目录策略，公开仓贡献者机器路径不同） |
+| `rust-toolchain.toml` `.cargo\config.toml` `.gitattributes` `.gitignore` | 同名 | 工具链锁定 + windows-gnu 链接配置（D-019）；同步改写：config.toml 剥离主仓 `[build] target-dir`（私有产物目录策略），rust-toolchain.toml 的 channel 由 host 三元组形式改写为 `1.99` + gnu targets（CI / fork 侧 rustup host 是 msvc，会报 "target tuple in channel name"） |
 | `assets\` | 同名 | build.rs 内嵌图标/Logo 资源（缺目录编译失败） |
 | `docs\zh-CN.png` 等图标/静态资源 | 同名 | 若后续新增 |
 | `E:\aiProject\iFreeSftp\github\LICENSE` | `LICENSE` | AGPL-3.0 沿用 C# 版 |
