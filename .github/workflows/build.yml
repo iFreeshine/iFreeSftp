@@ -26,8 +26,8 @@ jobs:
 
       - name: Build (Debug, source mode)
         shell: pwsh
-        run: cargo build --locked --target x86_64-pc-windows-gnu
+        run: cargo build --locked
 
       - name: Test (source mode)
         shell: pwsh
-        run: cargo test --locked --target x86_64-pc-windows-gnu
+        run: cargo test --locked
