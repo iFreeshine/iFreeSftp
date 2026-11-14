@@ -62,7 +62,7 @@ ifreeSftp.exe           # 单文件 exe——就这一个（无运行时、无�
 
 ## 从源码构建
 
-依赖：Windows 与 [Rust](https://rustup.rs) 1.99（通道 `stable-x86_64-pc-windows-gnu`，由 `rust-toolchain.toml` 锁定）。
+依赖：Windows 与 [Rust](https://rustup.rs)（通道 `stable-x86_64-pc-windows-gnu`，由 `rust-toolchain.toml` 锁定）。
 
 ```powershell
 .\build.ps1 build      # Debug 编译（克隆即可编译）
@@ -117,7 +117,7 @@ MIGRATION.md                   # 本仓库更新与发版规则（动手前先�
   runtime，UI 线程经 channel 收发命令/事件，绝不在帧内阻塞
 - **传输**：队列工作线程，tar 打包加速目录模式、断点续传、传输后校验、显式栈目录遍历（环/深度防护）
 - **注册**：ECDsa P-256 离线验签位于未随本仓库发布的闭源模块之后（见上文说明）
-- **运行时**：Rust 1.99、`x86_64-pc-windows-gnu`、自包含 CRT 链接——导入表仅 Windows 系统 DLL
+- **运行时**：Rust `x86_64-pc-windows-gnu`、自包含 CRT 链接——导入表仅 Windows 系统 DLL
 
 ## 能力矩阵（公开口径）
 

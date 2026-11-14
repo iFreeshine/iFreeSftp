@@ -66,7 +66,7 @@ Unzip anywhere and run `ifreeSftp.exe`. Or build from source (below).
 
 ## Build from source
 
-Requirements: Windows and [Rust](https://rustup.rs) 1.99 (channel `stable-x86_64-pc-windows-gnu`, pinned by `rust-toolchain.toml`).
+Requirements: Windows and [Rust](https://rustup.rs) (channel `stable-x86_64-pc-windows-gnu`, pinned by `rust-toolchain.toml`).
 
 ```powershell
 .\build.ps1 build      # Debug build (compiles out of the box)
@@ -120,7 +120,7 @@ Desktop app, no server backend; single workspace crate:
 - **SSH/SFTP**: russh 0.65 (ring backend) + russh-sftp 3.0; a dedicated worker thread runs a current-thread tokio runtime, the UI thread exchanges commands/events over channels and never blocks the frame
 - **Transfer**: queue worker with tar-accelerated directory mode, resume, post-transfer verification, explicit-stack directory walk with loop/depth guards
 - **Registration**: ECDsa P-256 offline verification lives in a closed-source module that is not part of this repository (see capability note above)
-- **Runtime**: Rust 1.99, `x86_64-pc-windows-gnu`, self-contained CRT linking — import table contains only Windows system DLLs
+- **Runtime**: Rust `x86_64-pc-windows-gnu`, self-contained CRT linking — import table contains only Windows system DLLs
 
 ## Capability matrix (public wording)
 
