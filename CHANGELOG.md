@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 > This is the Rust edition's changelog, starting at 0.9.0 (full native rewrite of the C#/WinUI 3 edition). The C# edition's history lives in its own repository and is not merged here.
 
+## [0.9.1] - 2026-11-18
+
+### Added
+
+- Dragging files from Explorer into a remote pane uploads immediately; Shift+drop only stages the batch for review, queue it manually
+- Two more rubber-band modes: Shift+drag from a row, and right-button drag banding
+
+### Changed
+
+- Connecting to a host is now tab-first, without the initial empty-state cover
+- Minor UI polish
+
+### Fixed
+
+- Minor UI fixes
+
 ## [0.9.0] - 2026-11-07
 
 First release of the native Rust edition: a single-exe, zero-bundled-runtime rewrite of the C#/WinUI 3 client (eframe 0.37 / egui, russh 0.65).

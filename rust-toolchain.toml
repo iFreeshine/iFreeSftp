@@ -1,5 +1,5 @@
 [toolchain]
-channel = "1.99"
+channel = "1.100"
 profile = "minimal"
 targets = ["x86_64-pc-windows-gnu"]
 components = ["rust-src"]

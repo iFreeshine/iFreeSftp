@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "ifreesftp"
 version.workspace = true
 edition.workspace = true
@@ -25,7 +25,9 @@ arboard = "3"
 base64 = "0.22"
 # 注册/更新远程通道（C# HttpClient 对应物；TLS = rustls ring 后端，
 # windows-gnu 兼容，p0a 已实测 reg.ifrees.top）
-ureq = "2"
+# 3.5.2：基于 http crate 重写；default = rustls + gzip，后端仍是 ring（非
+# aws-lc-rs，后者在 windows-gnu 不可用）；webpki-roots 1.0 直接落在修复线。
+ureq = "3.5.2"
 # /v1/state 响应容错解析（C# JsonDocument 对应物）
 serde_json = "1"
 # T15 tar 加速嵌入化：打包/解包从本机 tar 子进程改为纯 Rust 内嵌实现
@@ -64,7 +66,7 @@ resolver = "3"
 
 [workspace.package]
 # 版本基线（2026-10-31 定案）：构建版本号全部从 0.9.0 起步。
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 rust-version = "1.99"
 

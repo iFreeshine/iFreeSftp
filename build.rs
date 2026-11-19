@@ -1,9 +1,3 @@
-//! 构建期资源内嵌（D-015）：Windows 下用 MinGW binutils 的 windres 把
-//! `assets/AppIcon.ico` 编译成 COFF 目标文件并链接进 exe，
-//! 修复任务栏 / 资源管理器图标回退链。不引入任何构建依赖。
-//!
-//! 注意：windres 依赖 dev.bat PATH 中的 `D:\dev\mingw64\bin`；
-//! 找不到时回退到该固定路径，再失败则 panic（编译失败，不让坏图标静默过）。
 
 use std::env;
 use std::fs;

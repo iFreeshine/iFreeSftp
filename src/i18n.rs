@@ -1,31 +1,19 @@
-//! 语言字典：C# Strings/{zh-CN,en-US}/Resources.resw 一次性转出（411 键对齐）。
-//!
-//! - 查找键 = 中文原文（zh-CN resw value），值 = 英文（en-US 同名键 value）；
-//! - 中文态 `t` 原样返回键本身；英文态查表，无匹配键回退中文（Rust 侧新增文案
-//!   暂缺英文时安全降级，不会panic/空串）；
-//! - 带参数文案用 `tfmt`：模板为 C# string.Format 风格 `{0}` `{1}`；
-//! - 手工增改条目直接编辑下方 match，保持两列对齐。
-
 use crate::settings;
 
-/// 当前是否英文态（settings.language == "en-US"；空/其他 = 中文）。
 pub fn is_en() -> bool {
     settings::with(|s| s.language == "en-US")
 }
 
-/// 中文原文 → 当前语言文案。键必须是 i18n 表中的中文原文（与 resw 值逐字一致）。
 pub fn t(zh: &'static str) -> &'static str {
     t_for(zh, is_en())
 }
 
-/// 语言显式版（T20-E-R）：行为与 `t` 完全一致，只是把语言作为入参，供
-/// 「不改写全局 language 态」的纯逻辑判定 / 中英钉子复用（并行用例零串扰）。
 pub fn t_for(zh: &'static str, en: bool) -> &'static str {
     if !en {
         return zh;
     }
     match zh {
-        // C 方案（非 Windows 凭据降级声明，CROSS_PLATFORM.md §3）。
+
         "本平台不保存密码" => "Passwords are not saved on this platform",
         "请改用密钥文件，或清空密码后在连接时输入；未清空前本平台不会写入存档" => {
             "Use a key file instead, or clear the password and enter it when connecting. The host list is not written to disk while a password is set"
@@ -38,7 +26,7 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
             "Enter the connection password in the password field first; it is kept in memory only"
         }
         "\"{0}\" 已回传到远端" => "\"{0}\" uploaded back to remote",
-        // 写锁超时兜底（项6）：等待编辑器保存的分级提醒与退出对话框。
+
         "写锁已释放，继续回传" => "Write lock released, resuming upload",
         "写锁未释放，已暂缓回传：{0}（{1}s）" => {
             "Write lock not released, upload deferred: {0} ({1}s)"
@@ -159,8 +147,7 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
             "The two sides are out of sync; sync browse cannot start"
         }
         "两次重试之间的等待时间（秒）" => "Wait time between retries (seconds)",
-        // 「中文」：语言名特例——语言选择器里语言以自身文字呈现（英文界面也显示
-        // 「中文」而非 Chinese），与 resw 原表同口径，非漏翻。
+
         "中文" => "中文",
         "主机" => "Host",
         "主机命令窗" => "Host console",
@@ -473,7 +460,7 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "预检超时：{0} 项未完成探测，已按远端不存在放行（传输时按续传决策兜底）" => {
             "Precheck timeout: {0} items were not probed and queued as if absent (resume policy decides at transfer time)"
         }
-        // F1：覆盖确认三按钮按下必有确定结果（入队或明确放弃）——对账日志键。
+
         "已跳过 {0} 个冲突项，无剩余任务入队" => {
             "Skipped {0} conflicting items; no tasks left to queue"
         }
@@ -483,7 +470,36 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "已放弃上一批待确认的 {0} 项（未入队）" => {
             "Abandoned {0} unconfirmed items from the previous batch (not queued)"
         }
-        // 覆盖确认弹窗勾选语义提示行（F-10 方案A：逐项勾选分流）。
+
+        "已暂存 {0} 项" => "{0} items staged",
+        "入队" => "Queue",
+        "放弃暂存" => "Discard stash",
+        "已暂存 {0} 项（Shift 拖入）——点击面板底部「入队」开始传输" => {
+            "Staged {0} items (Shift-drop) — click \"Queue\" on the pane status bar to start"
+        }
+        "已追加 {0} 项到暂存（共 {1} 项）——点击面板底部「入队」开始传输" => {
+            "Added {0} items to the stash ({1} total) — click \"Queue\" on the pane status bar to start"
+        }
+        "已放弃上一批暂存的 {0} 项（未入队）" => {
+            "Abandoned {0} staged items from the previous batch (not queued)"
+        }
+        "已放弃暂存的 {0} 项（未入队）" => "Discarded {0} staged items (not queued)",
+        "暂存 {0} 项已入队（探测目标/统计文件）" => {
+            "Queued {0} staged items (checking target/counting files)"
+        }
+        "目标远程会话已断开，暂存 {0} 项已放弃" => {
+            "Target session disconnected; discarded {0} staged items"
+        }
+        "外部拖入已忽略：{0}" => "External drop ignored: {0}",
+
+        "需两侧为本地+远程目录配对" => {
+            "Needs a local + remote directory pair across the two panes"
+        }
+        "需先开启同步浏览" => "Needs sync browse enabled first",
+        "目标面板不在远程目录" => "target pane is not in a remote directory",
+        "目标远程会话未连接" => "target remote session is not connected",
+        "无可上传的条目" => "nothing uploadable in the drop",
+
         "勾选的冲突项覆盖上传，未勾选的跳过" => {
             "Checked conflicts are overwritten and uploaded; unchecked ones are skipped"
         }
@@ -615,8 +631,8 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "连接打开方式" => "Open connections in",
         "连接超时（秒）" => "Connect timeout (s)",
         "选择主机" => "Choose host",
-        "外部编辑器可执行文件（如 notepad++、VS Code）；留空使用内置编辑器。" => {
-            "Executable of the external editor (e.g. Notepad++, VS Code); leave empty to use the built-in editor."
+        "外部编辑器可执行文件（如 Sublime Text、VS Code）；留空使用内置编辑器。" => {
+            "Executable of the external editor (e.g. Sublime Text, VS Code); leave empty to use the built-in editor."
         }
         "选择打开文件使用的编辑器" => "Which editor opens when editing files",
         "选择要扫描的来源" => "Choose sources to scan",
@@ -638,7 +654,7 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "首次连接 {0}，无法验证主机身份。\n\n主机密钥指纹 (SHA256)：\n{1}\n\n信任该主机并继续连接？" => {
             "Connecting to {0} for the first time. The host identity cannot be verified.\n\nHost key fingerprint (SHA256):\n{1}\n\nTrust this host and continue?"
         }
-        // T6 差集补账：以下为全仓扫描出的漏翻键（差集守卫测试 i18n::tests 拦截）。
+
         "关闭 {0}" => "Close {0}",
         "[远程]" => "[Remote]",
         "主机尚未保存进存档，指纹仅本会话生效" => {
@@ -674,7 +690,8 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "激活组件未随本仓库源码分发，请从 ifrees.top 下载发布版。" => {
             "Activation is not included in this repository's source; download the release from ifrees.top."
         }
-        "版本 0.9.0（Rust 迁移版）" => "Version 0.9.0 (Rust migration)",
+
+        "版本 {0}（Rust 迁移版）" => "Version {0} (Rust migration)",
         "认证失败" => "Authentication failed",
         "认证失败：用户名或密码错误" => {
             "Authentication failed: wrong username or password"
@@ -691,12 +708,12 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "{0} 条会话无效已跳过（缺少主机名或端口无效）。" => {
             "{0} invalid sessions were skipped (missing hostname or invalid port)."
         }
-        // T6 补完（跨行/tfmt 扫描补抓 51 条）：用户可见失败提示与终端日志，全部进表。
+
         "[tar 加速] 本地目录扫描失败，回退逐文件：{0}" => {
             "[tar accel] Local directory scan failed, falling back to per-file: {0}"
         }
         "[{0}] 上传编辑副本…" => "[{0}] Uploading edited copy…",
-        // CR-6 内置编辑器保存回传闭环：失败态 / 回执 / 终端日志。
+
         "[{0}] 回传未完成：{1}" => "[{0}] Upload incomplete: {1}",
         "回传未完成：{0}" => "Upload incomplete: {0}",
         "未找到主机会话" => "Host session not found",
@@ -775,7 +792,7 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "计算失败：{0}" => "Hash computation failed: {0}",
         "认证超时（{0} 秒）" => "Authentication timed out ({0} s)",
         "设置保存失败：{0}" => "Failed to save settings: {0}",
-        // CR-2：设置落盘失败全局提示条（持续可见，成功落盘后自动消失）。
+
         "设置未保存，正在自动重试" => "Settings not saved - retrying automatically",
         "读取失败：{0}" => "Read failed: {0}",
         "读取源失败：{0}" => "Failed to read source: {0}",
@@ -783,7 +800,7 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "远程新建文件夹：{0}" => "New remote folder: {0}",
         "远程新建文件：{0}" => "New remote file: {0}",
         "连接超时（{0} 秒）" => "Connection timed out ({0} s)",
-        // T6 第 2 轮补账（守卫修好字符字面量状态机后扫出的最后 1 条）
+
         "行 {0}, 列 {1}" => "Row {0}, Column {1}",
         "此源码编译版不含服务端直达复制组件；请分两步传输（先下载到本机，再上传到目标）" => {
             "This source build does not include the server-to-server direct copy component; transfer in two steps (download to local, then upload to the target)"
@@ -792,7 +809,6 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
     }
 }
 
-/// 带占位符查表：模板 `{0}` `{1}`… 依次替换 args（C# string.Format 同式）。
 pub fn tfmt(zh: &'static str, args: &[&dyn std::fmt::Display]) -> String {
     let mut out = String::from(t(zh));
     for (i, a) in args.iter().enumerate() {
@@ -801,34 +817,17 @@ pub fn tfmt(zh: &'static str, args: &[&dyn std::fmt::Display]) -> String {
     out
 }
 
-/// 歧义文案直配：同一中文原文在不同上下文对应不同英文（连接=Connect/Connection、
-/// 主机=Host/Hosts、复制=Copy/Duplicate、文件夹=Folder/File folder、文件编辑），
-/// 表里只保留一个，另一侧调用点用本函数显式给出英文，中文态仍显示 zh。
 pub fn t_ctx(zh: &'static str, en: &'static str) -> &'static str {
     if is_en() { en } else { zh }
 }
 
 #[cfg(test)]
 mod tests {
-    //! T6 差集守卫：全仓 t("…")/tfmt("…") 字面量必须逐条出现在上方 match 表里。
-    //! 兜底 `_ => zh` 只该是「新键还没来得及翻译」的临时安全网——差集非空说明
-    //! 英文界面会弹中文，测试失败并打印缺失清单，CI 以此拦下欠账。
-    //! t_ctx 不参与：它自带英文，不依赖查表。
-    //! 终端日志硬编码中文白名单：LOG_ONLY_WHITELIST（逐条列名，不许按前缀放过）。
 
-    /// 终端日志专用文案白名单（Ev::Log 只进终端、不进 UI 控件；逐条列名）。
-    /// 进表即翻（推荐）；确属纯日志不改的在此列名，禁止用前缀规则一刀切。
     const LOG_ONLY_WHITELIST: &[&str] = &[
-        // （当前为空：所有日志文案均已进表。新增硬编码中文日志时必须二选一：
-        //  补进 match 表，或在此逐条列名并注明「仅终端日志」理由。）
+
     ];
 
-    /// 整文本扫描 t(/tfmt( 调用点，等价正则 `(?<![A-Za-z0-9_])(t|tfmt)\(\s*"(…)"`：
-    /// - 标识符按整词读出（最大吞并），只有整词恰为 t / tfmt 且紧跟 `(` 才算——
-    ///   format!(/expect!(/t_ctx(/Stat( 等整词不相等，天然排除；
-    /// - `(` 之后允许任意空白（含换行）再接 `"`——跨行调用不再像旧逐行版那样漏扫；
-    /// - 依次维护 行注释/块注释（可嵌套）/字符串字面量 状态，注释与普通字符串里
-    ///   出现的 `t("…")` 文本不算调用点。
     fn scan_call_literals(text: &str, out: &mut Vec<String>) {
         let bytes = text.as_bytes();
         let n = bytes.len();
@@ -881,11 +880,7 @@ mod tests {
                     in_string = true;
                     i += 1;
                 }
-                // 字符/字节字面量（b'"'、'\''、'\n'、'中'）vs 生命周期（'static）：
-                // 向前在同一行 ≤16 字节内找未转义闭合 ' —— 命中则整段跳过（其中
-                // 的 " 不许当字符串起始，否则状态错相吞掉整文件后半段——
-                // editor_window.rs:619 `c == b'"'` 实锤）；未命中按生命周期处理，
-                // 只跳 ' 本身。
+
                 b'\'' => {
                     let mut j = i + 1;
                     let mut closed = None;
@@ -910,9 +905,7 @@ mod tests {
                         i += 1;
                     }
                     let token = &text[start..i];
-                    // 原始字符串 r"…" / r#"…"# / br"…"#：内容不转义、可含裸 "，
-                    // 数 # 后找 `" 同数 #` 闭合整段跳过（r#ident 原始标识符因
-                    // # 后非 " 不会误入）。
+
                     if (token == "r" || token == "br")
                         && i < n
                         && (bytes[i] == b'"' || bytes[i] == b'#')
@@ -957,7 +950,6 @@ mod tests {
         }
     }
 
-    /// 从 `"` 起提取完整字符串字面量（转义解码；字面量本身跨行也照收，不再放弃）。
     fn extract_quoted(s: &str) -> Option<String> {
         let bytes = s.as_bytes();
         let mut out = String::new();
@@ -994,7 +986,6 @@ mod tests {
         }
     }
 
-    /// 直接取行内第一个字符串字面量（match 臂键解析用：`"键" => "值"` 无 t( 前缀）。
     fn extract_first_literal(line: &str) -> Option<String> {
         let bytes = line.as_bytes();
         let start = line.find('"')?;
@@ -1045,7 +1036,6 @@ mod tests {
         let mut files = Vec::new();
         collect_rs_files(&src, &mut files);
 
-        // 1) 全仓调用点字面量（排除 i18n.rs 自身；整文本扫描，含 tfmt 与跨行调用）
         let mut used: Vec<String> = Vec::new();
         for f in &files {
             if f.file_name().is_some_and(|n| n == "i18n.rs") {
@@ -1054,9 +1044,9 @@ mod tests {
             let body = std::fs::read_to_string(f).expect("read source");
             scan_call_literals(&body, &mut used);
         }
-        // 纯终端日志白名单（逐条列名）：命中即放行，不算缺失
+
         used.retain(|u| !LOG_ONLY_WHITELIST.contains(&u.as_str()));
-        // 哨兵：扫描器失灵（如误把所有调用排除）时宁可炸也不静默放行
+
         assert!(
             !used.is_empty(),
             "守卫哨兵：全仓没扫到任何 t()/tfmt() 调用，扫描器已失灵"
@@ -1067,9 +1057,6 @@ mod tests {
             used.len()
         );
 
-        // 2) i18n.rs match 臂键。cargo fmt 会把长条目重排成三种形态：
-        //    `"键" => "值",` / `"键" => { "值" }`（值换行）/ 键与 `=>` 分行；
-        //    值行（=> 块内）不以 `=>` 开头且不含 `" =>`，不会误判为键。
         let table = std::fs::read_to_string(std::path::Path::new(manifest).join("src/i18n.rs"))
             .expect("read i18n.rs");
         let lines: Vec<&str> = table.lines().collect();
@@ -1088,14 +1075,13 @@ mod tests {
                 }
             }
         }
-        // 哨兵：表键解析失灵（如 fmt 又引入新形态）时宁可炸也不假绿
+
         assert!(
             keys.len() > 400,
             "守卫哨兵：只解析出 {}/411+ 表键，match 臂解析已失灵",
             keys.len()
         );
 
-        // 3) 差集：调用点有、表里没有 = 英文界面会漏中文
         let mut missing: Vec<&String> = used.iter().filter(|u| !keys.contains(u)).collect();
         missing.sort();
         missing.dedup();
@@ -1111,33 +1097,31 @@ mod tests {
         );
     }
 
-    /// 提取器单测：tfmt( 与跨行调用必须看见，format!/expect( 必须排除，
-    /// 注释/普通字符串里的 t("…") 文本不算调用点——守卫不许自己变哑巴。
     #[test]
     fn extractor_sees_tfmt_and_multiline_not_format() {
         let mut got = Vec::new();
-        // 单行 tfmt
+
         scan_call_literals("let s = tfmt(\"X\", &[1]);", &mut got);
         assert_eq!(got, vec!["X"]);
-        // 跨行 t 调用（旧逐行版漏扫的主因）
+
         got.clear();
         scan_call_literals("foo(\n    t(\n        \"Y\"\n    ),\n);", &mut got);
         assert_eq!(got, vec!["Y"]);
-        // format!/expect( 排除
+
         got.clear();
         scan_call_literals(
             "let a = format!(\"Z\"); let b: Result<u8,_> = Ok(1); let _ = b.expect(\"W\");",
             &mut got,
         );
         assert!(got.is_empty(), "format!/expect( 被误扫: {got:?}");
-        // 普通字符串里的 "t(\"S\")" 文本、行/块注释里的 t("C") 都不算调用点
+
         got.clear();
         scan_call_literals(
             "let hint = \"call t(\\\"S\\\") to translate\"; // t(\"C1\")\n/* t(\"C2\") */ let _ = t(\"T\");",
             &mut got,
         );
         assert_eq!(got, vec!["T"]);
-        // 整词校验：Stat(/split(/format! 不触发，tfmt 完整词触发一次
+
         got.clear();
         scan_call_literals(
             "let x = Stat(\"A\"); let y = 1; let z = v.split(\"B\"); tfmt(\"C\", &[]);",
@@ -1146,26 +1130,23 @@ mod tests {
         assert_eq!(got, vec!["C"]);
     }
 
-    /// 回归钉子：字符字面量（b'"'、b'\''）与原始字符串不许把状态机带偏——
-    /// editor_window.rs:619 `c == b'"'` 曾让该文件 3 处 t()/tfmt() 全部漏出差集，
-    /// 而 used>300 水位哨兵对单文件被吞无感。
     #[test]
     fn extractor_survives_char_literals_and_raw_strings() {
         let mut got = Vec::new();
-        // 实锤场景：b'"' 之后的 t("T") 与 t("关闭") 两处都必须拿到
+
         scan_call_literals(
             "if c == b'\"' { let _ = t(\"T\"); }\n    t(\"关闭\");",
             &mut got,
         );
         assert_eq!(got, vec!["T", "关闭"]);
-        // 生命周期 'static 只跳 ' 本身；b'\'' 整段跳过；后续调用仍可见
+
         got.clear();
         scan_call_literals(
             "let q: &'static str = t(\"L\"); let e = b'\\''; let _ = t(\"M\");",
             &mut got,
         );
         assert_eq!(got, vec!["L", "M"]);
-        // 原始字符串（内容含裸引号不破态）+ 后续调用
+
         got.clear();
         scan_call_literals("let s = r#\"t(\"Z\")\"#; let _ = t(\"W\");", &mut got);
         assert_eq!(got, vec!["W"]);

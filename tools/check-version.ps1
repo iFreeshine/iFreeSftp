@@ -1,14 +1,4 @@
-﻿# iFreeSftp 版本号一致性防漏校验 (发布前必跑; build.ps1 release 已自动挂钩)
-# 基准版本从 workspace Cargo.toml [workspace.package] version 解析, 校验以下声明点全部一致:
-#   1. README.md / README.zh-CN.md            版本徽章 img.shields.io/badge/version-x.y.z-
-#   2. CHANGELOG.md / CHANGELOG.zh-CN.md      存在 "## [x.y.z]" 发版节
-#   3. website\index.html + website\zh\index.html      GitHub 下载链接与版本文案
-#   4. website\changelog.html + website\zh\changelog.html  "v x.y.z" 条目标题
-# website\ 文件缺失时对应项自动 SKIP (可选站点目录, 不阻塞发布); 1-2 项为仓库内必备文件, 缺失仍 FAIL。
-# 任一不一致即 FAIL (退出码 1, 阻塞发布); 全部一致输出 PASS。
-# 用法: .\tools\check-version.ps1  (无参数)
-
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
 $script:fail = 0

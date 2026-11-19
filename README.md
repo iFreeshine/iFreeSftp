@@ -1,10 +1,10 @@
-# iFreeSftp
+﻿﻿# iFreeSftp
 
 English | [简体中文](README.zh-CN.md)
 
 A dual-pane, multi-tab SFTP client for Windows & Linux — fast, secure, and completely free. Native Rust + egui, single-file binary, zero bundled runtime.
 
-![Version](https://img.shields.io/badge/version-0.9.0-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.9.1-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
 
 Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSftp/releases> · Get a registration code <https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115>
 

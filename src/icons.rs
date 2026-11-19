@@ -1,24 +1,16 @@
-//! 图标运行时（D-014）：消费 build.rs 生成的内嵌 PNG 清单。
-//! Phosphor 源图为黑色字形，按需重着色后上传纹理，按 (名字, 颜色) 缓存。
-//!
-//! 清晰度（密度桶）：build.rs 已把 256px 源 CPU Lanczos3 下采样为
-//! 16/20/24/32/48 五档（SCALED），运行时按「逻辑 size × 像素比」取
-//! ≥ 物理需求的最小档，GPU 近 1:1 采样不发糊；无合适档回退 256px 原图。
-
 use std::collections::HashMap;
 
 use egui::{Color32, Context, TextureHandle};
 
 include!(concat!(env!("OUT_DIR"), "/icons_gen.rs"));
 
-/// 图标纹理缓存。key = "{name}-{color}-{档位边长}"。
 #[derive(Default)]
 pub struct Cache {
     map: HashMap<String, TextureHandle>,
 }
 
 impl Cache {
-    /// 取单色图标纹理（黑色源图重着色为 `color`，保留 alpha）。
+
     pub fn get(
         &mut self,
         ctx: &Context,
@@ -30,7 +22,6 @@ impl Cache {
         Some(sized(&handle, size))
     }
 
-    /// 取原色纹理（品牌 logo 等多色图）。
     pub fn get_raw(
         &mut self,
         ctx: &Context,
@@ -48,8 +39,7 @@ impl Cache {
         color: Option<Color32>,
         size: f32,
     ) -> Option<TextureHandle> {
-        // 密度桶选档：物理需求 = 逻辑尺寸 × 像素比；取 ≥ 需求的最小档
-        // （GPU 缩放比 ≤ ~1.25 的近无损下采样），无合适档回退 256px 原图。
+
         let phys = (size * ctx.pixels_per_point()).ceil().max(1.0);
         let (side, bytes) = pick_bucket(name, phys)?;
         let key = format!(
@@ -80,7 +70,6 @@ impl Cache {
     }
 }
 
-/// 选档：SCALED（16/20/24/32/48）中取 ≥ phys 的最小边长；否则 ENTRIES 256px 兜底。
 fn pick_bucket(name: &str, phys: f32) -> Option<(u32, &'static [u8])> {
     let mut best: Option<(u32, &'static [u8])> = None;
     for (n, side, bytes) in SCALED {
@@ -99,7 +88,6 @@ fn pick_bucket(name: &str, phys: f32) -> Option<(u32, &'static [u8])> {
     })
 }
 
-/// 由纹理句柄构造定尺寸 Image（0.37 需要 SizedTexture，位于 egui::load）。
 fn sized(handle: &TextureHandle, size: f32) -> egui::Image<'static> {
     egui::Image::new(egui::load::SizedTexture::new(
         handle.id(),

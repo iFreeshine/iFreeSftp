@@ -1,10 +1,10 @@
-# iFreeSftp
+﻿﻿# iFreeSftp
 
 [English](README.md) | 简体中文
 
 桌面 SFTP 客户端——Windows 与 Linux 双平台，双窗格、多标签，快速、安全、完全免费。Rust + egui 原生实现，单文件、零随包运行时。
 
-![Version](https://img.shields.io/badge/version-0.9.0-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.9.1-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
 
 官网 <https://ifrees.top> · 发布页 <https://github.com/iFreeshine/iFreeSftp/releases> · 赞助 <https://afdian.com/a/ifree>
 

@@ -1,47 +1,31 @@
-//! 会话导入解析器（C# HostImportParser 1:1）：从其他 SFTP 客户端读取连接元数据
-//! 并转为 HostProfile。
-//!
-//! 三条红线（实现层固化）：
-//! - 红线 1 —— 口令绝不导入：WinSCP XOR 0xA3 混淆 / FileZilla 明文一律不读；
-//!   唯一例外是本软件自有存档（hosts.json）的 DPAPI 密文（enc: 前缀）随记录
-//!   整体迁移，走 `hosts::unprotect` fail-safe 通道（解密失败清空）。
-//! - 红线 2 —— 命令类字段绝不导入：PuTTY/WinSCP RemoteCommand、FileZilla
-//!   POST_LOGIN_COMMANDS、OpenSSH ProxyCommand/LocalCommand 一律丢弃。
-//! - 红线 3 —— 只导连接元数据：名称/主机/端口/用户名/认证方式/密钥路径。
-//!
-//! 隐私红线：仅读取用户勾选的来源；单文件 ≤ 8MB、单来源会话 ≤ 5000 条；
-//! 失败只记机器可读 code，绝不落会话内容。
-
 use std::collections::BTreeMap;
 
 use crate::hosts::{AuthMode, HostProfile};
 
-/// 单来源会话数上限。
 pub(crate) const MAX_SESSIONS: usize = 5000;
-/// 单文件字节上限。
+
 const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
-/// 存档密码密文前缀（与 hosts.rs 的 enc: 语义一致）。
+
 const ENC_PREFIX: &str = "enc:";
 
-/// 导入来源种类。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SourceKind {
-    /// WinSCP INI 文件（%APPDATA%\WinSCP.ini）。
+
     WinScpIni,
-    /// WinSCP 注册表会话（HKCU\Software\Martin Prikryl\WinSCP 2\Sessions）。
+
     WinScpRegistry,
-    /// FileZilla 站点管理器（%APPDATA%\FileZilla\sitemanager.xml）。
+
     FileZilla,
-    /// PuTTY 注册表会话（HKCU\Software\SimonTatham\PuTTY\Sessions）。
+
     PuTTY,
-    /// OpenSSH 客户端配置（~\.ssh\config）。
+
     OpenSsh,
-    /// 本软件自有存档（app_paths::data_dir 下 hosts.json，跨机迁移）。
+
     OwnStore,
 }
 
 impl SourceKind {
-    /// zh-CN 来源名（UI 勾选/摘要/错误行展示）。
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::WinScpIni => "WinSCP (INI 文件)",
@@ -53,7 +37,6 @@ impl SourceKind {
         }
     }
 
-    /// 勾选顺序下标（Consent 页 2×3 排布）。
     pub(crate) fn index(self) -> usize {
         match self {
             Self::WinScpIni => 0,
@@ -66,7 +49,6 @@ impl SourceKind {
     }
 }
 
-/// 单条导入会话（纯元数据；除 OwnStore DPAPI 密文载体外不携带口令）。
 pub(crate) struct ImportedSession {
     pub name: String,
     pub host: String,
@@ -74,14 +56,12 @@ pub(crate) struct ImportedSession {
     pub username: String,
     pub auth_mode: AuthMode,
     pub key_file_path: String,
-    /// 机器可读警告码："" / "keyNotFound"（密钥路径不存在）/ "uncPath"（UNC 已拒收）。
+
     pub warning: &'static str,
-    /// 仅 OwnStore 来源：存档中的密码 DPAPI 密文（enc: 前缀）。
+
     pub own_store_password: String,
 }
 
-/// 单个来源的扫描统计（C# ImportScanResult.Sources 同款：解析器照常产出，
-/// UI 只用截断/错误，计数保留供诊断；kind 同样只写不读）。
 pub(crate) struct SourceStat {
     #[allow(dead_code)]
     pub kind: SourceKind,
@@ -105,30 +85,23 @@ impl SourceStat {
     }
 }
 
-/// 整体扫描结果。
 pub(crate) struct ScanResult {
     pub sessions: Vec<ImportedSession>,
-    /// 每个已探测来源一条统计（含未发现的来源）。
+
     pub stats: Vec<SourceStat>,
-    /// 本机未发现的来源（UI 映射为「未检测到」提示）。
+
     pub missing: Vec<SourceKind>,
-    /// 单来源失败记录。code：fileTooLarge / fileReadFailed / registryReadFailed /
-    /// parseFailed（自有存档解析零产出）。
+
     pub errors: Vec<(SourceKind, &'static str)>,
-    /// 超出全局总量上限被丢弃的条数。
+
     pub total_truncated: usize,
 }
 
-/// 来源勾选集合（未列入的来源一个字节都不读，与隐私公示一致）。
 #[derive(Clone, Copy)]
 pub(crate) struct SourceOptions {
     pub kinds: [bool; 6],
 }
 
-// ── WinSCP INI（[Sessions\folder\site] 节 + key=value）───────
-
-/// 解析 WinSCP INI 文本。仅导入 Protocol 为 SFTP 的会话（键缺省视为 SFTP）；
-/// Password 键绝不读取（不在任何中间结构里）。
 fn parse_winscp_ini(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
     let mut result = Vec::new();
     let mut values: BTreeMap<String, String> = BTreeMap::new();
@@ -148,7 +121,7 @@ fn parse_winscp_ini(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
             let section = &line[1..end];
             if section.to_ascii_uppercase().starts_with("SESSIONS\\") {
                 in_session = true;
-                // 站点名 = 节名最后一段（WinSCP 对特殊字符做 %XX 转义）。
+
                 site_name = percent_decode(last_segment(section, '\\'));
             }
         } else if in_session
@@ -167,7 +140,6 @@ fn parse_winscp_ini(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
     result
 }
 
-/// INI 节收尾：映射 + 上限截断。
 fn flush_winscp(
     values: &mut BTreeMap<String, String>,
     site_name: &str,
@@ -184,7 +156,6 @@ fn flush_winscp(
     values.clear();
 }
 
-/// WinSCP 键值字典（INI 或注册表归一后）→ 会话。端口无效返回 None（已计入 stat）。
 fn from_winscp_values(
     v: &BTreeMap<String, String>,
     name: &str,
@@ -222,10 +193,6 @@ fn from_winscp_values(
     })
 }
 
-// ── PuTTY 注册表键值映射（纯函数部分）───────────────────────
-
-/// PuTTY 键值 → 会话。Protocol 非空且非 ssh 跳过；HostName 可能是 user@host。
-/// （PuTTY 来源仅 Windows 注册表，Linux 无此导入面。）
 #[cfg(windows)]
 fn from_putty_map(
     v: &BTreeMap<String, RegVal>,
@@ -237,7 +204,7 @@ fn from_putty_map(
         stat.skipped_non_sftp += 1;
         return None;
     }
-    // 注册表存独立 UserName 键，优先；为空回退 HostName 的 user@host 前缀。
+
     let (user_from_host, host) = split_user_host(get_val_str(v, "HostName").trim());
     if host.is_empty() {
         stat.skipped_invalid += 1;
@@ -277,9 +244,6 @@ fn from_putty_map(
     })
 }
 
-// ── FileZilla sitemanager.xml（手写扫描器）──────────────────
-
-/// FileZilla 口令/命令类元素：内容绝不读取（红线 1/2），整块跳过。
 fn is_forbidden_fz_element(el: &str) -> bool {
     el.eq_ignore_ascii_case("Pass")
         || el.eq_ignore_ascii_case("Password")
@@ -287,8 +251,6 @@ fn is_forbidden_fz_element(el: &str) -> bool {
         || el.eq_ignore_ascii_case("POST_LOGIN_COMMANDS")
 }
 
-/// 解析 FileZilla 站点管理器 XML。Protocol=="1"（SFTP）才导；
-/// Logontype=="5"（密钥文件）读取 Keyfile 元素。
 #[allow(clippy::too_many_lines)]
 fn parse_filezilla(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
     let mut result = Vec::new();
@@ -303,13 +265,13 @@ fn parse_filezilla(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
 
     let bytes: Vec<char> = text.chars().collect();
     let mut i = 0usize;
-    // 简易标签游标：找到 <tag> / <tag/> / </tag>，元素文本取到下一个 '<'。
+
     while i < bytes.len() {
         if bytes[i] != '<' {
             i += 1;
             continue;
         }
-        // 标签名与自闭合/结束标记。
+
         let mut j = i + 1;
         let is_end = j < bytes.len() && bytes[j] == '/';
         if is_end {
@@ -324,7 +286,7 @@ fn parse_filezilla(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
             i += 1;
             continue;
         }
-        // 找标签结束 '>'。
+
         let close = match bytes[i..].iter().position(|&c| c == '>') {
             Some(p) => i + p,
             None => return result,
@@ -349,7 +311,7 @@ fn parse_filezilla(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
                     );
                 }
             } else {
-                // 防御：嵌套/未闭合的 Server 提前截断上一条。
+
                 if in_server {
                     flush_filezilla(
                         &mut host,
@@ -380,14 +342,14 @@ fn parse_filezilla(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
             i = close + 1;
             continue;
         }
-        // 元素文本 = '>' 到下一个 '<' 之间；其余未知元素整块跳过（含禁读元素）。
+
         let text_end = bytes[close + 1..]
             .iter()
             .position(|&c| c == '<')
             .map(|p| close + 1 + p)
             .unwrap_or(bytes.len());
         if is_forbidden_fz_element(&lower) {
-            // 红线 1/2：口令与命令元素内容不进任何结构，直接跳到对应结束标签。
+
             i = skip_to_close(&bytes, close + 1, &lower);
             continue;
         }
@@ -421,7 +383,6 @@ fn parse_filezilla(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
     result
 }
 
-/// Server 条目收尾：协议过滤 + 字段映射 + 上限截断。
 #[expect(clippy::too_many_arguments)]
 fn flush_filezilla(
     host: &mut String,
@@ -449,7 +410,7 @@ fn flush_filezilla(
     let Some(port_num) = parse_port(port.trim(), stat) else {
         return;
     };
-    // Logontype: 0=Anonymous 1=Normal 2=Ask 3=Interactive 4=Account 5=Key file。
+
     let is_key = logontype.trim() == "5" && !keyfile.trim().is_empty();
     add_capped(
         result,
@@ -486,7 +447,6 @@ fn flush_filezilla(
     protocol.clear();
 }
 
-/// 跳过当前元素的整个子树（含同名嵌套），返回结束标签 '>' 之后的位置。
 fn skip_to_close(bytes: &[char], from: usize, tag: &str) -> usize {
     let mut depth = 1usize;
     let mut i = from;
@@ -516,8 +476,6 @@ fn skip_to_close(bytes: &[char], from: usize, tag: &str) -> usize {
     bytes.len()
 }
 
-/// 最小 XML 实体还原（&amp; &lt; &gt; &quot; &apos; + 数字实体 &#NN;/&#xHH;，
-/// 对齐 C# XmlReader；非法码点按坏实体还原 U+FFFD）。
 fn xml_unescape(s: &str) -> String {
     if !s.contains('&') {
         return s.to_owned();
@@ -529,7 +487,7 @@ fn xml_unescape(s: &str) -> String {
         let tail = &rest[pos..];
         let semi = tail.find(';');
         match semi {
-            // 最长实体：&#x10FFFF;（8 字符）/ &#1114111;（9 字符）。
+
             Some(1..=10) => {
                 let ent = &tail[1..semi.unwrap()];
                 let rep = if let Some(digits) = ent.strip_prefix("#x") {
@@ -559,7 +517,6 @@ fn xml_unescape(s: &str) -> String {
     out
 }
 
-/// 数字实体码点 → 字符（XML 1.0 Char 范围校验，越界还原 U+FFFD）。
 fn numeric_entity(code: Option<u32>) -> char {
     code.and_then(char::from_u32)
         .filter(|&c| {
@@ -571,16 +528,11 @@ fn numeric_entity(code: Option<u32>) -> char {
         .unwrap_or('\u{FFFD}')
 }
 
-// ── OpenSSH ~/.ssh/config ───────────────────────────────────
-
-/// 解析 OpenSSH 客户端配置。通配符（* ?）Host 块与 Match 块整体跳过；
-/// IdentityFile 取首个有效值（~ 展开、%VAR% 展开、去引号）；Include 不递归；
-/// ProxyCommand/LocalCommand/RemoteCommand 绝不读取（红线 2）。
 #[allow(clippy::too_many_lines)]
 fn parse_openssh(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
     let mut result = Vec::new();
-    let mut in_block = false; // 处于某个 Host/Match 块内
-    let mut skip_block = false; // 通配符或 Match 块（不导入）
+    let mut in_block = false;
+    let mut skip_block = false;
     let mut pattern: Option<String> = None;
     let mut host_name: Option<String> = None;
     let mut user: Option<String> = None;
@@ -636,14 +588,14 @@ fn parse_openssh(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
                 );
             }
             in_block = true;
-            skip_block = true; // 条件块，整体不导入
+            skip_block = true;
             pattern = None;
             host_name = None;
             user = None;
             identity = None;
             port = 0;
         } else if !in_block || skip_block {
-            continue; // 块外全局选项 / 被跳过块内的命令类键不处理
+            continue;
         } else if keyword.eq_ignore_ascii_case("HostName") {
             if host_name.is_none() {
                 host_name = split_tokens(rest).first().cloned();
@@ -683,7 +635,6 @@ fn parse_openssh(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
     result
 }
 
-/// Host/Match 块收尾：跳过块不计数，有效块映射。
 #[expect(clippy::too_many_arguments)]
 fn flush_openssh(
     pattern: &Option<String>,
@@ -699,7 +650,7 @@ fn flush_openssh(
     *in_block = false;
     if *skip_block {
         *skip_block = false;
-        return; // 通配符/Match 块不是具体会话，不计数
+        return;
     }
     stat.found += 1;
     let host = host_name
@@ -731,7 +682,6 @@ fn flush_openssh(
     *port = 0;
 }
 
-/// IdentityFile 值规范化：去引号、~ → 用户主目录、%VAR% 环境变量展开。
 fn expand_identity_file(raw: &str) -> Option<String> {
     let mut s = raw.trim().to_owned();
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
@@ -747,7 +697,7 @@ fn expand_identity_file(raw: &str) -> Option<String> {
         s = home + &s[1..].replace('/', "\\");
     }
     if s.contains('%') {
-        // %VAR% 形式展开。
+
         let mut out = String::new();
         let mut rest = s.as_str();
         while let Some(a) = rest.find('%') {
@@ -770,11 +720,6 @@ fn expand_identity_file(raw: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-// ── 自有存档 hosts.json（跨机迁移）──────────────────────────
-
-/// 纯函数部分（供单测注入文本，不触真实存档文件）。
-/// 红线 1 特例：密码只接受 enc: 前缀密文（进 own_store_password 走 fail-safe
-/// 解密）；明文口令（无前缀）一律丢弃。
 fn parse_own_store_text(text: &str, stat: &mut SourceStat) -> Vec<ImportedSession> {
     let mut result = Vec::new();
     for p in crate::hosts::parse_snapshot(text) {
@@ -783,7 +728,7 @@ fn parse_own_store_text(text: &str, stat: &mut SourceStat) -> Vec<ImportedSessio
             stat.skipped_invalid += 1;
             continue;
         }
-        // 密码只接受 enc: 前缀密文；明文（历史遗留/异常存档）绝不迁移。
+
         let cipher = if p.password.starts_with(ENC_PREFIX) {
             p.password.clone()
         } else {
@@ -806,10 +751,6 @@ fn parse_own_store_text(text: &str, stat: &mut SourceStat) -> Vec<ImportedSessio
     }
     result
 }
-
-// ── 注册表扫描（advapi32 FFI，只读 HKCU 指定子键；仅 Windows 编译）──
-// 非 Windows：注册表来源（WinSCP 注册表 / PuTTY 注册表）在 scan_registry_sessions
-// 空实现里记 missing 跳过，编排层不动。
 
 #[cfg(windows)]
 type Hkey = *mut core::ffi::c_void;
@@ -854,7 +795,6 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-/// 注册表值（仅两类：字符串 / DWORD，其余跳过）。
 #[cfg(windows)]
 enum RegVal {
     Str(String),
@@ -872,8 +812,6 @@ fn from_wide(buf: &[u16]) -> String {
     String::from_utf16_lossy(&buf[..end])
 }
 
-/// 非 Windows：无注册表可扫 —— 记 missing 跳过（与 Windows 侧「键不存在」
-/// 同一统计路径，编排层不感知平台差异）。
 #[cfg(not(windows))]
 fn scan_registry_sessions(
     result: &mut ScanResult,
@@ -885,11 +823,10 @@ fn scan_registry_sessions(
     result.stats.push(SourceStat::new(kind));
 }
 
-/// 遍历 HKCU 下指定注册表路径的会话子键，逐条映射。只读，不写注册表、不碰 HKLM。
 #[cfg(windows)]
 fn scan_registry_sessions(result: &mut ScanResult, kind: SourceKind, base_path: &str, putty: bool) {
     let mut stat = SourceStat::new(kind);
-    // SAFETY：全部为只读注册表 API 调用；句柄逐一 close；缓冲区按 API 约定传入长度。
+
     unsafe {
         let sub = wide(base_path);
         let mut key: Hkey = std::ptr::null_mut();
@@ -951,7 +888,7 @@ fn scan_registry_sessions(result: &mut ScanResult, kind: SourceKind, base_path: 
                         {
                             let val = match vk {
                                 REG_SZ => {
-                                    // REG_SZ 缓冲区 = UTF-16LE；array_chunks 稳定化前按下标成对取。
+
                                     let n = (got as usize) & !1;
                                     let u16s: Vec<u16> = (0..n / 2)
                                         .map(|i| u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]))
@@ -963,7 +900,7 @@ fn scan_registry_sessions(result: &mut ScanResult, kind: SourceKind, base_path: 
                                 }
                                 _ => continue,
                             };
-                            // PuTTY 对键名做 URL 转义（空格 %20 等）。
+
                             values.insert(percent_decode(&val_name), val);
                         }
                     }
@@ -978,7 +915,7 @@ fn scan_registry_sessions(result: &mut ScanResult, kind: SourceKind, base_path: 
                         &mut stat,
                     )
                 } else {
-                    // WinSCP 注册表：DWORD 端口转字符串后复用 INI 映射。
+
                     let strs: BTreeMap<String, String> = values
                         .into_iter()
                         .map(|(k, v)| {
@@ -1006,7 +943,6 @@ fn scan_registry_sessions(result: &mut ScanResult, kind: SourceKind, base_path: 
     result.stats.push(stat);
 }
 
-/// RegQueryValueExW 便捷封装（值名 + 缓冲区）。
 #[cfg(windows)]
 unsafe fn query_value_raw(h: Hkey, name: &[u16], data: &mut [u8], got: &mut u32) -> i32 {
     let name = wide(&String::from_utf16_lossy(name));
@@ -1033,9 +969,6 @@ unsafe fn query_value_raw(h: Hkey, name: &[u16], data: &mut [u8], got: &mut u32)
     }
 }
 
-// ── 编排层：默认路径探测、文件读取、校验、合并 ────────────────
-
-/// 按默认路径扫描勾选的来源并合并结果；单来源失败不中断整体。
 #[allow(clippy::too_many_lines)]
 pub(crate) fn scan_sources(opts: &SourceOptions) -> ScanResult {
     let mut result = ScanResult {
@@ -1096,11 +1029,10 @@ pub(crate) fn scan_sources(opts: &SourceOptions) -> ScanResult {
         );
     }
 
-    // 密钥路径校验（UNC 拒收 / 不存在告警），供预览表展示。
     for s in &mut result.sessions {
         validate(s);
     }
-    // 全局总量上限（隐私红线：总会话 ≤ MaxSessions）。
+
     if result.sessions.len() > MAX_SESSIONS {
         result.total_truncated = result.sessions.len() - MAX_SESSIONS;
         result.sessions.truncate(MAX_SESSIONS);
@@ -1108,7 +1040,6 @@ pub(crate) fn scan_sources(opts: &SourceOptions) -> ScanResult {
     result
 }
 
-/// 各文本来源的统一解析入口（供 scan_file_source 函数指针；errs 回传失败码）。
 fn winscp_ini_entry(
     text: &str,
     stat: &mut SourceStat,
@@ -1139,16 +1070,13 @@ fn own_store_entry(
     errs: &mut Vec<&'static str>,
 ) -> Vec<ImportedSession> {
     let sessions = parse_own_store_text(text, stat);
-    // C# HostImportParser 整体解析失败抛 parseFailed（HostImportParser.cs:692-696）；
-    // 行式解析无「结构非法」概念，读到的文本零产出即报 parseFailed —— 宁显式
-    // 失败不静默（ADR「失败不许静默」；合法空存档极少见，报错可提示选错文件）。
+
     if stat.found == 0 {
         errs.push("parseFailed");
     }
     sessions
 }
 
-/// 单文件来源：存在性 → 大小 → 读取 → 解码 → 解析；每步失败只记 code。
 fn scan_file_source(
     result: &mut ScanResult,
     kind: SourceKind,
@@ -1162,7 +1090,7 @@ fn scan_file_source(
         Ok(_) => match std::fs::read(path) {
             Err(_) => result.errors.push((kind, "fileReadFailed")),
             Ok(bytes) => {
-                // 编码探测链复用编辑器解码（BOM→严格 UTF-8→ANSI→Latin-1）。
+
                 let (text, _) = crate::editor::decode(&bytes);
                 let mut errs: Vec<&'static str> = Vec::new();
                 for s in parse(&text, &mut stat, &mut errs) {
@@ -1203,10 +1131,6 @@ fn own_store_path() -> std::path::PathBuf {
     crate::hosts::store_path_pub()
 }
 
-// ── 校验、转换、判重 ────────────────────────────────────────
-
-/// 密钥路径校验：UNC 网络路径拒收（红线 3，内网凭据外泄面），回退密码认证并
-/// 标记 uncPath；路径不存在保留原值并标记 keyNotFound。
 pub(crate) fn validate(s: &mut ImportedSession) {
     if s.auth_mode != AuthMode::KeyFile || s.key_file_path.trim().is_empty() {
         return;
@@ -1217,15 +1141,12 @@ pub(crate) fn validate(s: &mut ImportedSession) {
         s.warning = "uncPath";
         return;
     }
-    // C# File.Exists 对目录返回 true：目录路径不算缺失（与 C# 口径一致）。
+
     if !std::path::Path::new(&s.key_file_path).exists() {
         s.warning = "keyNotFound";
     }
 }
 
-/// ImportedSession → HostProfile（不写存储，落库由 UI 层走 hosts::append_to_disk）。
-/// OwnStorePassword 走 DPAPI 解密：结果仍带 enc: 前缀说明解密失败（换机/换用户），
-/// fail-safe 清空口令。
 pub(crate) fn to_profile(s: &ImportedSession) -> HostProfile {
     let mut p = HostProfile {
         name: if s.name.trim().is_empty() {
@@ -1251,14 +1172,10 @@ pub(crate) fn to_profile(s: &ImportedSession) -> HostProfile {
     p
 }
 
-/// 预览表判重口径：Host:Port:Username（与存档定位语义一致，区分大小写）。
 pub(crate) fn dedup_key(host: &str, port: i32, username: &str) -> String {
     format!("{}:{port}:{}", host.trim(), username.trim())
 }
 
-// ── 私有工具 ───────────────────────────────────────────────
-
-/// 单来源上限截断。
 fn add_capped(list: &mut Vec<ImportedSession>, s: ImportedSession, stat: &mut SourceStat) {
     if list.len() >= MAX_SESSIONS {
         stat.truncated += 1;
@@ -1268,7 +1185,6 @@ fn add_capped(list: &mut Vec<ImportedSession>, s: ImportedSession, stat: &mut So
     stat.imported += 1;
 }
 
-/// 端口解析：空→22；越界/非数字计入 skipped_invalid 并返回 None。
 fn parse_port(raw: &str, stat: &mut SourceStat) -> Option<i32> {
     if raw.trim().is_empty() {
         return Some(22);
@@ -1301,7 +1217,6 @@ fn get_val_str(v: &BTreeMap<String, RegVal>, key: &str) -> String {
     }
 }
 
-/// "user@host" 拆分；无 @ 或拆分无效时整体视为主机。
 #[cfg(windows)]
 fn split_user_host(raw: &str) -> (String, String) {
     match raw.find('@') {
@@ -1316,7 +1231,6 @@ fn last_segment(s: &str, sep: char) -> &str {
     s.rsplit(sep).next().unwrap_or(s)
 }
 
-/// %XX 转义还原（Uri.UnescapeDataString 语义；非法序列原样保留）。
 fn percent_decode(s: &str) -> String {
     if !s.contains('%') {
         return s.to_owned();
@@ -1340,7 +1254,6 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// 空白分词，支持双引号包裹（OpenSSH Host "name with space"）。
 fn split_tokens(s: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut in_quote = false;
@@ -1362,30 +1275,14 @@ fn split_tokens(s: &str) -> Vec<String> {
     tokens
 }
 
-// ============================================================================
-// HostImportParser 测试翻译（第二批）—— 翻译自 C# HostImportParserTests.cs
-// 全部使用合成数据（内联字符串），不触碰真实注册表与用户存档。
-// 红线断言（口令/命令字段绝不出现）贯穿各来源用例。
-//
-// 集成方式：
-//   1. 先做一个小重构：parse_own_store 拆出纯函数 parse_own_store_text
-//      （文件末尾附 diff；行为逐位等价，只是把"读文件"与"解析文本"分离）；
-//   2. 把下方全部 mod 追加到 src/import.rs 末尾；
-//   3. cargo test    预期：import 侧 34 passed（C# 37 用例的映射见 README）。
-// ============================================================================
-
-// ── 通用辅助 ─────────────────────────────────────────────────
-
 #[cfg(test)]
 mod import_test_helpers {
     use super::{ImportedSession, SourceKind, SourceStat};
 
-    /// 等价 C# NewStat。
     pub(super) fn new_stat(kind: SourceKind) -> SourceStat {
         SourceStat::new(kind)
     }
 
-    /// 等价 C# AssertNoSecret：机密串不出现在任何导入字符串字段中（大小写不敏感）。
     pub(super) fn assert_no_secret(sessions: &[ImportedSession], secrets: &[&str]) {
         for s in sessions {
             for field in [
@@ -1406,8 +1303,6 @@ mod import_test_helpers {
         }
     }
 }
-
-// ── 编码探测链（C# DecodeBytesTests；Rust 实现在 editor::decode）──
 
 #[cfg(test)]
 mod decode_bytes_tests {
@@ -1441,11 +1336,7 @@ mod decode_bytes_tests {
         assert_eq!(crate::editor::decode(&bytes).0, "HostName=example.com");
     }
 
-    // C# InvalidUtf8_FallsBackToAnsi 不翻译：回退目标依平台 ANSI 代码页，且
-    // Rust editor::decode 末级回退 Latin-1 与 C# 系统 ANSI 语义不同（见 README）。
 }
-
-// ── WinSCP INI ───────────────────────────────────────────────
 
 #[cfg(test)]
 mod winscp_ini_tests {
@@ -1485,7 +1376,7 @@ mod winscp_ini_tests {
         assert_eq!(stat.skipped_non_sftp, 1);
 
         let prod = &sessions[0];
-        assert_eq!(prod.name, "prod server"); // %20 还原
+        assert_eq!(prod.name, "prod server");
         assert_eq!(prod.host, "10.0.0.5");
         assert_eq!(prod.port, 2200);
         assert_eq!(prod.username, "ops");
@@ -1494,7 +1385,7 @@ mod winscp_ini_tests {
 
         let legacy = &sessions[1];
         assert_eq!(legacy.host, "old.example.com");
-        assert_eq!(legacy.port, 22); // 缺省端口
+        assert_eq!(legacy.port, 22);
         assert!(matches!(legacy.auth_mode, AuthMode::Password));
     }
 
@@ -1524,8 +1415,6 @@ mod winscp_ini_tests {
         assert_eq!(stat.skipped_invalid, 1);
     }
 }
-
-// ── FileZilla sitemanager.xml ────────────────────────────────
 
 #[cfg(test)]
 mod filezilla_tests {
@@ -1844,7 +1733,7 @@ mod own_store_tests {
 
     #[test]
     fn parses_cipher_kept() {
-        // C# ParsesBothCases 的 PascalCase 半段：密文随记录迁移。
+
         let mut stat = new_stat(SourceKind::OwnStore);
         let sessions = parse_own_store_text(SAMPLE_JSON, &mut stat);
         assert_eq!(sessions[0].own_store_password, "enc:QUJDREVGRw==");
