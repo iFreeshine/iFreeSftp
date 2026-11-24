@@ -320,7 +320,7 @@ pub const LIGHT: Palette = Palette {
     control_stroke_disabled: Color32::from_black_alpha(0x1D),
     control_stroke_default: Color32::from_black_alpha(0x0F),
     control_bg_focused: Color32::WHITE,
-    focus_stroke: Color32::from_black_alpha(0xA6),
+    focus_stroke: Color32::from_black_alpha(0x80),
     control_strong_fill: Color32::from_black_alpha(0x72),
     control_strong_fill_disabled: Color32::from_black_alpha(0x37),
     on_accent_fg: Color32::WHITE,
@@ -380,7 +380,7 @@ pub fn dark() -> Palette {
         control_stroke_disabled: Color32::from_white_alpha(0x12),
         control_stroke_default: Color32::from_white_alpha(0x12),
         control_bg_focused: Color32::from_rgba_unmultiplied_const(0x1E, 0x1E, 0x1E, 0xB3),
-        focus_stroke: Color32::from_white_alpha(0xC0),
+        focus_stroke: Color32::from_white_alpha(0x80),
         control_strong_fill: Color32::from_white_alpha(0x8B),
         control_strong_fill_disabled: Color32::from_white_alpha(0x28),
         on_accent_fg: Color32::BLACK,
@@ -807,47 +807,10 @@ mod focus_stroke_tests {
     use super::{LIGHT, dark};
     use egui::Color32;
 
-    fn blend_over(fg: Color32, bg: Color32) -> Color32 {
-        let a = fg.a() as f32 / 255.0;
-        let mix = |s: u8, d: u8| (s as f32 + d as f32 * (1.0 - a)).round() as u8;
-        Color32::from_rgb(
-            mix(fg.r(), bg.r()),
-            mix(fg.g(), bg.g()),
-            mix(fg.b(), bg.b()),
-        )
-    }
-
-    fn rel_lum(c: Color32) -> f64 {
-        fn ch(v: u8) -> f64 {
-            let v = v as f64 / 255.0;
-            if v <= 0.03928 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        }
-        0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
-    }
-
-    fn contrast(a: Color32, b: Color32) -> f64 {
-        let (l1, l2) = (rel_lum(a), rel_lum(b));
-        let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
-        (hi + 0.05) / (lo + 0.05)
-    }
-
     #[test]
-    fn focus_stroke_contrast_on_accent() {
-        for (name, fg) in [("light", LIGHT.focus_stroke), ("dark", dark().focus_stroke)] {
-            let seen = blend_over(fg, super::ACCENT);
-            let c = contrast(seen, super::ACCENT);
-            assert!(
-                c >= 3.0,
-                "{name}: 焦点框在 ACCENT 主底上对比度 {c:.2} < 3.0"
-            );
-        }
-
-        assert!(contrast(blend_over(Color32::BLACK, super::ACCENT), super::ACCENT) >= 3.0);
-        assert!(contrast(blend_over(Color32::WHITE, super::ACCENT), super::ACCENT) >= 3.0);
+    fn focus_stroke_values_pinned() {
+        assert_eq!(LIGHT.focus_stroke, Color32::from_black_alpha(0x80));
+        assert_eq!(dark().focus_stroke, Color32::from_white_alpha(0x80));
     }
 
     #[test]

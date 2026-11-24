@@ -178,7 +178,11 @@ impl CtxMenu {
             return;
         };
 
-        if !self.registry.iter().any(|(rid, _, _)| *rid == id) {
+        let live = self.registry.iter().any(|(rid, _, _)| *rid == id)
+            || AUTO_REG
+                .lock()
+                .map_or(false, |q| q.iter().any(|(rid, _)| *rid == id));
+        if !live {
             self.menu = None;
             self.menu_rect = None;
             self.snapshot = None;

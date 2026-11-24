@@ -2130,10 +2130,16 @@ fn apply_ssh_event(st: &mut State, ctx: &egui::Context, side: usize, sid: u64, e
                                     if let Err(e) =
                                         std::process::Command::new(&editor_path).arg(&copy).spawn()
                                     {
-                                        st.terminal.push((
-                                            crate::local::now_hms(),
-                                            tfmt("外部编辑器启动失败：{0}", &[&e.to_string()]),
-                                        ));
+                                        let msg =
+                                            tfmt("外部编辑器启动失败：{0}", &[&e.to_string()]);
+                                        st.terminal.push((crate::local::now_hms(), msg.clone()));
+
+                                        if matches!(st.dialog, dialogs::Dialog::None) {
+                                            st.dialog = dialogs::Dialog::Msg {
+                                                title: crate::i18n::t("外部编辑器").to_owned(),
+                                                msg,
+                                            };
+                                        }
                                     }
                                 } else {
                                     let dark = ctx.theme() == egui::Theme::Dark;

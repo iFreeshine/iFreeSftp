@@ -372,6 +372,20 @@ pub fn t_for(zh: &'static str, en: bool) -> &'static str {
         "打开主机文件" => "Open host files",
         "打开目录" => "Open folder",
         "打开目标" => "Open target",
+
+        "MCP" => "MCP",
+        "MCP 接口" => "MCP interface",
+        "该主机将从列表中移除，保存后生效。" => {
+            "The host will be removed from the list and the change takes effect on save."
+        }
+        "查看文档" => "View docs",
+        "配置文件" => "Configuration file",
+        "发布版内置 MCP 服务器：MCP 客户端以子命令 ifreesftp mcp（stdio JSON-RPC）拉起本程序，即可浏览目录与收发文件。" => {
+            "The release build ships an MCP server: MCP clients launch this program with the subcommand ifreesftp mcp (stdio JSON-RPC) to browse directories and transfer files."
+        }
+        "目录白名单（allow_roots）在本文件中声明，未声明时路径类工具不可用：{0}" => {
+            "Declare the directory whitelist (allow_roots) in this file; path-based tools stay unavailable until then: {0}"
+        }
         "执行" => "Execute",
         "扫描中" => "Scanning",
         "批量删除失败（{0} 项，首项 {1}）：{2}" => {

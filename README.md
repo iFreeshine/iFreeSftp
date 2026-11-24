@@ -1,10 +1,10 @@
-﻿﻿# iFreeSftp
+# iFreeSftp
 
 English | [简体中文](README.zh-CN.md)
 
 A dual-pane, multi-tab SFTP client for Windows & Linux — fast, secure, and completely free. Native Rust + egui, single-file binary, zero bundled runtime.
 
-![Version](https://img.shields.io/badge/version-0.9.1-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.9.2-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
 
 Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSftp/releases> · Get a registration code <https://ko-fi.com/ifrees/commissions?commissionAlias=61b90e1115>
 
@@ -26,6 +26,7 @@ Website <https://ifrees.top> · Releases <https://github.com/iFreeshine/iFreeSft
 - **Blazing multi-folder transfers** — directories above the threshold are tar-packed into a single stream on the server and unpacked on arrival: a 10,000-file tree moves in one round trip instead of per-file chatter; uploads, downloads and same-host remote→remote all get the same treatment, with automatic per-file fallback, byte-offset resume, and optional post-transfer hashing (SHA-256/512/SM3, computed locally and on the server) to catch corruption early
 - **Per-file conflict decisions** — the overwrite dialog is a checklist: tick exactly which files to overwrite and untick the rest, with select-all for the batch; items whose target is newer than the source start unticked, so one changed file never forces an all-or-nothing choice
 - **Dual panes, IDE-style multi-tab** — both folder windows host independent tabs (local or remote), so you can work on several hosts at once without juggling windows
+- **Built-in MCP server** — plug your AI assistant into your servers: MCP clients such as Claude Desktop and Cursor browse remote directories and move files through your existing hosts, with a path allow-list, two-phase delete confirmation and a full audit log built in (see [docs/mcp.md](docs/mcp.md))
 - **One-click host import** — switching from WinSCP, FileZilla, PuTTY or OpenSSH config? Your hosts come with you: consent-first local scan, duplicate-aware preview, tick what to import; only connection metadata moves, passwords are never read
 - **Secure by default** — host fingerprints are confirmed on first connect (SHA256) and pinned afterwards; a changed server key is rejected outright to stop man-in-the-middle attacks; passwords are stored encrypted; every remote-issued link (announcements, update, purchase) passes a strict http(s)-only launcher guard before it is ever opened
 - **Built-in editor with remote edit & save-back** — download a temp copy, edit, save, auto-upload; mtime conflict detection warns you when the file changed underneath you
@@ -47,6 +48,7 @@ How iFreeSftp stacks up against the mainstream SFTP clients on Windows (compiled
 | Sync-browse comparison of two folders | ✓ | ✓ (synchronize) | ✗ | ✗ |
 | Server-side checksums (SHA-256/512, SM3) | ✓ (SM3 via server-side openssl only) | ✓ | ✗ | ✗ |
 | Portable single exe, no install | ✓ | ✓ | △ | ✓ |
+| Built-in MCP server (AI integration) | ✓ | ✗ not built-in | ✗ | ✗ |
 
 ## Download
 
@@ -111,6 +113,7 @@ MIGRATION.md                   # Update & release rules for this repository (rea
 | Context menus | Full local menu (transfer to other side, edit, rename, delete, new folder/file, refresh); remote menu adds chmod grid with live fetch and SHA-256/SHA-512/SM3 checksums |
 | File comparison | Sync-browse gated; aligns both lists by name, highlights one-side-only (Caution) and differing size/mtime rows (Critical) |
 | Rubber-band select | Drag-select multiple entries in both lists, Ctrl to add |
+| MCP server | Built-in MCP (Model Context Protocol) server in release builds: 18 tools covering sessions, browsing, transfer and deletion; path allow-list (`allow_roots`), rate limits, two-phase delete with confirmation token, audit log — see [docs/mcp.md](docs/mcp.md) |
 
 ## Architecture
 

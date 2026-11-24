@@ -388,6 +388,10 @@ impl Item {
         self.kind.dest_is_remote()
     }
 
+    pub fn batch(&self) -> u64 {
+        self.batch
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture(
         status: Status,

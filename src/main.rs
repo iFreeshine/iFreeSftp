@@ -10,6 +10,9 @@ mod icons;
 mod icons_sys;
 mod import;
 mod local;
+
+#[cfg(feature = "mcp")]
+mod mcp_daemon;
 mod persistence;
 #[cfg(feature = "official")]
 mod registration;
@@ -42,6 +45,11 @@ const CJK_FONT_CANDIDATES: &[&str] = &[
 ];
 
 fn main() -> eframe::Result {
+
+    #[cfg(feature = "mcp")]
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        return mcp_daemon::run();
+    }
 
     #[cfg(debug_assertions)]
     sm3::debug_self_check();

@@ -152,6 +152,7 @@ pub(crate) fn open(st: &mut State) {
         testing: false,
         drag: None,
         win_drag: Vec2::ZERO,
+        confirm_del: None,
     };
 }
 
@@ -170,12 +171,22 @@ pub(crate) fn draw(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         mut testing,
         mut drag,
         mut win_drag,
+        mut confirm_del,
     } = std::mem::replace(&mut st.dialog, dialogs::Dialog::None)
     else {
         return;
     };
     let dark = ui.ctx().theme() == egui::Theme::Dark;
     let now = ui.ctx().input(|i| i.time);
+
+    if confirm_del.is_some()
+        && !dialogs::fp_ask_pending(st)
+        && ui
+            .ctx()
+            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        confirm_del = None;
+    }
 
     if let Some(rx) = &mut fp_rx {
         match rx.try_recv() {
@@ -312,6 +323,7 @@ pub(crate) fn draw(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                 &mut fp_rx,
                 &mut testing,
                 &mut drag,
+                &mut confirm_del,
                 &mut connect,
                 &mut close_requested,
             );
@@ -330,6 +342,31 @@ pub(crate) fn draw(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         return;
     }
 
+    if let Some(mi) = confirm_del {
+        let h = &list[mi];
+        let shown = if h.name.trim().is_empty() {
+            h.host.clone()
+        } else {
+            h.name.clone()
+        };
+        match dialogs::confirm_delete_shell(ui, st, p, &shown) {
+            Some(true) => {
+
+                list.remove(mi);
+                sel = if list.is_empty() {
+                    None
+                } else {
+                    Some(mi.min(list.len() - 1))
+                };
+                sync_sel(&list, sel, &mut orig_host, &mut port_text, &mut ka_text);
+                confirm_del = None;
+            }
+            Some(false) => confirm_del = None,
+
+            None => {}
+        }
+    }
+
     if matches!(st.dialog, dialogs::Dialog::None) {
         st.dialog = dialogs::Dialog::HostPanel {
             list,
@@ -345,6 +382,7 @@ pub(crate) fn draw(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
             testing,
             drag,
             win_drag,
+            confirm_del,
         };
     }
 }
@@ -369,6 +407,7 @@ fn host_panel_body(
     fp_rx: &mut Option<Receiver<crate::ssh::Ev>>,
     testing: &mut bool,
     drag: &mut Option<CardDrag>,
+    confirm_del: &mut Option<usize>,
     connect: &mut bool,
     close_requested: &mut bool,
 ) {
@@ -401,7 +440,19 @@ fn host_panel_body(
     );
     if let Some((mi, mpos)) = *menu {
         *connect = draw_card_menu(
-            ui, p, now, mpos, mi, list, sel, orig_host, port_text, ka_text, alert, menu,
+            ui,
+            p,
+            now,
+            mpos,
+            mi,
+            list,
+            sel,
+            orig_host,
+            port_text,
+            ka_text,
+            alert,
+            menu,
+            confirm_del,
         );
     }
     draw_alert(ui, st, p, right, alert);
@@ -1301,7 +1352,7 @@ fn accent_text_button(ui: &mut egui::Ui, p: &theme::Palette, r: Rect, label: &st
         ui.painter().rect_stroke(
             r,
             4.0,
-            theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+            theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.focus_stroke),
             egui::StrokeKind::Inside,
         );
     }
@@ -1330,6 +1381,7 @@ fn draw_card_menu(
     ka_text: &mut String,
     alert: &mut Option<(bool, String, String, f64, bool)>,
     menu: &mut Option<(usize, Pos2)>,
+    confirm_del: &mut Option<usize>,
 ) -> bool {
     let full = ui.max_rect();
     let painter = ui.painter().clone();
@@ -1445,13 +1497,7 @@ fn draw_card_menu(
                 }
                 _ => {
 
-                    list.remove(mi);
-                    *sel = if list.is_empty() {
-                        None
-                    } else {
-                        Some(mi.min(list.len() - 1))
-                    };
-                    sync_sel(list, *sel, orig_host, port_text, ka_text);
+                    *confirm_del = Some(mi);
                 }
             }
         }

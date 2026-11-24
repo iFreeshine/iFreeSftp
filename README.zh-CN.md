@@ -1,10 +1,10 @@
-﻿﻿# iFreeSftp
+# iFreeSftp
 
 [English](README.md) | 简体中文
 
 桌面 SFTP 客户端——Windows 与 Linux 双平台，双窗格、多标签，快速、安全、完全免费。Rust + egui 原生实现，单文件、零随包运行时。
 
-![Version](https://img.shields.io/badge/version-0.9.1-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
+![Version](https://img.shields.io/badge/version-0.9.2-4C8BF5) ![License](https://img.shields.io/badge/license-AGPL--3.0-4C8BF5) ![Platform](https://img.shields.io/badge/platform-Windows_%7C_Linux-4C8BF5)
 
 官网 <https://ifrees.top> · 发布页 <https://github.com/iFreeshine/iFreeSftp/releases> · 赞助 <https://afdian.com/a/ifree>
 
@@ -19,6 +19,7 @@
 - **多文件夹传输飞快**——超过阈值的目录在服务端打成单个 tar 流、到达即解包：上万文件的目录树一次往返到位，不再逐文件往返；上传、下载、同机远程→远程同样待遇，条件不满足自动回退逐文件；中断传输从字节断点续传，可选传输后校验（SHA-256/512/SM3，本机与服务端双侧计算）尽早暴露损坏文件
 - **冲突决策逐文件**——覆盖确认弹窗是逐文件勾选清单：勾选的覆盖上传、不勾的跳过，支持整批全选；目标比源新的文件默认不勾，一个文件改动不再强迫全有全无
 - **左右双窗格 + IDE 式多标签**——两侧各自独立多开 tab（本地或远程），多主机并行操作不必来回切窗口
+- **内置 MCP 服务器**——把 AI 助手接到你的服务器上：Claude Desktop、Cursor 等客户端经既有主机浏览远程目录、收发文件，目录白名单、两段式删除确认与完整审计日志内置（见 [docs/mcp.zh-CN.md](docs/mcp.zh-CN.md)）
 - **主机一键导入**——换工具？主机一键带走：从 WinSCP、FileZilla、PuTTY、OpenSSH config 先授权后扫描，预览去重、勾选即入；只搬连接信息，密码绝不读取
 - **默认安全**——首次连接确认主机指纹（SHA256）并记住，服务器密钥变化直接拒绝（防中间人）；密码加密存储；远程下发的所有链接（公告/更新/购买）打开前一律经仅 http(s) 的启动器白名单校验
 - **内置编辑器 + 远程编辑回传**——下载临时副本、编辑、保存自动上传；远端文件被他人改过会弹 mtime 冲突确认
@@ -40,6 +41,7 @@
 | 同步浏览文件夹比对 | ✓ | ✓（同步浏览） | ✗ | ✗ |
 | 服务端校验码（SHA-256/512、SM3） | ✓（SM3 仅服务端 openssl） | ✓ | ✗ | ✗ |
 | 免安装单文件 exe | ✓ | ✓ | △ | ✓ |
+| 内置 MCP 服务器（AI 集成） | ✓ | ✗ 无内置 | ✗ | ✗ |
 
 ## 下载
 
@@ -107,6 +109,7 @@ MIGRATION.md                   # 本仓库更新与发版规则（动手前先�
 | 右键菜单 | 本地全量菜单（传输/编辑/重命名/删除/新建/刷新）；远程模式追加九宫格 chmod（实时拉取）与 SHA-256/SHA-512/SM3 校验码 |
 | 文件比对 | 同步浏览联动；按名称对齐两侧列表，单侧存在（Caution）与大小/mtime 差异（Critical）行高亮 |
 | 框选 | 两侧列表橡皮筋框选多选，Ctrl 增选 |
+| MCP 服务器 | 发布版内置 MCP（Model Context Protocol）服务器：18 个工具覆盖会话、浏览、传输与删除；目录白名单（`allow_roots`）、速率限制、两段式删除确认、审计日志——见 [docs/mcp.zh-CN.md](docs/mcp.zh-CN.md) |
 
 ## 技术框架
 

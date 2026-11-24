@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 > This is the Rust edition's changelog, starting at 0.9.0 (full native rewrite of the C#/WinUI 3 edition). The C# edition's history lives in its own repository and is not merged here.
 
+## [0.9.2] - 2026-11-24
+
+### Added
+
+- Built-in MCP server (`ifreesftp mcp`, stdio): MCP clients can browse remote directories and transfer files via existing hosts; path-based tools are guarded by the `mcp_daemon.json` allow-list (blank list rejects everything by default), deletes are two-phase confirmed and writes use an optimistic lock — see [docs/mcp.md](docs/mcp.md)
+- New "MCP" category in Settings: overview, configuration file access, and docs link
+- Various settings logic refinements
+
+### Changed
+
+- Dark/light theme polish
+
+### Fixed
+
+- UI fixes
+
 ## [0.9.1] - 2026-11-18
 
 ### Added

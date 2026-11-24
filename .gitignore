@@ -30,7 +30,6 @@ src/assets/fonts/_src/
 *.ttc
 !src/assets/fonts/Inter-Regular.ttf
 !src/assets/fonts/Inter-SemiBold.ttf
-!src/assets/fonts/JetBrainsMono-Regular.ttf
 
 # ---- 系统与编辑器 ----
 .DS_Store

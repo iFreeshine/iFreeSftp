@@ -110,6 +110,8 @@ pub enum Dialog {
         drag: Option<super::host_panel::CardDrag>,
 
         win_drag: Vec2,
+
+        confirm_del: Option<usize>,
     },
 
     Import {
@@ -178,6 +180,11 @@ pub enum Dialog {
         name: String,
         remote_path: String,
     },
+
+    Msg {
+        title: String,
+        msg: String,
+    },
 }
 
 impl Dialog {
@@ -199,6 +206,7 @@ impl Dialog {
             Dialog::ExtEditChanged { .. } => 12,
             Dialog::ExtEditConflict { .. } => 13,
             Dialog::ExtEditLockWait { .. } => 14,
+            Dialog::Msg { .. } => 15,
         }
     }
 }
@@ -299,12 +307,10 @@ pub struct Settings {
 
     pub editor_path: String,
 
-    #[cfg(feature = "official")]
     pub reg_code: String,
 
     pub update_check: bool,
 
-    #[cfg(feature = "official")]
     pub reg_hint: Option<(String, bool)>,
 
     pub update_checking: bool,
@@ -340,10 +346,8 @@ impl Default for Settings {
             dnd_stream_batch: 256,
             editor_builtin: true,
             editor_path: String::new(),
-            #[cfg(feature = "official")]
             reg_code: String::new(),
             update_check: true,
-            #[cfg(feature = "official")]
             reg_hint: None,
             update_checking: false,
             update_check_result: String::new(),
@@ -445,10 +449,8 @@ impl Settings {
             dnd_stream_batch: s.dnd_stream_batch,
             editor_builtin: s.editor_builtin,
             editor_path: s.editor_path.clone(),
-            #[cfg(feature = "official")]
             reg_code: String::new(),
             update_check: s.update_check,
-            #[cfg(feature = "official")]
             reg_hint: None,
             update_checking: false,
             update_check_result: String::new(),
@@ -556,6 +558,7 @@ pub fn draw(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
         Dialog::HostPanel { .. } => super::host_panel::draw(ui, st, p),
         Dialog::Import { .. } => super::import_dialog::draw(ui, st, p),
         Dialog::SyncMismatch { .. } => sync_mismatch_dialog(ui, st, p),
+        Dialog::Msg { .. } => msg_dialog(ui, st, p),
         Dialog::TabClose { .. } => tab_close_dialog(ui, st, p),
         Dialog::ExtEditChanged { .. } => ext_edit_changed_dialog(ui, st, p),
         Dialog::ExtEditConflict { .. } => ext_edit_conflict_dialog(ui, st, p),
@@ -713,7 +716,7 @@ pub(crate) fn shell(
                 ui.painter().rect_stroke(
                     close_r,
                     4.0,
-                    theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+                    theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.focus_stroke),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -828,7 +831,7 @@ pub(crate) fn std_button_en(
         ui.painter().rect_stroke(
             rect,
             4.0,
-            theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+            theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.focus_stroke),
             egui::StrokeKind::Inside,
         );
     }
@@ -1155,7 +1158,7 @@ pub(crate) fn accent_button(
         ui.painter().rect_stroke(
             r,
             4.0,
-            theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+            theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.focus_stroke),
             egui::StrokeKind::Inside,
         );
     }
@@ -1473,6 +1476,96 @@ fn delete_body(
     if del || st.shell_enter || cancel {
         st.dialog = Dialog::None;
     }
+}
+
+pub(crate) fn confirm_delete_shell(
+    ui: &mut egui::Ui,
+    st: &mut State,
+    p: &theme::Palette,
+    name: &str,
+) -> Option<bool> {
+    let mut out: Option<bool> = None;
+    let alive = shell(
+        ui,
+        st,
+        p,
+        320.0,
+        190.0,
+        t("删除"),
+        false,
+        0.0,
+        true,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| {
+            let cui = content_ui(ui, content);
+            let x = content.left() + CONTENT_PAD.0;
+            if let Some(img) = st.icons.get(ui.ctx(), "trash", p.critical, 16.0) {
+                img.paint_at(
+                    ui,
+                    Rect::from_center_size(
+                        Pos2::new(x + 8.0, content.top() + CONTENT_PAD.1 + 10.0),
+                        egui::vec2(16.0, 16.0),
+                    ),
+                );
+            }
+            dlg_text(
+                cui.painter(),
+                Pos2::new(x + 26.0, content.top() + CONTENT_PAD.1),
+                &elide22(name),
+                theme::font_body(),
+                TextMode::Single,
+                0.0,
+                theme::dim50(p.text_primary),
+            );
+            let body_y = content.top() + CONTENT_PAD.1 + 20.0 + GROUP_GAP;
+            dlg_text(
+                cui.painter(),
+                Pos2::new(x, body_y),
+                t("该主机将从列表中移除，保存后生效。"),
+                theme::font_body(),
+                TextMode::Wrap,
+                content.width() - CONTENT_PAD.0,
+                p.text_primary,
+            );
+            let btn_y = content.bottom() - CONTENT_PAD.1 - BTN_H;
+            let del_w = btn_w(ui, t("删除"), &theme::font_body());
+            let cancel_w = btn_w(ui, t("取消"), &theme::font_body());
+            let del = danger_button(
+                ui,
+                Rect::from_min_size(
+                    Pos2::new(content.right() - CONTENT_PAD.0 - del_w, btn_y),
+                    egui::vec2(del_w, BTN_H),
+                ),
+                t("删除"),
+                p,
+            );
+            let cancel = std_button(
+                ui,
+                Rect::from_min_size(
+                    Pos2::new(
+                        content.right() - CONTENT_PAD.0 - del_w - 8.0 - cancel_w,
+                        btn_y,
+                    ),
+                    egui::vec2(cancel_w, BTN_H),
+                ),
+                t("取消"),
+                p.text_primary,
+                p,
+            );
+            if del || st.shell_enter {
+                out = Some(true);
+            }
+            if cancel {
+                out = Some(false);
+            }
+        },
+    );
+    if !alive {
+
+        out = Some(false);
+    }
+    out
 }
 
 fn apply_delete(st: &mut State) {
@@ -2650,6 +2743,9 @@ pub(crate) fn winui_text_box(
     }
 }
 
+#[cfg(feature = "mcp")]
+const CATS: [&str; 7] = ["外观", "连接", "文件编辑", "传输", "注册", "MCP", "关于"];
+#[cfg(not(feature = "mcp"))]
 const CATS: [&str; 6] = ["外观", "连接", "文件编辑", "传输", "注册", "关于"];
 
 fn settings_dialog(
@@ -2710,7 +2806,7 @@ fn settings_body(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette, content:
             ui.painter().rect_stroke(
                 item,
                 4.0,
-                theme::stroke(ui.ctx().pixels_per_point(), 2.0, p.focus_stroke),
+                theme::stroke(ui.ctx().pixels_per_point(), 1.0, p.focus_stroke),
                 egui::StrokeKind::Inside,
             );
         }
@@ -2759,6 +2855,8 @@ fn settings_body(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette, content:
                 3 => transfer_page(&mut card_ui, st, p),
                 #[cfg(feature = "official")]
                 4 => registration_page(&mut card_ui, st, p),
+                #[cfg(feature = "mcp")]
+                5 => mcp_page(&mut card_ui, st, p),
                 _ => about_page(&mut card_ui, st, p),
             }
 
@@ -3198,7 +3296,7 @@ pub(crate) fn card_combo(
         pt.rect_stroke(
             rect,
             theme::CONTROL_RADIUS,
-            theme::stroke(ctx.pixels_per_point(), 2.0, p.focus_stroke),
+            theme::stroke(ctx.pixels_per_point(), 1.0, p.focus_stroke),
             egui::StrokeKind::Inside,
         );
     }
@@ -4169,6 +4267,78 @@ fn card_link(ui: &mut egui::Ui, r: Rect, label: &str, url: &str, p: &theme::Pale
     }
 }
 
+#[cfg(feature = "mcp")]
+fn mcp_page(ui: &mut egui::Ui, _st: &mut State, p: &theme::Palette) {
+    page_title(ui, t("MCP"), p);
+    let w = ui.max_rect().width();
+
+    settings_card(
+        ui,
+        w,
+        t("MCP 接口"),
+        t(
+            "发布版内置 MCP 服务器：MCP 客户端以子命令 ifreesftp mcp（stdio JSON-RPC）拉起本程序，即可浏览目录与收发文件。",
+        ),
+        56.0,
+        true,
+        8.0,
+        0.0,
+        |c, r| {
+            card_link(
+                c,
+                r,
+                t("查看文档"),
+                "https://github.com/iFreeshine/iFreeSftp/blob/main/docs/mcp.md",
+                p,
+            )
+        },
+    );
+
+    let path = crate::mcp_daemon::config_path();
+    let desc = tfmt(
+        "目录白名单（allow_roots）在本文件中声明，未声明时路径类工具不可用：{0}",
+        &[&path.display().to_string()],
+    );
+    settings_card(
+        ui,
+        w,
+        t("配置文件"),
+        &desc,
+        64.0,
+        true,
+        8.0,
+        0.0,
+        |c, r| {
+            let open_w = btn_w(c, t("打开"), &theme::font(theme::TextRole::Compact));
+            let btn_r = Rect::from_min_size(
+                Pos2::new(r.right() - 16.0 - open_w, r.center().y - 16.0),
+                egui::vec2(open_w, 32.0),
+            );
+            if std_button_en(
+                c,
+                btn_r,
+                t("打开"),
+                p.text_primary,
+                p,
+                theme::font(theme::TextRole::Compact),
+                true,
+            ) {
+                if !path.exists() {
+                    let _ = std::fs::write(&path, "{\n  \"allow_roots\": []\n}");
+                }
+
+                #[cfg(windows)]
+                let cmd = "explorer";
+                #[cfg(target_os = "macos")]
+                let cmd = "open";
+                #[cfg(all(unix, not(target_os = "macos")))]
+                let cmd = "xdg-open";
+                let _ = std::process::Command::new(cmd).arg(&path).spawn();
+            }
+        },
+    );
+}
+
 fn about_page(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
     page_title(ui, t("关于 iFreeSftp"), p);
     let w = ui.max_rect().width();
@@ -4718,10 +4888,16 @@ fn draw_menu(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
                                     if let Err(e) =
                                         std::process::Command::new(&editor_path).arg(&path).spawn()
                                     {
-                                        st.terminal.push((
-                                            crate::local::now_hms(),
-                                            tfmt("外部编辑器启动失败：{0}", &[&e.to_string()]),
-                                        ));
+                                        let msg =
+                                            tfmt("外部编辑器启动失败：{0}", &[&e.to_string()]);
+                                        st.terminal.push((crate::local::now_hms(), msg.clone()));
+
+                                        if matches!(st.dialog, Dialog::None) {
+                                            st.dialog = Dialog::Msg {
+                                                title: t("外部编辑器").to_owned(),
+                                                msg,
+                                            };
+                                        }
                                     }
                                 } else {
                                     let dark = ui.ctx().theme() == egui::Theme::Dark;
@@ -5457,6 +5633,58 @@ fn sync_mismatch_body(
             ));
         }
     } else if close {
+        st.dialog = Dialog::None;
+    }
+}
+
+fn msg_dialog(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette) {
+    let (title, msg) = match &st.dialog {
+        Dialog::Msg { title, msg } => (title.clone(), msg.clone()),
+        _ => return,
+    };
+    shell(
+        ui,
+        st,
+        p,
+        400.0,
+        172.0,
+        &title,
+        false,
+        0.0,
+        true,
+        None,
+        ShellOpts::default(),
+        |ui, content, st| msg_body(ui, st, p, content, msg),
+    );
+}
+
+fn msg_body(ui: &mut egui::Ui, st: &mut State, p: &theme::Palette, content: Rect, msg: String) {
+    let cui = content_ui(ui, content);
+    dlg_text(
+        cui.painter(),
+        Pos2::new(
+            content.left() + CONTENT_PAD.0,
+            content.top() + CONTENT_PAD.1,
+        ),
+        &msg,
+        theme::font_body(),
+        TextMode::Wrap,
+        content.width() - CONTENT_PAD.0 * 2.0,
+        p.text_primary,
+    );
+
+    let y = content.bottom() - CONTENT_PAD.1 - BTN_H;
+    let w_close = btn_w(ui, t("关闭"), &theme::font_body());
+    let r_close = Rect::from_min_size(
+        Pos2::new(content.right() - CONTENT_PAD.0 - w_close, y),
+        egui::vec2(w_close, BTN_H),
+    );
+    let close_id = ui.next_auto_id();
+    let close = std_button(ui, r_close, t("关闭"), p.text_primary, p);
+    if st.dialog_fresh {
+        ui.ctx().memory_mut(|m| m.request_focus(close_id));
+    }
+    if close || st.shell_enter {
         st.dialog = Dialog::None;
     }
 }

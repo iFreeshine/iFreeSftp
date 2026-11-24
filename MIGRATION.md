@@ -27,7 +27,7 @@ E:\aiProject\iFreeSftpRust\            主开发仓（私有，含闭源与素�
 
 | 主仓来源（ifreeSftp\ 下） | 公开仓去处 | 说明 |
 |---|---|---|
-| `src\` | `ifreeSftp\src\` | 全量镜像（official 门控零引用，见 §6） |
+| `src\` | `ifreeSftp\src\` | 全量镜像，**排除 `mcp_daemon.rs`**（MCP daemon 闭源门控体，2026-11-21 拍板 §8；sync 脚本 excl 清单 + 残留清理，见 §6） |
 | `build.rs` `Cargo.toml` `Cargo.lock` | 同名 | Cargo.toml 原样（workspace 根与 member 同文件，公开仓自足） |
 | `rust-toolchain.toml` `.cargo\config.toml` `.gitattributes` `.gitignore` | 同名 | 工具链锁定 + windows-gnu 链接配置（D-019）；同步改写：config.toml 剥离主仓 `[build] target-dir`（私有产物目录策略），rust-toolchain.toml 的 channel 由 host 三元组形式改写为 `1.99` + gnu targets（CI / fork 侧 rustup host 是 msvc，会报 "target tuple in channel name"） |
 | `assets\` | 同名 | build.rs 内嵌图标/Logo 资源（缺目录编译失败） |
@@ -42,6 +42,7 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 
 **不拷（永不公开）**：主仓 `README.md`（开发向）、`DECISIONS.md`、`docs\`（IMPL-*/HANDOVER/
 发版清单等内部文档）、`templates\`、`scripts\`、`dev.bat`（内含本机路径）、`ifree-core\`、
+`src\mcp_daemon.rs`（sync 时经 excl 清单跳过并清理残留，2026-11-21 拍板 §8）、
 `tools\`（含 worker 运营服务端）、keygen。
 
 ## 3. README / CHANGELOG 改写规则（C# 文字 → Rust 事实）
@@ -110,14 +111,16 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
    其余声明点全部向它对齐：README 双语徽章 `badge/version-x.y.z-`、CHANGELOG 双语 `## [x.y.z]` 节。
 2. **发版前必跑** `.\tools\check-version.ps1`（build.ps1 release 已自动挂钩，不一致即 FAIL 阻塞）；
    官网 website\ 目录缺失时对应项自动 SKIP，README/CHANGELOG 项缺失 FAIL。
-3. **发布物（2026-11-08 口径更新，DECISIONS.md D-018/D-021）**：产品唯一、按平台分 3 个发布版本，
-   **3 版全部为 official 构建（含注册功能）**，全部在主仓本机编译后**手动上传**——公开 CI
+3. **发布物（2026-11-08 口径更新，DECISIONS.md D-018/D-021；2026-11-23 构建 feature
+   official→mcp，拍板 §8 ⑤）**：产品唯一、按平台分 3 个发布版本，
+   **3 版全部为 mcp 构建（implies official：含注册功能与内置 MCP 服务器）**，全部在主仓本机
+   编译后**手动上传**——公开 CI
    不持有 ifree-core，不出正式发布构建（与 C#「发布 exe 不走 CI」同规则）：
-   - `iFreeSftp-vX.Y.Z-win-x64.zip`（内含单个 official `ifreeSftp.exe`）→ GitHub Release；
+   - `iFreeSftp-vX.Y.Z-win-x64.zip`（内含单个 mcp 构建 `ifreeSftp.exe`）→ GitHub Release；
    - 微软商店包 `iFreeSftp-X.Y.Z.0-x64.msix`（**主仓** `tools\make-msix.ps1 -Official` 产出——
-     打包工具与 worker 同属运营工具，永不进公开仓；未签名，Store
+     脚本内部 `--features mcp`；打包工具与 worker 同属运营工具，永不进公开仓；未签名，Store
      提交时 Partner Center 重签）；
-   - Linux 版 `iFreeSftp-vX.Y.Z-linux-x64.tar.gz`（official 构建；主仓本机 zigbuild 交叉编译，
+   - Linux 版 `iFreeSftp-vX.Y.Z-linux-x64.tar.gz`（mcp 构建；主仓本机 zigbuild 交叉编译，
      glibc 目标 2.39 = Ubuntu 24.04，见主仓 DECISIONS.md D-018/D-021）。
    公开仓 `.\build.ps1 release` 的产物是**公示源码验证构建**（无 official feature），
    不作为发布物上传。商店包身份沿用 C# 版 Partner Center 真实值
@@ -157,6 +160,12 @@ sync 永不覆盖。主仓 `.gitignore` 已忽略 `/github/`（本目录是独�
 - `src\main.rs` 顶层的 `#[cfg(feature = "official")] #[path = "../../ifree-core/src/lib.rs"]`
   （`pub(crate) mod ifree_core`）是**唯一**闭源并入点，registration 与 transfer 两层共用；
   源码模式不启用该 feature，`#[path]` 指向的目录在公开仓不存在也零编译。
+- MCP daemon 面（2026-11-21 拍板 §8）同构隔离：`src\mcp_daemon.rs` 永不进公开仓
+  （sync excl 清单跳过 + 残留清理）；公开仓保留 `main.rs` 的
+  `#[cfg(feature = "mcp")] mod mcp_daemon;` 门壳与 `Cargo.toml` 的 `mcp`/`official`
+  feature 声明——与 registration 先例完全同构：源码模式（无 feature）零引用可编译，
+  启用 feature 即编译失败（闭源体不随源码分发）属预期。base64 为门控依赖
+  （optional，official/mcp 激活），公开树无 unused 警告。
 - 公开仓 CI 只跑源码模式（`cargo build && cargo test`）；任何把 ifree-core 源码、私钥、
   keygen 引入本仓的改动都是违规，直接拒绝。
 - 服务端直达复制（core `ServerCopyAsync`，C# FullTransferCore）已移植：决策逻辑

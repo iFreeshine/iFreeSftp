@@ -1,4 +1,4 @@
-﻿# iFreeSftp (Rust edition) build script
+# iFreeSftp (Rust edition) build script
 # Usage:
 #   .\build.ps1              # Debug build
 #   .\build.ps1 build        # Debug build

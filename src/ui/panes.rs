@@ -493,7 +493,17 @@ pub fn tab_strip(
     side: usize,
     hooks: &mut Hooks,
 ) -> Option<usize> {
-    ui.painter().rect_filled(rect, 0.0, p.folder_area);
+
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius {
+            nw: 8,
+            ne: 8,
+            sw: 0,
+            se: 0,
+        },
+        p.folder_area,
+    );
 
     ui.painter().line_segment(
         [
@@ -2252,7 +2262,17 @@ fn status_bar(
     hooks: &mut Hooks,
     side: usize,
 ) {
-    ui.painter().rect_filled(rect, 0.0, p.folder_area);
+
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: 8,
+            se: 8,
+        },
+        p.folder_area,
+    );
     ui.painter().line_segment(
         [
             Pos2::new(rect.left(), rect.top() + 0.5),
@@ -2408,7 +2428,17 @@ fn empty_state(
     texts: (&str, &str),
 ) {
     let (title, sub) = texts;
-    ui.painter().rect_filled(rect, 0.0, p.folder_area);
+
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius {
+            nw: 8,
+            ne: 8,
+            sw: 8,
+            se: 8,
+        },
+        p.folder_area,
+    );
 
     let top = rect.top() + rect.height() * 0.40;
     let cx = rect.center().x;
@@ -2590,7 +2620,17 @@ pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
         inner.left_top(),
         Pos2::new(inner.right(), inner.top() + header_h),
     );
-    ui.painter().rect_filled(header, 0.0, p.folder_area);
+
+    ui.painter().rect_filled(
+        header,
+        egui::CornerRadius {
+            nw: 8,
+            ne: 8,
+            sw: 0,
+            se: 0,
+        },
+        p.folder_area,
+    );
     ui.painter().line_segment(
         [
             Pos2::new(inner.left(), header.bottom() - 0.5),
@@ -2776,7 +2816,17 @@ pub fn queue(ui: &mut egui::Ui, rect: Rect, st: &mut super::State) {
         Pos2::new(inner.left(), inner.bottom() - 29.0),
         Pos2::new(inner.right(), inner.bottom()),
     );
-    ui.painter().rect_filled(foot, 0.0, p.folder_area);
+
+    ui.painter().rect_filled(
+        foot,
+        egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: 8,
+            se: 8,
+        },
+        p.folder_area,
+    );
     ui.painter().line_segment(
         [
             Pos2::new(foot.left(), foot.top() + 0.5),
